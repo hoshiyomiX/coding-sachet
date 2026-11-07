@@ -1,15 +1,19 @@
-package id.apinex.mobile.runtime
+package id.poketcoding.mobile.runtime
 
 import android.system.Os
+import org.tukaani.xz.XZInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FilterInputStream
 import java.io.InputStream
+import java.io.PushbackInputStream
 import java.util.zip.GZIPInputStream
 
 /**
- * Minimal .tar.gz extractor (ustar + GNU long names + pax records,
+ * Minimal .tar.gz / .tar.xz extractor (ustar + GNU long names + pax records,
  * symlinks and hard links), written for the Ubuntu base and Node tarballs.
+ * The environment archives ship inside the APK as ultra-compressed xz
+ * (prepared by CI); gzip is still accepted for compatibility.
  * Permissions are kept, but the owning app always retains access so files
  * can be replaced or removed later.
  */
@@ -21,6 +25,20 @@ object TarExtract {
         archive: File,
         dest: File,
         onProgress: (doneBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
+    ): Result = FileInputStream(archive).buffered(1 shl 16).use { input ->
+        extractStream(input, archive.length(), dest, onProgress)
+    }
+
+    /**
+     * Extract from an already-open stream (e.g. an APK asset). The
+     * compression format is detected from the magic bytes. [totalBytes] is
+     * the compressed size when known, or -1 when unknown.
+     */
+    fun extractStream(
+        input: InputStream,
+        totalBytes: Long,
+        dest: File,
+        onProgress: (doneBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): Result {
         dest.mkdirs()
         val destRoot = dest.canonicalFile
@@ -29,14 +47,15 @@ object TarExtract {
             return p == destRoot.path || p.startsWith(destRoot.path + File.separator)
         }
 
-        val total = archive.length()
+        val total = totalBytes
         var files = 0
         var skipped = 0
         var lastReport = 0L
         val dirModes = ArrayList<Pair<File, Int>>()
 
-        val counted = CountingInput(FileInputStream(archive).buffered(1 shl 16))
-        GZIPInputStream(counted, 1 shl 16).use { gz ->
+        val counted = CountingInput(input.buffered(1 shl 16))
+        val pushback = PushbackInputStream(counted, 8)
+        autoDecompress(pushback).use { gz ->
             val header = ByteArray(512)
             var pendingLongName: String? = null
             var pendingLongLink: String? = null
@@ -133,8 +152,29 @@ object TarExtract {
         for ((dir, mode) in dirModes.asReversed()) {
             runCatching { Os.chmod(dir.path, (mode and 0x1FF) or 0x1C0) }
         }
-        onProgress(total, total)
+        onProgress(if (total > 0) total else counted.count, total)
         return Result(files, skipped)
+    }
+
+    /** Detect gzip (1f 8b) or xz (fd 37 7a 58 5a 00) from the magic bytes. */
+    private fun autoDecompress(input: PushbackInputStream): InputStream {
+        val magic = ByteArray(6)
+        var n = 0
+        while (n < 6) {
+            val r = input.read(magic, n, 6 - n)
+            if (r < 0) break
+            n += r
+        }
+        if (n < 6) error("arsip terlalu pendek untuk dikenali")
+        input.unread(magic, 0, n)
+        return when {
+            magic[0] == 0x1F.toByte() && magic[1] == 0x8B.toByte() ->
+                GZIPInputStream(input, 1 shl 16)
+            magic[0] == 0xFD.toByte() && magic[1] == 0x37.toByte() && magic[2] == 0x7A.toByte() &&
+                magic[3] == 0x58.toByte() && magic[4] == 0x5A.toByte() && magic[5] == 0x00.toByte() ->
+                XZInputStream(input)
+            else -> error("format arsip tidak dikenal (harus .tar.gz atau .tar.xz)")
+        }
     }
 
     private fun padding(size: Long) = (512 - size % 512) % 512

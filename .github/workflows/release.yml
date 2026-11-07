@@ -83,6 +83,27 @@ jobs:
             echo "No signing secrets: the release APK will be debug-signed (still installable)."
           fi
 
+      - name: Prepare bundled environment (ultra compression, xz)
+        run: |
+          set -e
+          mkdir -p app/src/main/assets/env
+          UB_URL="https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-arm64.tar.gz"
+          UB_SHA="a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2"
+          NODE_URL="https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.xz"
+          NODE_SHA="406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92"
+          for i in 1 2 3; do
+            curl -sSL --retry 3 -o /tmp/ubuntu.tar.gz "$UB_URL" && break || { echo "retry ubuntu ($i)"; sleep 5; }
+          done
+          echo "$UB_SHA  /tmp/ubuntu.tar.gz" | sha256sum -c -
+          # Ultra compression: pristine rootfs repacked from gzip to xz -9e
+          # (~30 MB gz -> ~17 MB xz). Node ships an official .tar.xz already.
+          gunzip -c /tmp/ubuntu.tar.gz | xz -9e -T0 > app/src/main/assets/env/ubuntu-24.04.5-arm64.tar.xz
+          for i in 1 2 3; do
+            curl -sSL --retry 3 -o app/src/main/assets/env/node-26.13.0-linux-arm64.tar.xz "$NODE_URL" && break || { echo "retry node ($i)"; sleep 5; }
+          done
+          echo "$NODE_SHA  app/src/main/assets/env/node-26.13.0-linux-arm64.tar.xz" | sha256sum -c -
+          ls -l app/src/main/assets/env/
+
       - name: Build APKs
         run: |
           ./gradlew --no-daemon assembleDebug assembleRelease \

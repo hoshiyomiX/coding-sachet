@@ -61,6 +61,13 @@ android {
 
     buildFeatures { compose = true; buildConfig = true }
 
+    androidResources {
+        // The bundled environment archives (assets/env/*.tar.xz) are already
+        // xz-compressed: storing them uncompressed in the APK avoids double
+        // compression and lets AssetManager.openFd() report their length.
+        noCompress += "xz"
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
@@ -87,6 +94,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
+    implementation(libs.xz)  // pure-Java xz decoder for the bundled env archives
 
     testImplementation(libs.junit)
 }

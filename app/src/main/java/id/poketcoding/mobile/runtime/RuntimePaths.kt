@@ -16,7 +16,6 @@ class RuntimePaths(ctx: Context) {
     val libDir = File(base, "lib")
     val tmp = File(base, "tmp")
     val fake = File(base, "fake")
-    val downloads = File(base, "dl")
 
     val nodeBin = File(rootfs, "usr/local/bin/node")
     val serverDir = File(rootfs, "opt/poket")

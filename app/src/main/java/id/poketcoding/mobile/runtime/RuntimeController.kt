@@ -40,13 +40,11 @@ class RuntimeController(
     private val api: AgentApi,
 ) {
     companion object {
-        // Pinned downloads: the app is written against exactly these.
-        const val ROOTFS_URL = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-arm64.tar.gz"
-        const val ROOTFS_SHA = "a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2"
-
+        // The environment ships inside the APK (assets/env), prepared by CI
+        // with ultra compression (xz). Nothing is downloaded at first run.
+        const val ROOTFS_ASSET = "env/ubuntu-24.04.5-arm64.tar.xz"
+        const val NODE_ASSET = "env/node-26.13.0-linux-arm64.tar.xz"
         const val NODE_VERSION = "26.13.0"
-        const val NODE_SHA = "439e9c438acdf6a6ffe47418da709153d66c4bed812e30a473faacb107dd2791"
-        fun nodeUrl(): String = "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-arm64.tar.gz"
 
         const val NODE_GUEST = "/usr/local/bin/node"
         const val SERVER_JS_GUEST = "/opt/poket/server.js"
@@ -88,17 +86,13 @@ class RuntimeController(
             File(paths.nativeDir, "libtalloc.so").copyTo(File(paths.libDir, "libtalloc.so.2"), overwrite = true)
 
             if (!paths.rootfsReady) {
-                val tgz = File(paths.downloads, "ubuntu-base.tar.gz")
-                step("Mengunduh Ubuntu 24.04", 0f)
-                Fetch.fetch(ROOTFS_URL, tgz, ROOTFS_SHA) { d, t ->
-                    step("Mengunduh Ubuntu 24.04", frac(d, t), mb(d, t))
-                }
-                step("Membongkar Ubuntu", 0f)
+                step("Membongkar Ubuntu 24.04 (dari APK)", 0f)
                 paths.rootfs.deleteRecursively()
-                val r = TarExtract.extract(tgz, paths.rootfs) { d, t -> step("Membongkar Ubuntu", frac(d, t)) }
+                val r = extractAsset(ROOTFS_ASSET, paths.rootfs) { d, t ->
+                    step("Membongkar Ubuntu 24.04", frac(d, t), mb(d, t))
+                }
                 logLine("rootfs: ${r.files} file (${r.skipped} dilewati)")
                 configureRootfs()
-                tgz.delete()
             }
 
             if (!paths.nodeBin.exists()) installNode()
@@ -117,16 +111,23 @@ class RuntimeController(
         }
     }
 
-    private fun installNode() {
-        val tgz = File(paths.downloads, "node-$NODE_VERSION.tar.gz")
-        step("Mengunduh Node.js $NODE_VERSION", 0f)
-        Fetch.fetch(nodeUrl(), tgz, NODE_SHA) { d, t ->
-            step("Mengunduh Node.js $NODE_VERSION", frac(d, t), mb(d, t))
+    /** Stream an env archive out of the APK assets and extract it. */
+    private fun extractAsset(
+        name: String,
+        dest: File,
+        onProgress: (Long, Long) -> Unit,
+    ): TarExtract.Result {
+        val len = runCatching { app.assets.openFd(name).length }.getOrDefault(-1L)
+        return app.assets.open(name).use { input ->
+            TarExtract.extractStream(input, len, dest, onProgress)
         }
-        step("Memasang Node.js", 0f)
-        val staging = File(paths.downloads, "node-extract")
+    }
+
+    private fun installNode() {
+        step("Memasang Node.js $NODE_VERSION (dari APK)", 0f)
+        val staging = File(paths.tmp, "node-extract")
         staging.deleteRecursively()
-        TarExtract.extract(tgz, staging) { d, t -> step("Memasang Node.js", frac(d, t)) }
+        extractAsset(NODE_ASSET, staging) { d, t -> step("Memasang Node.js $NODE_VERSION", frac(d, t), mb(d, t)) }
         // The tarball contains one top directory (node-vX…-linux-arm64/);
         // its children become /usr/local/*.
         val top = staging.listFiles()?.firstOrNull { it.isDirectory }
@@ -141,7 +142,6 @@ class RuntimeController(
         // Ensure the binary is executable.
         File(local, "bin/node").setExecutable(true, false)
         staging.deleteRecursively()
-        tgz.delete()
         logLine("Node.js $NODE_VERSION terpasang")
     }
 
@@ -402,7 +402,7 @@ class RuntimeController(
     fun resetRuntime() {
         stopServer()
         paths.rootfs.deleteRecursively()
-        paths.downloads.deleteRecursively()
+        paths.tmp.deleteRecursively()
         paths.fake.deleteRecursively()
         prefs.runtimeReady = false
         prefs.serverFilesVersion = 0
