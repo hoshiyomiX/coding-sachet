@@ -1,4 +1,4 @@
-package id.apinex.mobile.ui.screens
+package id.poketcoding.mobile.ui.screens
 
 import android.content.Intent
 import android.net.Uri
@@ -45,10 +45,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import id.apinex.mobile.BuildConfig
-import id.apinex.mobile.Graph
-import id.apinex.mobile.runtime.RuntimeState
-import id.apinex.mobile.ui.LocalStrings
+import id.poketcoding.mobile.BuildConfig
+import id.poketcoding.mobile.Graph
+import id.poketcoding.mobile.runtime.RuntimeState
+import id.poketcoding.mobile.ui.LocalStrings
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -222,8 +222,8 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
 
             // ---- about ----
             SectionTitle(s.about)
-            Text("APInex ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium)
-            Text("${s.gateway}: ${BuildConfig.APINEX_BASE_URL}", style = MaterialTheme.typography.bodySmall)
+            Text("Poket Coding ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium)
+            Text("${s.gateway}: ${BuildConfig.POKET_APINEX_BASE_URL}", style = MaterialTheme.typography.bodySmall)
             Text("${s.workdirLabel}: /root/work", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(24.dp))
         }

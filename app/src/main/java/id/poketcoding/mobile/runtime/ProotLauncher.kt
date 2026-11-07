@@ -1,4 +1,4 @@
-package id.apinex.mobile.runtime
+package id.poketcoding.mobile.runtime
 
 import java.io.File
 
@@ -14,7 +14,7 @@ class ProotLauncher(private val paths: RuntimePaths, private val noSeccomp: Bool
         private const val PROC_LOADAVG = "0.10 0.05 0.01 1/128 512"
         private const val PROC_UPTIME = "512.16 2048.00"
         private const val PROC_VERSION =
-            "Linux version 6.2.1-APInex (proot@android) (gcc 12.2.0) #1 SMP PREEMPT_DYNAMIC"
+            "Linux version 6.2.1-poket (proot@android) (gcc 12.2.0) #1 SMP PREEMPT_DYNAMIC"
     }
 
     /** Environment for the proot process itself (loader + tmp dir). */
@@ -33,7 +33,7 @@ class ProotLauncher(private val paths: RuntimePaths, private val noSeccomp: Bool
         prepareFakeProc()
         val argv = mutableListOf(
             paths.proot.path,
-            "--kernel-release=6.2.1-APInex",
+            "--kernel-release=6.2.1-poket",
             "--link2symlink",
             "--kill-on-exit",
             "--root-id",

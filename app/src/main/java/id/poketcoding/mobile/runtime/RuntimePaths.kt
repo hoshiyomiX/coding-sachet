@@ -1,4 +1,4 @@
-package id.apinex.mobile.runtime
+package id.poketcoding.mobile.runtime
 
 import android.content.Context
 import java.io.File
@@ -19,11 +19,11 @@ class RuntimePaths(ctx: Context) {
     val downloads = File(base, "dl")
 
     val nodeBin = File(rootfs, "usr/local/bin/node")
-    val serverDir = File(rootfs, "opt/apinex")
+    val serverDir = File(rootfs, "opt/poket")
     val workdir = File(rootfs, "root/work")
 
     val rootfsReady: Boolean
-        get() = File(rootfs, "etc/os-release").exists() && File(rootfs, ".apinex-configured").exists()
+        get() = File(rootfs, "etc/os-release").exists() && File(rootfs, ".poket-configured").exists()
 
     /** Map a guest path to the same file on the host. */
     fun host(guestPath: String): File = File(rootfs, guestPath.trimStart('/'))

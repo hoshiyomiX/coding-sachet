@@ -1,5 +1,5 @@
--keepclassmembers class id.apinex.mobile.** { *; }
--keep class id.apinex.mobile.data.** { *; }
+-keepclassmembers class id.poketcoding.mobile.** { *; }
+-keep class id.poketcoding.mobile.data.** { *; }
 -dontwarn okhttp3.internal.platform.**
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**

@@ -14,11 +14,11 @@ val keystoreProps = Properties().apply {
 }
 
 android {
-    namespace = "id.apinex.mobile"
+    namespace = "id.poketcoding.mobile"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "id.apinex.mobile"
+        applicationId = "id.poketcoding.mobile"
         minSdk = 26
         // 28 on purpose: proot executes binaries from the app data directory and
         // targetSdk >= 29 forbids exec from app_data_file (same reason as Termux).
@@ -30,7 +30,7 @@ android {
         // The gateway this app is built around (APInex, OpenAI-compatible;
         // models prefixed free/ bill $0 within the 20M-token daily quota).
         // Overridable only for local experiments.
-        buildConfigField("String", "APINEX_BASE_URL", "\"https://api.apinex.bond/v1\"")
+        buildConfigField("String", "POKET_APINEX_BASE_URL", "\"https://api.apinex.bond/v1\"")
         buildConfigField("String", "SERVER_PORT_DEFAULT", "\"8765\"")
     }
 

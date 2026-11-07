@@ -1,4 +1,4 @@
-package id.apinex.mobile.ui
+package id.poketcoding.mobile.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -15,13 +15,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Modifier
-import id.apinex.mobile.Graph
-import id.apinex.mobile.data.Session
-import id.apinex.mobile.runtime.RuntimeState
-import id.apinex.mobile.ui.screens.ChatScreen
-import id.apinex.mobile.ui.screens.FilesScreen
-import id.apinex.mobile.ui.screens.OnboardingScreen
-import id.apinex.mobile.ui.screens.SettingsScreen
+import id.poketcoding.mobile.Graph
+import id.poketcoding.mobile.data.Session
+import id.poketcoding.mobile.runtime.RuntimeState
+import id.poketcoding.mobile.ui.screens.ChatScreen
+import id.poketcoding.mobile.ui.screens.FilesScreen
+import id.poketcoding.mobile.ui.screens.OnboardingScreen
+import id.poketcoding.mobile.ui.screens.SettingsScreen
 
 /** Simple backstack of screens; no navigation library needed for four screens. */
 sealed class Screen {
@@ -62,7 +62,7 @@ fun AppRoot(state: AppState) {
         if (!needsSetup && !Graph.runtime.userStopped) Graph.runtime.startServer()
     }
 
-    ApinexTheme {
+    PoketTheme {
         CompositionLocalProvider(LocalStrings provides stringsFor(lang)) {
             Surface(color = MaterialTheme.colorScheme.background) {
                 if (needsSetup) {

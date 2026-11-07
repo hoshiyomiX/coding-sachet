@@ -1,4 +1,4 @@
-package id.apinex.mobile.ui.screens
+package id.poketcoding.mobile.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -37,11 +37,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import id.apinex.mobile.BuildConfig
-import id.apinex.mobile.Graph
-import id.apinex.mobile.runtime.RuntimeState
-import id.apinex.mobile.ui.LocalStrings
-import id.apinex.mobile.ui.ApinexSky
+import id.poketcoding.mobile.BuildConfig
+import id.poketcoding.mobile.Graph
+import id.poketcoding.mobile.runtime.RuntimeState
+import id.poketcoding.mobile.ui.LocalStrings
+import id.poketcoding.mobile.ui.PoketSky
 import kotlinx.coroutines.launch
 
 /** Welcome → API key → environment install. Shown until everything is ready. */
@@ -78,7 +78,7 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("APInex", style = MaterialTheme.typography.displaySmall, color = ApinexSky)
+            Text("Poket Coding", style = MaterialTheme.typography.displaySmall, color = PoketSky)
             Text(s.appTagline, style = MaterialTheme.typography.bodyLarge)
 
             // language chips
@@ -167,7 +167,7 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
             }
 
             Text(
-                "${s.gateway}: ${BuildConfig.APINEX_BASE_URL.removeSuffix("/v1")}",
+                "${s.gateway}: ${BuildConfig.POKET_APINEX_BASE_URL.removeSuffix("/v1")}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

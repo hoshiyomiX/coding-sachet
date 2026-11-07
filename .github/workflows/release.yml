@@ -98,9 +98,9 @@ jobs:
       - name: Prepare release files
         run: |
           VERSION="1.0.${GITHUB_RUN_NUMBER}"
-          APK_NAME="apinex-mobile-${VERSION}-${GITHUB_RUN_NUMBER}.apk"
+          APK_NAME="poket-coding-${VERSION}-${GITHUB_RUN_NUMBER}.apk"
           cp app/build/outputs/apk/release/app-release.apk "$APK_NAME"
-          cp app/build/outputs/apk/debug/app-debug.apk "apinex-mobile-debug-${GITHUB_RUN_NUMBER}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "poket-coding-debug-${GITHUB_RUN_NUMBER}.apk"
           sha256sum "$APK_NAME" > "$APK_NAME.sha256"
           echo "APK_NAME=$APK_NAME" >> "$GITHUB_ENV"
 
@@ -112,17 +112,17 @@ jobs:
           gh release create "$TAG" \
             "$APK_NAME" \
             "$APK_NAME.sha256" \
-            "apinex-mobile-debug-${{ github.run_number }}.apk" \
-            --title "APInex build ${{ github.run_number }}" \
+            "poket-coding-debug-${{ github.run_number }}.apk" \
+            --title "Poket Coding build ${{ github.run_number }}" \
             --notes "APInex — Ubuntu 24.04 (proot) + Node agent server. Gateway: https://api.apinex.bond/v1 (OpenAI-compatible; model free/ gratis — 20 juta token/hari, 15 req/menit)." \
             --prerelease || true
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apinex-mobile-${{ github.run_number }}
+          name: poket-coding-${{ github.run_number }}
           path: |
             ${{ env.APK_NAME }}
             ${{ env.APK_NAME }}.sha256
-            apinex-mobile-debug-${{ github.run_number }}.apk
+            poket-coding-debug-${{ github.run_number }}.apk
           retention-days: 30

@@ -1,5 +1,5 @@
 'use strict';
-// A scripted mock of the APInex gateway (OpenAI-compatible SSE)
+// A scripted mock gateway (OpenAI-compatible SSE)
 // used by the test suite. No network access needed.
 
 const http = require('http');

@@ -1,11 +1,11 @@
-package id.apinex.mobile
+package id.poketcoding.mobile
 
 import android.app.Application
-import id.apinex.mobile.api.ApinexApi
-import id.apinex.mobile.data.ChatStore
-import id.apinex.mobile.data.Prefs
-import id.apinex.mobile.runtime.RuntimeController
-import id.apinex.mobile.runtime.RuntimePaths
+import id.poketcoding.mobile.api.AgentApi
+import id.poketcoding.mobile.data.ChatStore
+import id.poketcoding.mobile.data.Prefs
+import id.poketcoding.mobile.runtime.RuntimeController
+import id.poketcoding.mobile.runtime.RuntimePaths
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -14,7 +14,7 @@ import kotlinx.coroutines.SupervisorJob
 object Graph {
     lateinit var prefs: Prefs
         private set
-    lateinit var api: ApinexApi
+    lateinit var api: AgentApi
         private set
     lateinit var chats: ChatStore
         private set
@@ -24,18 +24,18 @@ object Graph {
 
     fun init(app: Application) {
         prefs = Prefs(app)
-        api = ApinexApi { prefs.serverPort }
+        api = AgentApi { prefs.serverPort }
         chats = ChatStore(app)
         val paths = RuntimePaths(app)
         runtime = RuntimeController(app, paths, prefs, api)
     }
 }
 
-class ApinexApp : Application() {
+class PoketApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Graph.init(this)
-        id.apinex.mobile.runtime.GraphHolder.let {
+        id.poketcoding.mobile.runtime.GraphHolder.let {
             it.prefs = Graph.prefs
             it.runtime = Graph.runtime
         }

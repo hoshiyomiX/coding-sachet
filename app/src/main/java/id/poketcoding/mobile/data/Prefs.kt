@@ -1,11 +1,11 @@
-package id.apinex.mobile.data
+package id.poketcoding.mobile.data
 
 import android.content.Context
 import android.content.SharedPreferences
 
 /** Small preference store. The API key lives in app-private storage only. */
 class Prefs(ctx: Context) {
-    private val sp: SharedPreferences = ctx.getSharedPreferences("apinex", Context.MODE_PRIVATE)
+    private val sp: SharedPreferences = ctx.getSharedPreferences("poket", Context.MODE_PRIVATE)
 
     var apiKey: String
         get() = sp.getString("apiKey", "") ?: ""

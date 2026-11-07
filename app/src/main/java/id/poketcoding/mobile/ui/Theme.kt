@@ -1,4 +1,4 @@
-package id.apinex.mobile.ui
+package id.poketcoding.mobile.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -7,14 +7,14 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-/** Sky as the accent (APInex brand: sky-400 #38BDF8 on light emerald). */
-val ApinexSky = Color(0xFF38BDF8)
-val ApinexSkyDark = Color(0xFF0369A1)
+/** Sky as the accent (Poket Coding: sky-400 #38BDF8). */
+val PoketSky = Color(0xFF38BDF8)
+val PoketSkyDark = Color(0xFF0369A1)
 
 private val DarkScheme = darkColorScheme(
-    primary = ApinexSky,
+    primary = PoketSky,
     onPrimary = Color(0xFF00344F),
-    primaryContainer = ApinexSkyDark,
+    primaryContainer = PoketSkyDark,
     onPrimaryContainer = Color(0xFFCDEBFF),
     secondary = Color(0xFF8FCBF5),
     background = Color(0xFF101418),
@@ -27,7 +27,7 @@ private val DarkScheme = darkColorScheme(
 )
 
 private val LightScheme = lightColorScheme(
-    primary = ApinexSkyDark,
+    primary = PoketSkyDark,
     onPrimary = Color.White,
     primaryContainer = Color(0xFFCDEBFF),
     onPrimaryContainer = Color(0xFF001E30),
@@ -42,7 +42,7 @@ private val LightScheme = lightColorScheme(
 )
 
 @Composable
-fun ApinexTheme(content: @Composable () -> Unit) {
+fun PoketTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     MaterialTheme(
         colorScheme = if (dark) DarkScheme else LightScheme,

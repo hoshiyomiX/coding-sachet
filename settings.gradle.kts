@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "apinex-mobile"
+rootProject.name = "poket-coding"
 include(":app")

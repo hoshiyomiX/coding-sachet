@@ -1,5 +1,5 @@
 'use strict';
-// The agent loop: talks to the APInex gateway (OpenAI-compatible,
+// The agent loop: talks to the active provider gateway (OpenAI-compatible,
 // SSE streaming) and executes the tool calls the model asks for.
 
 const { config } = require('./config');

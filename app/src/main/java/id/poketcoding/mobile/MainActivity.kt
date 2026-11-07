@@ -1,10 +1,10 @@
-package id.apinex.mobile
+package id.poketcoding.mobile
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import id.apinex.mobile.ui.AppRoot
-import id.apinex.mobile.ui.rememberAppState
+import id.poketcoding.mobile.ui.AppRoot
+import id.poketcoding.mobile.ui.rememberAppState
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

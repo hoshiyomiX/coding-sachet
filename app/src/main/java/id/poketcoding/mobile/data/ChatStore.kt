@@ -1,4 +1,4 @@
-package id.apinex.mobile.data
+package id.poketcoding.mobile.data
 
 import android.content.Context
 import kotlinx.serialization.Serializable

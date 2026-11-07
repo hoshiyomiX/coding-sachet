@@ -1,12 +1,12 @@
-package id.apinex.mobile.runtime
+package id.poketcoding.mobile.runtime
 
 import android.app.Application
 import android.content.Intent
 import android.util.Log
 import androidx.core.content.ContextCompat
-import id.apinex.mobile.BuildConfig
-import id.apinex.mobile.api.ApinexApi
-import id.apinex.mobile.data.Prefs
+import id.poketcoding.mobile.BuildConfig
+import id.poketcoding.mobile.api.AgentApi
+import id.poketcoding.mobile.data.Prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,13 +31,13 @@ sealed class RuntimeState {
 
 /**
  * Installs the Ubuntu rootfs + Node.js + agent server, then keeps
- * `node /opt/apinex/server.js` alive inside proot.
+ * `node /opt/poket/server.js` alive inside proot.
  */
 class RuntimeController(
     private val app: Application,
     val paths: RuntimePaths,
     private val prefs: Prefs,
-    private val api: ApinexApi,
+    private val api: AgentApi,
 ) {
     companion object {
         // Pinned downloads: the app is written against exactly these.
@@ -49,7 +49,7 @@ class RuntimeController(
         fun nodeUrl(): String = "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-arm64.tar.gz"
 
         const val NODE_GUEST = "/usr/local/bin/node"
-        const val SERVER_JS_GUEST = "/opt/apinex/server.js"
+        const val SERVER_JS_GUEST = "/opt/poket/server.js"
         val SERVER_FILES = listOf("config.js", "agent.js", "tools.js", "server.js")
 
         // The pinned Node arm64 build needs libatomic.so.1, which the minimal
@@ -59,7 +59,7 @@ class RuntimeController(
         private const val GUEST_LIB_DIR = "/usr/lib/aarch64-linux-gnu"
         private val RUNTIME_LIBS = listOf("libatomic.so.1")
 
-        const val TAG = "APInex"
+        const val TAG = "Poket"
     }
 
     val state = MutableStateFlow<RuntimeState>(
@@ -208,7 +208,7 @@ class RuntimeController(
         }
         write("/etc/resolv.conf", "nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
         write("/etc/hosts", "127.0.0.1 localhost\n::1 localhost ip6-localhost\n")
-        write("/etc/hostname", "apinex\n")
+        write("/etc/hostname", "poket\n")
         // apt inside proot cannot drop privileges to the _apt user.
         write("/etc/apt/apt.conf.d/99proot", "APT::Sandbox::User \"root\";\nAcquire::Retries \"3\";\n")
         val pem = app.assets.open("cacert.pem").use { it.readBytes() }
@@ -220,7 +220,7 @@ class RuntimeController(
         }
         paths.workdir.mkdirs()
         paths.host("/tmp").mkdirs()
-        File(paths.rootfs, ".apinex-configured").writeText("1")
+        File(paths.rootfs, ".poket-configured").writeText("1")
     }
 
     private fun step(name: String, p: Float?, detail: String = "") {
@@ -252,7 +252,7 @@ class RuntimeController(
             val pb = launcher().processBuilder(
                 listOf(NODE_GUEST, SERVER_JS_GUEST),
                 cwd = "/root",
-                extraEnv = mapOf("APINEX_PORT" to prefs.serverPort.toString()),
+                extraEnv = mapOf("POKET_PORT" to prefs.serverPort.toString()),
             )
             val p = try {
                 pb.start()
@@ -330,7 +330,7 @@ class RuntimeController(
     fun killLeftoverServer() {
         runCatching {
             val p = launcher().processBuilder(
-                listOf("/bin/sh", "-c", "pkill -f '[a]ihubmix/server.js'; sleep 0.4; pkill -9 -f '[a]ihubmix/server.js'; exit 0"),
+                listOf("/bin/sh", "-c", "pkill -f '[p]oket/server.js'; sleep 0.4; pkill -9 -f '[p]oket/server.js'; exit 0"),
                 cwd = "/root",
             ).start()
             if (!p.waitFor(8, TimeUnit.SECONDS)) p.destroyForcibly()

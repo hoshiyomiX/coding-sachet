@@ -1,10 +1,10 @@
-package id.apinex.mobile.ui
+package id.poketcoding.mobile.ui
 
-import id.apinex.mobile.Graph
-import id.apinex.mobile.api.ApinexApi
-import id.apinex.mobile.data.Msg
-import id.apinex.mobile.data.Session
-import id.apinex.mobile.data.ToolCall
+import id.poketcoding.mobile.Graph
+import id.poketcoding.mobile.api.AgentApi
+import id.poketcoding.mobile.data.Msg
+import id.poketcoding.mobile.data.Session
+import id.poketcoding.mobile.data.ToolCall
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

@@ -1,4 +1,4 @@
-package id.apinex.mobile.ui.screens
+package id.poketcoding.mobile.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -56,18 +56,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import id.apinex.mobile.Graph
-import id.apinex.mobile.data.Msg
-import id.apinex.mobile.data.Session
-import id.apinex.mobile.runtime.RuntimeState
-import id.apinex.mobile.ui.ChatEngine
-import id.apinex.mobile.ui.LiveTurn
-import id.apinex.mobile.ui.LocalStrings
-import id.apinex.mobile.ui.ApinexSky
-import id.apinex.mobile.ui.TextFileIcon
-import id.apinex.mobile.ui.ToolCardUi
-import id.apinex.mobile.ui.components.Markdownish
-import id.apinex.mobile.ui.components.ToolCard
+import id.poketcoding.mobile.Graph
+import id.poketcoding.mobile.data.Msg
+import id.poketcoding.mobile.data.Session
+import id.poketcoding.mobile.runtime.RuntimeState
+import id.poketcoding.mobile.ui.ChatEngine
+import id.poketcoding.mobile.ui.LiveTurn
+import id.poketcoding.mobile.ui.LocalStrings
+import id.poketcoding.mobile.ui.PoketSky
+import id.poketcoding.mobile.ui.TextFileIcon
+import id.poketcoding.mobile.ui.ToolCardUi
+import id.poketcoding.mobile.ui.components.Markdownish
+import id.poketcoding.mobile.ui.components.ToolCard
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -132,7 +132,7 @@ fun ChatScreen(
         drawerContent = {
             ModalDrawerSheet {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(s.sessionsTitle, style = MaterialTheme.typography.titleMedium, color = ApinexSky)
+                    Text(s.sessionsTitle, style = MaterialTheme.typography.titleMedium, color = PoketSky)
                     TextButton(onClick = {
                         scope.launch { drawer.close() }
                         newChat()
@@ -203,7 +203,7 @@ fun ChatScreen(
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Text(s.chatEmpty, style = MaterialTheme.typography.titleMedium, color = ApinexSky)
+                        Text(s.chatEmpty, style = MaterialTheme.typography.titleMedium, color = PoketSky)
                         Text(
                             s.chatEmptyHint,
                             style = MaterialTheme.typography.bodyMedium,
@@ -269,7 +269,7 @@ fun ChatScreen(
                             Icon(
                                 Icons.Filled.Send,
                                 contentDescription = s.send,
-                                tint = if (input.isNotBlank() && model.isNotBlank()) ApinexSky else MaterialTheme.colorScheme.onSurfaceVariant,
+                                tint = if (input.isNotBlank() && model.isNotBlank()) PoketSky else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
@@ -327,7 +327,7 @@ private fun SessionRow(sess: Session, active: Boolean, onClick: () -> Unit, onDe
 private fun RuntimeChip(state: RuntimeState) {
     val s = LocalStrings.current
     val (label, color) = when (state) {
-        is RuntimeState.Running -> s.runtimeRunning to ApinexSky
+        is RuntimeState.Running -> s.runtimeRunning to PoketSky
         is RuntimeState.Starting -> s.runtimeStarting to MaterialTheme.colorScheme.onSurfaceVariant
         is RuntimeState.Crashed -> s.runtimeCrashed to MaterialTheme.colorScheme.error
         else -> s.runtimeStopped to MaterialTheme.colorScheme.onSurfaceVariant
