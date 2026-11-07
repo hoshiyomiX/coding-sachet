@@ -76,13 +76,21 @@ jobs:
           armeabi-v7a|arm-linux-gnueabihf|22.20.0|armv7l|2
           x86_64|x86_64-linux-gnu|26.13.0|x64|3"
           #          rootfs arch | ubuntu-base 24.04.5 sha256
-          UB_SHA_arm64=a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2
-          UB_SHA_armhf=4fcee4d278f1c5232e085a021a85e4c6cef3853557a88d98ff380b5e5d5841bb
-          UB_SHA_amd64=e77b6f10c2590cef872b33ee9f635a0e3fd1f57fb074c0e52b5c7f56147a0c86
-          #          node tarball sha256
-          NODE_SHA_26.13.0_arm64=406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92
-          NODE_SHA_26.13.0_x64=d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997
-          NODE_SHA_22.20.0_armv7l=c599a33d91c9a39b7de3319929948f91f6ac42afaa1417f4340a5cc1b2efceda
+          ubuntu_sha() {
+            case "$1" in
+              arm64) echo a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2 ;;
+              armhf) echo 4fcee4d278f1c5232e085a021a85e4c6cef3853557a88d98ff380b5e5d5841bb ;;
+              amd64) echo e77b6f10c2590cef872b33ee9f635a0e3fd1f57fb074c0e52b5c7f56147a0c86 ;;
+            esac
+          }
+          #          node tarball sha256 (versi+arch)
+          node_sha() {
+            case "$1/$2" in
+              26.13.0/arm64)  echo 406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92 ;;
+              26.13.0/x64)    echo d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997 ;;
+              22.20.0/armv7l) echo c599a33d91c9a39b7de3319929948f91f6ac42afaa1417f4340a5cc1b2efceda ;;
+            esac
+          }
 
           echo "$MATRIX" | while IFS='|' read -r ABI TRIPLET NODEVER NODEARCH IDX; do
             [ -n "$ABI" ] || continue
@@ -97,16 +105,14 @@ jobs:
             for i in 1 2 3; do
               curl -sSL --retry 3 -o /tmp/ubuntu.tar.gz "$UB_URL" && break || { echo "retry ubuntu ($i)"; sleep 5; }
             done
-            UB_SHA_VAR="UB_SHA_$UB_ARCH"
-            echo "${!UB_SHA_VAR}  /tmp/ubuntu.tar.gz" | sha256sum -c -
+            echo "$(ubuntu_sha "$UB_ARCH")  /tmp/ubuntu.tar.gz" | sha256sum -c -
             # Ultra compression: pristine rootfs repacked from gzip to xz -9e.
             gunzip -c /tmp/ubuntu.tar.gz | xz -9e -T0 > app/src/main/assets/env/ubuntu-rootfs.tar.xz
             NODE_URL="https://nodejs.org/dist/v$NODEVER/node-v$NODEVER-linux-$NODEARCH.tar.xz"
             for i in 1 2 3; do
               curl -sSL --retry 3 -o app/src/main/assets/env/node-runtime.tar.xz "$NODE_URL" && break || { echo "retry node ($i)"; sleep 5; }
             done
-            NODE_SHA_VAR="NODE_SHA_${NODEVER}_${NODEARCH}"
-            echo "${!NODE_SHA_VAR}  app/src/main/assets/env/node-runtime.tar.xz" | sha256sum -c -
+            echo "$(node_sha "$NODEVER" "$NODEARCH")  app/src/main/assets/env/node-runtime.tar.xz" | sha256sum -c -
             ls -l app/src/main/assets/env/
 
             VC=$(( N * 10 + IDX ))
