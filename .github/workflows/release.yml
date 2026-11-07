@@ -135,7 +135,7 @@ jobs:
             "$APK_NAME.sha256" \
             "poket-coding-debug-${{ github.run_number }}.apk" \
             --title "Poket Coding build ${{ github.run_number }}" \
-            --notes "APInex — Ubuntu 24.04 (proot) + Node agent server. Gateway: https://api.apinex.bond/v1 (OpenAI-compatible; model free/ gratis — 20 juta token/hari, 15 req/menit)." \
+            --notes "Poket Coding — Ubuntu 24.04 (proot) + Node agent server, environment bundled in-APK (xz, no first-run downloads). Providers: APInex (https://api.apinex.bond/v1, free/ models) & NVIDIA NIM (https://integrate.api.nvidia.com/v1, free prototyping)." \
             --prerelease || true
 
       - name: Upload APK artifact

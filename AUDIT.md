@@ -71,3 +71,44 @@ Pemilik key dapat memverifikasi ketiganya lewat app itu sendiri (first-run → m
 - `node --test test/*.test.js`: 14/14 lulus.
 - Grep audit: 0 sisa `aihubmix|mikulab|Ahm` di kode (README/AUDIT hanya menyimpan catatan sejarah yang disengaja).
 - CI GitHub Actions (repo baru `hoshiyomiX/apinex-mobile`): test-agent → build → apksigner → release.
+
+## §7 — T-ML8: bundel environment + NVIDIA NIM + rename Poket Coding (2026-11-07)
+
+**Permintaan owner**: #1 bundel environment inbuilt dalam APK (Ubuntu+Node) ultra-compression, tanpa unduhan berulang; #2 add NVIDIA NIM support (pelajari API lalu implementasi); #3 rename repo apinex-mobile → poket-coding.
+
+### Riset NVIDIA NIM (live probe 2026-11-07, tanpa key)
+- Base URL `https://integrate.api.nvidia.com/v1` (OpenAI-compatible, SSE + tools).
+- `GET /v1/models` **PUBLIK** (200 tanpa auth, 84 model, format `data[].id` publisher/name) → tidak bisa dipakai memvalidasi key.
+- Auth divalidasi di `POST /chat/completions`: key salah → **403** `{"status":403,"detail":"Authorization failed"}`; tanpa header → **401**. Model EOL → **410** dengan pesan jelas.
+- Free tier (FAQ build.nvidia.com): seluruh model gratis untuk prototyping, ±40 RPM, tanpa per-tagihan token.
+- Integrasi disarankan menyetel `max_tokens` eksplisit → diset 4096 untuk NIM saja.
+- Default model NIM: `nvidia/nemotron-3.5-bolt-e4b` (aktif Okt-2026, "reasoning, tool calling, agentic chat").
+
+### Keputusan kompresi (terukur di sandbox)
+| Varian | Ukuran | Keputusan |
+|---|---|---|
+| ubuntu-base 24.04.5 gz (unduhan lama) | 29,9 MB | — |
+| ubuntu-base → xz -9e (pristine) | **17,25 MB** | ✅ dipakai |
+| ubuntu-base pruned (doc/man/locale) → xz -9e | 16,69 MB | ❌ hanya -0,56 MB, tak worth risiko |
+| node 26.13.0 official .tar.gz (unduhan lama) | 62,6 MB | — |
+| node 26.13.0 official **.tar.xz** | **33,05 MB** | ✅ dipakai apa adanya |
+| node slim (tanpa include/doc) repack xz | 32,35 MB | ❌ hanya -0,7 MB, kehilangan header npm build |
+
+Total env dalam APK ±50,3 MB (dulu unduhan first-run ±92 MB). SHA256 kedua sumber diverifikasi di CI sebelum dikompres. Dekoder: org.tukaani:xz (pure-Java), `noCompress "xz"` agar tidak dobel-kompresi dan `openFd` bisa melaporkan panjang aset.
+
+### Perubahan
+- **Rename total**: package `id.poketcoding.mobile`, app "Poket Coding", header `X-Poket-Key` + `X-Poket-Provider`, `/opt/poket`, service id `poket-agent`, hostname `poket`, prefs `poket`, tema `Theme.PoketCoding`/`poket_sky`, keystore regenerasi CN=Poket Coding alias poket (PKCS12, valid 2056). **FIX bug T-ML7**: pola pkill leftover masih `[a]ihubmix/server.js` → kini `[p]oket/server.js`.
+- **Env bundling**: `RuntimeController` mengekstrak `assets/env/*.tar.xz` (TarExtract baru: deteksi magic gzip/xz + API stream); `Fetch.kt` dihapus (tak ada lagi unduhan env); CI step baru "Prepare bundled environment".
+- **Multi-provider**: `Providers.kt` (APInex + NVIDIA); `AgentApi` menerima provider (models/validateKey/chatStream); validasi NIM via POST chat mini (2xx/429 = valid); `Prefs` key & model per penyedia; server JS: `config.providers` + routing header + cache per provider+baseUrl (bug cache lintas-test ditemukan & diperbaiki); agent.js: hint 429 per penyedia + max_tokens NIM.
+- **UI**: onboarding pilih penyedia → key → instal dari APK; Settings bagian penyedia + key per penyedia; ModelPicker filter `free/` hanya untuk APInex.
+- Test server: 14 → **18** (routing provider, hint 429 NIM, max_tokens, provider tak dikenal 400, cache per provider).
+
+### Asumsi (pola keputusan proyek)
+- "Rename repo" diartikan rename-total (pattern T-ML6/T-ML7) — app ikut bernama Poket Coding.
+- Repo GitHub di-**rename** via API PATCH (bukan delete+create) → histori commit, run_number CI, dan release terpelihara; rilis berikutnya 1.0.3-3.
+- Environment disiapkan CI saat build (repo tetap ramping; tidak commit blob 50 MB).
+
+### Belum terverifikasi (menunggu key owner)
+- Chat nyata & validasi key NIM dengan `nvapi-…` asli (semua semantik berbasis riset live endpoint publik + mock test).
+- Bentuk error kuota NIM selain 429; perilaku model NIM tanpa dukungan tool (user memilih modelnya sendiri).
+- Extraksi xz di perangkat nyata (estimasi 20–60 detik, sekali saja, dengan progress bar).
