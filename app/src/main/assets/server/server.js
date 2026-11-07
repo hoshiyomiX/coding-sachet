@@ -1,11 +1,11 @@
 'use strict';
-// AIHubMix agent server — HTTP entry point.
+// APInex agent server — HTTP entry point.
 // Listens on 127.0.0.1 only. The Android app is its sole client.
 //
 // Routes:
 //   GET  /health              liveness + versions
-//   GET  /api/models          gateway model list (needs X-Aihubmix-Key)
-//   POST /api/chat            agent loop, SSE events (needs X-Aihubmix-Key)
+//   GET  /api/models          gateway model list (needs X-Apinex-Key)
+//   POST /api/chat            agent loop, SSE events (needs X-Apinex-Key)
 //   GET  /api/fs?path=        list directory           (file explorer)
 //   GET  /api/fs/file?path=   read a file
 //   PUT  /api/fs/file         write a file {path, content}
@@ -53,7 +53,7 @@ const MODELS_CACHE_TTL = 5 * 60 * 1000;
 // ---------- upstream helpers ----------
 
 function gatewayKey(req) {
-  const h = req.headers['x-aihubmix-key'];
+  const h = req.headers['x-apinex-key'];
   if (typeof h !== 'string' || !h.trim()) return null;
   return h.trim();
 }
@@ -88,14 +88,14 @@ async function route(req, res) {
 
   if (req.method === 'GET' && url.pathname === '/health') {
     return sendJson(res, 200, {
-      ok: true, service: 'aihubmix-agent', version: config.version,
+      ok: true, service: 'apinex-agent', version: config.version,
       node: process.version, baseUrl: config.baseUrl, workdir: config.workdir,
     });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/models') {
     const key = gatewayKey(req);
-    if (!key) return sendJson(res, 401, { error: 'X-Aihubmix-Key hilang' });
+    if (!key) return sendJson(res, 401, { error: 'X-Apinex-Key hilang' });
     const cacheKey = `${key}|${config.baseUrl}`;
     const hit = modelsCache.get(cacheKey);
     if (hit && Date.now() - hit.at < MODELS_CACHE_TTL) {
@@ -112,7 +112,7 @@ async function route(req, res) {
 
   if (req.method === 'POST' && url.pathname === '/api/chat') {
     const key = gatewayKey(req);
-    if (!key) return sendJson(res, 401, { error: 'X-Aihubmix-Key hilang' });
+    if (!key) return sendJson(res, 401, { error: 'X-Apinex-Key hilang' });
     let body;
     try { body = await readJson(req, config.jsonBodyLimit); } catch (e) {
       return sendJson(res, 400, { error: `body: ${e.message}` });
@@ -223,7 +223,7 @@ function start() {
     });
   });
   srv.listen(config.port, config.host, () => {
-    log(`aihubmix-agent ${config.version} di ${config.host}:${config.port}`);
+    log(`apinex-agent ${config.version} di ${config.host}:${config.port}`);
     log(`gateway: ${config.baseUrl}`);
     log(`workdir: ${config.workdir}`);
   });

@@ -1,6 +1,6 @@
-package id.aihubmix.mobile.api
+package id.apinex.mobile.api
 
-import id.aihubmix.mobile.BuildConfig
+import id.apinex.mobile.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -21,7 +21,7 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /** Client for the local agent server (127.0.0.1) and for key validation against the gateway. */
-class AihubmixApi(private val port: () -> Int) {
+class ApinexApi(private val port: () -> Int) {
 
     val json = Json { ignoreUnknownKeys = true }
 
@@ -79,7 +79,7 @@ class AihubmixApi(private val port: () -> Int) {
     private fun fetchModelsViaServer(apiKey: String): List<String> {
         val req = Request.Builder()
             .url(baseUrl() + "/api/models")
-            .header("X-Aihubmix-Key", apiKey)
+            .header("X-Apinex-Key", apiKey)
             .build()
         slowClient.newCall(req).execute().use { r ->
             val body = r.body.string()
@@ -91,7 +91,7 @@ class AihubmixApi(private val port: () -> Int) {
 
     private fun fetchModelsDirect(apiKey: String): Result<List<String>> = runCatching {
         val req = Request.Builder()
-            .url(BuildConfig.AIHUBMIX_BASE_URL + "/models")
+            .url(BuildConfig.APINEX_BASE_URL + "/models")
             .header("Authorization", "Bearer $apiKey")
             .build()
         client.newCall(req).execute().use { r ->
@@ -109,7 +109,7 @@ class AihubmixApi(private val port: () -> Int) {
     suspend fun validateKey(apiKey: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val req = Request.Builder()
-                .url(BuildConfig.AIHUBMIX_BASE_URL + "/models")
+                .url(BuildConfig.APINEX_BASE_URL + "/models")
                 .header("Authorization", "Bearer $apiKey")
                 .build()
             client.newCall(req).execute().use { r ->
@@ -127,7 +127,7 @@ class AihubmixApi(private val port: () -> Int) {
     fun chatStream(
         apiKey: String,
         model: String,
-        messages: List<id.aihubmix.mobile.data.Msg>,
+        messages: List<id.apinex.mobile.data.Msg>,
         systemPrompt: String?,
         onEvent: (JsonObject) -> Unit,
         onError: (String) -> Unit,
@@ -141,7 +141,7 @@ class AihubmixApi(private val port: () -> Int) {
         val wire = json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), body)
         val req = Request.Builder()
             .url(baseUrl() + "/api/chat")
-            .header("X-Aihubmix-Key", apiKey)
+            .header("X-Apinex-Key", apiKey)
             .post(wire.toRequestBody("application/json".toMediaType()))
             .build()
 

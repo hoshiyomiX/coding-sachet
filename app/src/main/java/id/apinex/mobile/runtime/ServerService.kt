@@ -1,4 +1,4 @@
-package id.aihubmix.mobile.runtime
+package id.apinex.mobile.runtime
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -9,8 +9,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import android.os.PowerManager
-import id.aihubmix.mobile.MainActivity
-import id.aihubmix.mobile.R
+import id.apinex.mobile.MainActivity
+import id.apinex.mobile.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -22,8 +22,8 @@ import kotlinx.coroutines.launch
 class ServerService : Service() {
 
     companion object {
-        const val ACTION_START = "id.aihubmix.mobile.START"
-        const val ACTION_STOP = "id.aihubmix.mobile.STOP"
+        const val ACTION_START = "id.apinex.mobile.START"
+        const val ACTION_STOP = "id.apinex.mobile.STOP"
         private const val CHANNEL = "server"
         private const val NOTIF_ID = 1
     }
@@ -44,7 +44,7 @@ class ServerService : Service() {
         }
         if (GraphHolder.prefs.keepAwake && wake == null) {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "aihubmix:server").apply {
+            wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "apinex:server").apply {
                 setReferenceCounted(false)
                 acquire()
             }
@@ -91,7 +91,7 @@ class ServerService : Service() {
         )
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("AIHubMix")
+            .setContentTitle("APInex")
             .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
@@ -100,8 +100,8 @@ class ServerService : Service() {
     }
 }
 
-/** Holds the app-wide singletons for the service (set in AihubmixApp.onCreate). */
+/** Holds the app-wide singletons for the service (set in ApinexApp.onCreate). */
 object GraphHolder {
     lateinit var runtime: RuntimeController
-    lateinit var prefs: id.aihubmix.mobile.data.Prefs
+    lateinit var prefs: id.apinex.mobile.data.Prefs
 }

@@ -1,11 +1,11 @@
-package id.aihubmix.mobile.data
+package id.apinex.mobile.data
 
 import android.content.Context
 import android.content.SharedPreferences
 
 /** Small preference store. The API key lives in app-private storage only. */
 class Prefs(ctx: Context) {
-    private val sp: SharedPreferences = ctx.getSharedPreferences("aihubmix", Context.MODE_PRIVATE)
+    private val sp: SharedPreferences = ctx.getSharedPreferences("apinex", Context.MODE_PRIVATE)
 
     var apiKey: String
         get() = sp.getString("apiKey", "") ?: ""
@@ -49,7 +49,7 @@ class Prefs(ctx: Context) {
     companion object {
         const val DEFAULT_PORT = 8765
 
-        /** The model this app is built around (AIHubMix free coding model). */
-        const val DEFAULT_MODEL = "coding-glm-5.3-free"
+        /** The model this app is built around (APInex free GLM model). */
+        const val DEFAULT_MODEL = "free/glm-5.3"
     }
 }

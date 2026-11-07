@@ -1,4 +1,4 @@
-package id.aihubmix.mobile.ui.components
+package id.apinex.mobile.ui.components
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
@@ -29,8 +29,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import id.aihubmix.mobile.ui.LocalStrings
-import id.aihubmix.mobile.ui.ToolCardUi
+import id.apinex.mobile.ui.LocalStrings
+import id.apinex.mobile.ui.ToolCardUi
 
 /** Small monogram chip identifying a tool. */
 @Composable
@@ -50,7 +50,7 @@ private fun ToolBadge(name: String) {
     }
 }
 
-private fun toolLabel(name: String, s: id.aihubmix.mobile.ui.AihubmixStrings): String = when (name) {
+private fun toolLabel(name: String, s: id.apinex.mobile.ui.ApinexStrings): String = when (name) {
     "bash" -> s.toolBash
     "read_file" -> s.toolRead
     "write_file" -> s.toolWrite

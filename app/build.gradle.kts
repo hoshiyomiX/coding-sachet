@@ -14,11 +14,11 @@ val keystoreProps = Properties().apply {
 }
 
 android {
-    namespace = "id.aihubmix.mobile"
+    namespace = "id.apinex.mobile"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "id.aihubmix.mobile"
+        applicationId = "id.apinex.mobile"
         minSdk = 26
         // 28 on purpose: proot executes binaries from the app data directory and
         // targetSdk >= 29 forbids exec from app_data_file (same reason as Termux).
@@ -27,10 +27,10 @@ android {
         versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 1
         versionName = (project.findProperty("appVersionName") as String?) ?: "1.0.0"
         ndk { abiFilters += "arm64-v8a" }
-        // The gateway this app is built around (AIHubMix, OpenAI-compatible;
-        // models ending in -free bill $0 within daily quotas). Overridable
-        // only for local experiments.
-        buildConfigField("String", "AIHUBMIX_BASE_URL", "\"https://aihubmix.com/v1\"")
+        // The gateway this app is built around (APInex, OpenAI-compatible;
+        // models prefixed free/ bill $0 within the 20M-token daily quota).
+        // Overridable only for local experiments.
+        buildConfigField("String", "APINEX_BASE_URL", "\"https://api.apinex.bond/v1\"")
         buildConfigField("String", "SERVER_PORT_DEFAULT", "\"8765\"")
     }
 

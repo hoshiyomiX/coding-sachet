@@ -1,4 +1,4 @@
-package id.aihubmix.mobile.runtime
+package id.apinex.mobile.runtime
 
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -39,7 +39,7 @@ object Fetch {
             return
         }
         val part = File(dest.path + ".part")
-        val req = Request.Builder().url(url).header("User-Agent", "aihubmix-mobile").build()
+        val req = Request.Builder().url(url).header("User-Agent", "apinex-mobile").build()
         client.newCall(req).execute().use { r ->
             if (r.code >= 500) throw Transient("GET $url: HTTP ${r.code}")
             if (!r.isSuccessful) error("GET $url: HTTP ${r.code}")

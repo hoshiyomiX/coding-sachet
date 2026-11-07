@@ -8,11 +8,11 @@ const os = require('os');
 const path = require('path');
 
 // Point the sandbox at a temp dir before requiring config/tools.
-const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'ahm-tools-'));
-process.env.AIHUBMIX_WORKDIR = path.join(ROOT, 'root', 'work');
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'apx-tools-'));
+process.env.APINEX_WORKDIR = path.join(ROOT, 'root', 'work');
 const { config } = require('../config');
 config.allowedRoots = [path.join(ROOT, 'root'), path.join(ROOT, 'tmp')];
-fs.mkdirSync(process.env.AIHUBMIX_WORKDIR, { recursive: true });
+fs.mkdirSync(process.env.APINEX_WORKDIR, { recursive: true });
 fs.mkdirSync(path.join(ROOT, 'tmp'), { recursive: true });
 
 const { safePath, listDir, readFile, writeFile, runBash } = require('../tools');
@@ -37,7 +37,7 @@ test('write + read a file round trip', () => {
 });
 
 test('write rejects paths outside the sandbox', () => {
-  const w = writeFile('/etc/ahm-evil', 'nope');
+  const w = writeFile('/etc/apx-evil', 'nope');
   assert.strictEqual(w.ok, false);
 });
 
@@ -60,7 +60,7 @@ test('listDir walks subdirectories', () => {
 test('bash runs in the workdir and reports the exit code', async () => {
   const r = await runBash('pwd && echo halo');
   assert.strictEqual(r.ok, true);
-  assert.ok(r.output.includes(process.env.AIHUBMIX_WORKDIR));
+  assert.ok(r.output.includes(process.env.APINEX_WORKDIR));
   assert.ok(r.output.includes('halo'));
 
   const bad = await runBash('exit 3');

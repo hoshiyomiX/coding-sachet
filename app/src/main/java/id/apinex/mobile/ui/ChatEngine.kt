@@ -1,10 +1,10 @@
-package id.aihubmix.mobile.ui
+package id.apinex.mobile.ui
 
-import id.aihubmix.mobile.Graph
-import id.aihubmix.mobile.api.AihubmixApi
-import id.aihubmix.mobile.data.Msg
-import id.aihubmix.mobile.data.Session
-import id.aihubmix.mobile.data.ToolCall
+import id.apinex.mobile.Graph
+import id.apinex.mobile.api.ApinexApi
+import id.apinex.mobile.data.Msg
+import id.apinex.mobile.data.Session
+import id.apinex.mobile.data.ToolCall
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

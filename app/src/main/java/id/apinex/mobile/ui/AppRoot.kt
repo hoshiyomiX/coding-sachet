@@ -1,4 +1,4 @@
-package id.aihubmix.mobile.ui
+package id.apinex.mobile.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -15,13 +15,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Modifier
-import id.aihubmix.mobile.Graph
-import id.aihubmix.mobile.data.Session
-import id.aihubmix.mobile.runtime.RuntimeState
-import id.aihubmix.mobile.ui.screens.ChatScreen
-import id.aihubmix.mobile.ui.screens.FilesScreen
-import id.aihubmix.mobile.ui.screens.OnboardingScreen
-import id.aihubmix.mobile.ui.screens.SettingsScreen
+import id.apinex.mobile.Graph
+import id.apinex.mobile.data.Session
+import id.apinex.mobile.runtime.RuntimeState
+import id.apinex.mobile.ui.screens.ChatScreen
+import id.apinex.mobile.ui.screens.FilesScreen
+import id.apinex.mobile.ui.screens.OnboardingScreen
+import id.apinex.mobile.ui.screens.SettingsScreen
 
 /** Simple backstack of screens; no navigation library needed for four screens. */
 sealed class Screen {
@@ -62,7 +62,7 @@ fun AppRoot(state: AppState) {
         if (!needsSetup && !Graph.runtime.userStopped) Graph.runtime.startServer()
     }
 
-    AihubmixTheme {
+    ApinexTheme {
         CompositionLocalProvider(LocalStrings provides stringsFor(lang)) {
             Surface(color = MaterialTheme.colorScheme.background) {
                 if (needsSetup) {

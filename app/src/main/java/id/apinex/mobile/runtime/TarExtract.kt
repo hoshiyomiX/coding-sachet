@@ -1,4 +1,4 @@
-package id.aihubmix.mobile.runtime
+package id.apinex.mobile.runtime
 
 import android.system.Os
 import java.io.File

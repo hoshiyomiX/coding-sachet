@@ -1,11 +1,11 @@
-package id.aihubmix.mobile
+package id.apinex.mobile
 
 import android.app.Application
-import id.aihubmix.mobile.api.AihubmixApi
-import id.aihubmix.mobile.data.ChatStore
-import id.aihubmix.mobile.data.Prefs
-import id.aihubmix.mobile.runtime.RuntimeController
-import id.aihubmix.mobile.runtime.RuntimePaths
+import id.apinex.mobile.api.ApinexApi
+import id.apinex.mobile.data.ChatStore
+import id.apinex.mobile.data.Prefs
+import id.apinex.mobile.runtime.RuntimeController
+import id.apinex.mobile.runtime.RuntimePaths
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -14,7 +14,7 @@ import kotlinx.coroutines.SupervisorJob
 object Graph {
     lateinit var prefs: Prefs
         private set
-    lateinit var api: AihubmixApi
+    lateinit var api: ApinexApi
         private set
     lateinit var chats: ChatStore
         private set
@@ -24,18 +24,18 @@ object Graph {
 
     fun init(app: Application) {
         prefs = Prefs(app)
-        api = AihubmixApi { prefs.serverPort }
+        api = ApinexApi { prefs.serverPort }
         chats = ChatStore(app)
         val paths = RuntimePaths(app)
         runtime = RuntimeController(app, paths, prefs, api)
     }
 }
 
-class AihubmixApp : Application() {
+class ApinexApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Graph.init(this)
-        id.aihubmix.mobile.runtime.GraphHolder.let {
+        id.apinex.mobile.runtime.GraphHolder.let {
             it.prefs = Graph.prefs
             it.runtime = Graph.runtime
         }

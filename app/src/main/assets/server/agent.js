@@ -1,20 +1,17 @@
 'use strict';
-// The agent loop: talks to the AIHubMix gateway (OpenAI-compatible,
+// The agent loop: talks to the APInex gateway (OpenAI-compatible,
 // SSE streaming) and executes the tool calls the model asks for.
 
 const { config } = require('./config');
 const { toolByName } = require('./tools');
 
-// AIHubMix free-tier paywall: once the 10 trial calls of a never-topped-up
-// account are spent, every -free model answers HTTP 200 with this canned
-// note (usage 0 tokens, id "chatcmpl-fake-*"). It is not a model answer —
-// surface it as a clear error instead of letting it pose as chat text.
-// Shape verified live 2026-11-07: streamed as ONE delta chunk, finish stop.
-const TRIAL_NOTE = 'Sorry, to prevent abuse of free resources';
-const TRIAL_ERROR =
-  'Trial gratis AIHubMix habis: akun yang belum pernah top-up hanya dapat 10 panggilan. ' +
-  'Top-up sekali saja (mulai US$1) di https://console.aihubmix.com/topup untuk membuka ' +
-  'kuota harian model gratis (100 permintaan/hari, 1 juta token/hari).';
+// APInex free-tier rate limit: free accounts are capped at 15 requests per
+// minute across the free/ models (documented at apinex.bond/developers/models).
+// When the cap trips the gateway answers HTTP 429 — surface it with a clear
+// hint instead of a bare status line.
+const RATE_LIMIT_HINT =
+  'Batas laju APInex tercapai (akun gratis: 15 permintaan/menit). ' +
+  'Tunggu sebentar lalu kirim ulang pesanmu.';
 
 /** One streamed call to the gateway. Returns the assembled assistant turn. */
 async function callGateway({ apiKey, model, messages, tools, signal, onDelta }) {
@@ -55,7 +52,7 @@ async function callGateway({ apiKey, model, messages, tools, signal, onDelta }) 
     if (signal) signal.removeEventListener('abort', onAbort);
     let msg = text.slice(0, 500);
     try { msg = JSON.parse(text).error?.message || msg; } catch { /* not JSON */ }
-    const err = new Error(`HTTP ${res.status}: ${msg}`);
+    const err = new Error(res.status === 429 ? `HTTP ${res.status}: ${msg} — ${RATE_LIMIT_HINT}` : `HTTP ${res.status}: ${msg}`);
     err.status = res.status;
     throw err;
   }
@@ -97,10 +94,6 @@ async function callGateway({ apiKey, model, messages, tools, signal, onDelta }) 
         }
         if (typeof d.content === 'string' && d.content) {
           turn.content += d.content;
-          // Catch the paywall note before its text streams to the app.
-          if (turn.content.startsWith(TRIAL_NOTE)) {
-            throw new Error(TRIAL_ERROR);
-          }
           onDelta({ type: 'text', delta: d.content });
         }
         if (Array.isArray(d.tool_calls)) {
@@ -182,11 +175,6 @@ async function runAgent({ apiKey, model, messages, signal, emit, systemPrompt })
       apiKey, model, messages: openai, tools: openaiTools, signal,
       onDelta: (e) => emit(e),
     });
-
-    // Safety net: never treat the free-tier paywall note as an answer.
-    if (t.content && t.content.startsWith(TRIAL_NOTE)) {
-      throw new Error(TRIAL_ERROR);
-    }
 
     const wantsTools = t.toolCalls.length > 0 && t.finishReason !== 'stop';
 

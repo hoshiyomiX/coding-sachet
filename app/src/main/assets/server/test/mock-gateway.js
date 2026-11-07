@@ -1,15 +1,8 @@
 'use strict';
-// A scripted mock of the AIHubMix gateway (OpenAI-compatible SSE)
+// A scripted mock of the APInex gateway (OpenAI-compatible SSE)
 // used by the test suite. No network access needed.
 
 const http = require('http');
-
-// The exact canned note AIHubMix streams (one chunk, finish stop, 0 tokens)
-// once the 10 no-topup trial calls are spent — verified live 2026-11-07.
-const TRIAL_NOTE_TEXT =
-  'Sorry, to prevent abuse of free resources, accounts that have not been ' +
-  'recharged can only try 10 times. You can increase the free quota after ' +
-  'recharging; https://console.aihubmix.com/topup';
 
 /**
  * Start a mock gateway.
@@ -17,8 +10,7 @@ const TRIAL_NOTE_TEXT =
  * script: list of replies, one per received /chat/completions request:
  *   { kind: 'text', text }                → plain assistant text
  *   { kind: 'tools', text, calls: [{id, name, args}] } → tool_calls round
- *   { kind: 'trial' }                      → AIHubMix trial-exhausted paywall note
- *   { kind: 'error', status, message }    → non-200 reply
+ *   { kind: 'error', status, message }    → non-200 reply (e.g. 429 rate limit)
  *
  * Returns { server, port, requests, close() }; `requests` collects the
  * parsed bodies of every chat request the mock received.
@@ -63,13 +55,6 @@ function startMockGateway(script) {
         // SSE reply
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
         const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
-        if (reply.kind === 'trial') {
-          // Mirrors the real paywall reply: HTTP 200, one delta chunk, stop.
-          send({ choices: [{ delta: { role: 'assistant', content: TRIAL_NOTE_TEXT }, finish_reason: 'stop', index: 0 }], id: 'chatcmpl-fake-test', model: 'test-pro', usage: { total_tokens: 0 } });
-          res.write('data: [DONE]\n\n');
-          res.end();
-          return;
-        }
         if (reply.kind === 'tools') {
           if (reply.text) {
             send({ choices: [{ delta: { role: 'assistant', content: reply.text }, finish_reason: null }] });

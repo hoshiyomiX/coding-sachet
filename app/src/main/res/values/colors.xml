@@ -1,6 +1,6 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version="utf-8"?>
 <resources>
-    <color name="aihubmix_teal">#FF39C5BB</color>
+    <color name="apinex_sky">#FF38BDF8</color>
     <color name="surface_dark">#FF101418</color>
-    <color name="surface_light">#FFF6FBFA</color>
+    <color name="surface_light">#FFF5FAFD</color>
 </resources>

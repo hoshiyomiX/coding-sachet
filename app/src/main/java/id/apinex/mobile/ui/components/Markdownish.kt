@@ -1,4 +1,4 @@
-package id.aihubmix.mobile.ui.components
+package id.apinex.mobile.ui.components
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column

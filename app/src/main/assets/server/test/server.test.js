@@ -11,9 +11,9 @@ const path = require('path');
 const { startMockGateway, collectSse, getJson } = require('./mock-gateway');
 
 // Isolated env for the server under test.
-const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'ahm-srv-'));
-process.env.AIHUBMIX_WORKDIR = path.join(ROOT, 'root', 'work');
-process.env.AIHUBMIX_PORT = '0'; // will be replaced once we know a free port
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'apx-srv-'));
+process.env.APINEX_WORKDIR = path.join(ROOT, 'root', 'work');
+process.env.APINEX_PORT = '0'; // will be replaced once we know a free port
 
 test('agent loop: tool round trip then final text', async (t) => {
   const gw = await startMockGateway([
@@ -92,8 +92,8 @@ test('agent loop: gateway error surfaces as an error event', async (t) => {
   );
 });
 
-test('agent loop: AIHubMix trial-exhausted note becomes a clear error, never chat text', async (t) => {
-  const gw = await startMockGateway([{ kind: 'trial' }]);
+test('agent loop: APInex rate-limit (429) error carries a clear hint', async (t) => {
+  const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Too many requests' }]);
   t.after(() => gw.close());
 
   const { config } = require('../config');
@@ -109,12 +109,9 @@ test('agent loop: AIHubMix trial-exhausted note becomes a clear error, never cha
       messages: [{ role: 'user', content: 'hai' }],
       emit: (e) => events.push(e),
     }),
-    (e) => e.message.includes('Trial gratis AIHubMix habis') && e.message.includes('topup')
+    (e) => e.message.includes('429') && e.message.includes('Too many requests') &&
+      e.message.includes('Batas laju APInex') && e.message.includes('15 permintaan/menit')
   );
-
-  // The paywall text must never reach the app as a streamed answer.
-  const leaked = events.some((e) => e.type === 'text' && /prevent abuse/.test(e.delta || ''));
-  assert.ok(!leaked, 'paywall note leaked into text deltas');
 });
 
 test('HTTP chat route: gateway errors become error + done SSE events', async (t) => {
@@ -134,7 +131,7 @@ test('HTTP chat route: gateway errors become error + done SSE events', async (t)
 
   const events = await collectSse(
     port, '/api/chat',
-    { 'x-aihubmix-key': 'sk-test-123', 'content-type': 'application/json' },
+    { 'x-apinex-key': 'sk-test-123', 'content-type': 'application/json' },
     { model: 'test-pro', messages: [{ role: 'user', content: 'hai' }] }
   );
   const err = events.find((e) => e.type === 'error');
@@ -167,16 +164,16 @@ test('HTTP server: health, models proxy, chat SSE, file explorer', async (t) => 
   assert.strictEqual(h.body.baseUrl, `http://127.0.0.1:${gw.port}/v1`);
 
   // models proxy: good key and bad key
-  const ok = await getJson(port, '/api/models', { 'x-aihubmix-key': 'sk-test-123' });
+  const ok = await getJson(port, '/api/models', { 'x-apinex-key': 'sk-test-123' });
   assert.strictEqual(ok.status, 200);
   assert.deepStrictEqual(ok.body.models, ['test-mini', 'test-pro']);
-  const bad = await getJson(port, '/api/models', { 'x-aihubmix-key': 'sk-salah' });
+  const bad = await getJson(port, '/api/models', { 'x-apinex-key': 'sk-salah' });
   assert.strictEqual(bad.status, 502);
 
   // chat: agent writes a real file through the tool, then answers
   const events = await collectSse(
     port, '/api/chat',
-    { 'x-aihubmix-key': 'sk-test-123', 'content-type': 'application/json' },
+    { 'x-apinex-key': 'sk-test-123', 'content-type': 'application/json' },
     { model: 'test-pro', messages: [{ role: 'user', content: 'tulis file notes.txt' }] }
   );
   assert.ok(events.some((e) => e.type === 'tool' && e.name === 'write_file'));
@@ -214,22 +211,22 @@ test('HTTP server: models are cached per key (5 min TTL)', async (t) => {
   const port = srv.address().port;
 
   // first call hits the gateway
-  const first = await getJson(port, '/api/models', { 'x-aihubmix-key': 'sk-test-123' });
+  const first = await getJson(port, '/api/models', { 'x-apinex-key': 'sk-test-123' });
   assert.strictEqual(first.status, 200);
   assert.deepStrictEqual(first.body.models, ['test-mini', 'test-pro']);
   assert.notStrictEqual(first.body.cached, true);
 
   // second call is served from cache: same payload, no extra gateway hit
-  const second = await getJson(port, '/api/models', { 'x-aihubmix-key': 'sk-test-123' });
+  const second = await getJson(port, '/api/models', { 'x-apinex-key': 'sk-test-123' });
   assert.strictEqual(second.status, 200);
   assert.strictEqual(second.body.cached, true);
   assert.deepStrictEqual(second.body.models, first.body.models);
   assert.strictEqual(gw.modelRequests.length, 1);
 
   // a different key must not reuse the cache (and its failure is not cached)
-  const other = await getJson(port, '/api/models', { 'x-aihubmix-key': 'sk-test-123-lain' });
+  const other = await getJson(port, '/api/models', { 'x-apinex-key': 'sk-test-123-lain' });
   assert.strictEqual(other.status, 502);
-  const retryOther = await getJson(port, '/api/models', { 'x-aihubmix-key': 'sk-test-123-lain' });
+  const retryOther = await getJson(port, '/api/models', { 'x-apinex-key': 'sk-test-123-lain' });
   assert.strictEqual(retryOther.status, 502);
   assert.strictEqual(gw.modelRequests.length, 3);
 });

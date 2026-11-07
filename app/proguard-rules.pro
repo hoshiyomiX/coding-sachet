@@ -1,5 +1,5 @@
--keepclassmembers class id.aihubmix.mobile.** { *; }
--keep class id.aihubmix.mobile.data.** { *; }
+-keepclassmembers class id.apinex.mobile.** { *; }
+-keep class id.apinex.mobile.data.** { *; }
 -dontwarn okhttp3.internal.platform.**
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**

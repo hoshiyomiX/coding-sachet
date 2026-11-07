@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "aihubmix-mobile"
+rootProject.name = "apinex-mobile"
 include(":app")

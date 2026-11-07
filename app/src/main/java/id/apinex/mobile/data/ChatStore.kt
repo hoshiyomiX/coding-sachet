@@ -1,4 +1,4 @@
-package id.aihubmix.mobile.data
+package id.apinex.mobile.data
 
 import android.content.Context
 import kotlinx.serialization.Serializable

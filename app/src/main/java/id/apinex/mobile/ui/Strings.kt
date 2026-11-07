@@ -1,9 +1,9 @@
-package id.aihubmix.mobile.ui
+package id.apinex.mobile.ui
 
 import androidx.compose.runtime.staticCompositionLocalOf
 
 /** All UI strings, Indonesian by default, English optional (Settings). */
-data class AihubmixStrings(
+data class ApinexStrings(
     val appTagline: String,
     val onboardingTitle: String,
     val onboardingBody: String,
@@ -87,11 +87,11 @@ data class AihubmixStrings(
     val grant: String,
 )
 
-val IdStrings = AihubmixStrings(
+val IdStrings = ApinexStrings(
     appTagline = "Agent coding Ubuntu di saku kamu",
     onboardingTitle = "Selamat datang",
-    onboardingBody = "AIHubMix menjalankan Ubuntu 24.04 lewat proot di HP kamu (tanpa root), dengan agent coding yang terhubung ke gateway AIHubMix — model berakhiran -free gratis (kuota harian setelah top-up pertama). Masukkan API key AIHubMix kamu untuk mulai.",
-    apiKeyLabel = "API key AIHubMix",
+    onboardingBody = "APInex menjalankan Ubuntu 24.04 lewat proot di HP kamu (tanpa root), dengan agent coding yang terhubung ke gateway APInex — model berawalan free/ gratis (20 juta token per hari, 15 permintaan per menit). Masukkan API key APInex kamu untuk mulai.",
+    apiKeyLabel = "API key APInex",
     apiKeyPlaceholder = "sk-...",
     apiKeyInvalid = "API key tidak valid atau gateway tidak terjangkau",
     apiKeyValidating = "Memeriksa key…",
@@ -171,11 +171,11 @@ val IdStrings = AihubmixStrings(
     grant = "Beri izin",
 )
 
-val EnStrings = AihubmixStrings(
+val EnStrings = ApinexStrings(
     appTagline = "An Ubuntu coding agent in your pocket",
     onboardingTitle = "Welcome",
-    onboardingBody = "AIHubMix runs Ubuntu 24.04 through proot on your phone (no root needed), with a coding agent wired to the AIHubMix gateway — models ending in -free are free (daily quotas after your first top-up). Enter your AIHubMix API key to begin.",
-    apiKeyLabel = "AIHubMix API key",
+    onboardingBody = "APInex runs Ubuntu 24.04 through proot on your phone (no root needed), with a coding agent wired to the APInex gateway — models prefixed free/ are free (20M tokens per day, 15 requests per minute). Enter your APInex API key to begin.",
+    apiKeyLabel = "APInex API key",
     apiKeyPlaceholder = "sk-...",
     apiKeyInvalid = "API key invalid or gateway unreachable",
     apiKeyValidating = "Checking key…",
@@ -257,4 +257,4 @@ val EnStrings = AihubmixStrings(
 
 val LocalStrings = staticCompositionLocalOf { IdStrings }
 
-fun stringsFor(lang: String): AihubmixStrings = if (lang == "en") EnStrings else IdStrings
+fun stringsFor(lang: String): ApinexStrings = if (lang == "en") EnStrings else IdStrings
