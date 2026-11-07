@@ -1,11 +1,11 @@
 'use strict';
-// Poket Coding agent server — HTTP entry point.
+// Coding Sachet agent server — HTTP entry point.
 // Listens on 127.0.0.1 only. The Android app is its sole client.
 //
 // Routes:
 //   GET  /health              liveness + versions + providers
-//   GET  /api/models          provider model list (X-Poket-Key + X-Poket-Provider)
-//   POST /api/chat            agent loop, SSE events (X-Poket-Key + X-Poket-Provider)
+//   GET  /api/models          provider model list (X-Sachet-Key + X-Sachet-Provider)
+//   POST /api/chat            agent loop, SSE events (X-Sachet-Key + X-Sachet-Provider)
 //   GET  /api/fs?path=        list directory           (file explorer)
 //   GET  /api/fs/file?path=   read a file
 //   PUT  /api/fs/file         write a file {path, content}
@@ -53,14 +53,14 @@ const MODELS_CACHE_TTL = 5 * 60 * 1000;
 // ---------- upstream helpers ----------
 
 function gatewayKey(req) {
-  const h = req.headers['x-poket-key'];
+  const h = req.headers['x-sachet-key'];
   if (typeof h !== 'string' || !h.trim()) return null;
   return h.trim();
 }
 
-/** The X-Poket-Provider header selects the upstream; default "apinex". */
+/** The X-Sachet-Provider header selects the upstream; default "apinex". */
 function gatewayProviderId(req) {
-  const h = req.headers['x-poket-provider'];
+  const h = req.headers['x-sachet-provider'];
   if (typeof h !== 'string' || !h.trim()) return config.defaultProvider;
   return h.trim().toLowerCase();
 }
@@ -95,7 +95,7 @@ async function route(req, res) {
 
   if (req.method === 'GET' && url.pathname === '/health') {
     return sendJson(res, 200, {
-      ok: true, service: 'poket-agent', version: config.version,
+      ok: true, service: 'sachet-agent', version: config.version,
       node: process.version, workdir: config.workdir,
       providers: Object.fromEntries(
         Object.entries(config.providers).map(([id, p]) => [id, p.baseUrl])
@@ -105,7 +105,7 @@ async function route(req, res) {
 
   if (req.method === 'GET' && url.pathname === '/api/models') {
     const key = gatewayKey(req);
-    if (!key) return sendJson(res, 401, { error: 'X-Poket-Key hilang' });
+    if (!key) return sendJson(res, 401, { error: 'X-Sachet-Key hilang' });
     const providerId = gatewayProviderId(req);
     const provider = providerById(providerId);
     if (!provider) {
@@ -127,7 +127,7 @@ async function route(req, res) {
 
   if (req.method === 'POST' && url.pathname === '/api/chat') {
     const key = gatewayKey(req);
-    if (!key) return sendJson(res, 401, { error: 'X-Poket-Key hilang' });
+    if (!key) return sendJson(res, 401, { error: 'X-Sachet-Key hilang' });
     const providerId = gatewayProviderId(req);
     const provider = providerById(providerId);
     if (!provider) {
@@ -244,7 +244,7 @@ function start() {
     });
   });
   srv.listen(config.port, config.host, () => {
-    log(`poket-agent ${config.version} di ${config.host}:${config.port}`);
+    log(`sachet-agent ${config.version} di ${config.host}:${config.port}`);
     for (const [id, p] of Object.entries(config.providers)) {
       log(`provider ${id}: ${p.baseUrl}`);
     }

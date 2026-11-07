@@ -14,26 +14,28 @@ val keystoreProps = Properties().apply {
 }
 
 android {
-    namespace = "id.poketcoding.mobile"
+    namespace = "id.codingsachet.mobile"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "id.poketcoding.mobile"
+        applicationId = "id.codingsachet.mobile"
         minSdk = 26
-        // 28 on purpose: proot executes binaries from the app data directory and
-        // targetSdk >= 29 forbids exec from app_data_file (same reason as Termux).
-        // The APK is distributed as a file, not through Play.
+        // 28 on purpose: Android 9+ forbids executing binaries from the app
+        // data directory, which proot needs. The APK is distributed as a file,
+        // not through Play.
         targetSdk = 28
         versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 1
         versionName = (project.findProperty("appVersionName") as String?) ?: "1.0.0"
-        ndk { abiFilters += "arm64-v8a" }
-        // Gateway base URLs (both OpenAI-compatible):
-        // APInex  — free/ models are $0 within the 20M-token daily quota.
-        // NVIDIA NIM — free prototyping, ~40 requests/minute.
-        // Overridable only for local experiments.
+        // One APK per ABI: CI drives a build pass per ABI via -Pabi.
+        ndk { abiFilters += (project.findProperty("abi") as String?) ?: "arm64-v8a" }
+        // Gateway base URLs (both OpenAI-compatible). Overridable only for
+        // local experiments.
         buildConfigField("String", "APINEX_BASE_URL", "\"https://api.apinex.bond/v1\"")
         buildConfigField("String", "NVIDIA_BASE_URL", "\"https://integrate.api.nvidia.com/v1\"")
         buildConfigField("String", "SERVER_PORT_DEFAULT", "\"8765\"")
+        // Per-ABI guest facts, driven by CI (-PguestTriplet / -PnodeVersion).
+        buildConfigField("String", "GUEST_TRIPLET", "\"${project.findProperty("guestTriplet") ?: "aarch64-linux-gnu"}\"")
+        buildConfigField("String", "NODE_VERSION", "\"${project.findProperty("nodeVersion") ?: "26.13.0"}\"")
     }
 
     signingConfigs {

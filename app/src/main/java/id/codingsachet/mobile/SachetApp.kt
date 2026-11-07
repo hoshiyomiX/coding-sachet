@@ -1,11 +1,11 @@
-package id.poketcoding.mobile
+package id.codingsachet.mobile
 
 import android.app.Application
-import id.poketcoding.mobile.api.AgentApi
-import id.poketcoding.mobile.data.ChatStore
-import id.poketcoding.mobile.data.Prefs
-import id.poketcoding.mobile.runtime.RuntimeController
-import id.poketcoding.mobile.runtime.RuntimePaths
+import id.codingsachet.mobile.api.AgentApi
+import id.codingsachet.mobile.data.ChatStore
+import id.codingsachet.mobile.data.Prefs
+import id.codingsachet.mobile.runtime.RuntimeController
+import id.codingsachet.mobile.runtime.RuntimePaths
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,11 +31,11 @@ object Graph {
     }
 }
 
-class PoketApp : Application() {
+class SachetApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Graph.init(this)
-        id.poketcoding.mobile.runtime.GraphHolder.let {
+        id.codingsachet.mobile.runtime.GraphHolder.let {
             it.prefs = Graph.prefs
             it.runtime = Graph.runtime
         }

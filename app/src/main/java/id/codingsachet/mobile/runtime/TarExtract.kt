@@ -1,4 +1,4 @@
-package id.poketcoding.mobile.runtime
+package id.codingsachet.mobile.runtime
 
 import android.system.Os
 import org.tukaani.xz.XZInputStream

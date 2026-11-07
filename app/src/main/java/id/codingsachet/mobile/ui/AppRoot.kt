@@ -1,4 +1,4 @@
-package id.poketcoding.mobile.ui
+package id.codingsachet.mobile.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -15,13 +15,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Modifier
-import id.poketcoding.mobile.Graph
-import id.poketcoding.mobile.data.Session
-import id.poketcoding.mobile.runtime.RuntimeState
-import id.poketcoding.mobile.ui.screens.ChatScreen
-import id.poketcoding.mobile.ui.screens.FilesScreen
-import id.poketcoding.mobile.ui.screens.OnboardingScreen
-import id.poketcoding.mobile.ui.screens.SettingsScreen
+import id.codingsachet.mobile.Graph
+import id.codingsachet.mobile.data.Session
+import id.codingsachet.mobile.runtime.RuntimeState
+import id.codingsachet.mobile.ui.screens.ChatScreen
+import id.codingsachet.mobile.ui.screens.FilesScreen
+import id.codingsachet.mobile.ui.screens.OnboardingScreen
+import id.codingsachet.mobile.ui.screens.SettingsScreen
 
 /** Simple backstack of screens; no navigation library needed for four screens. */
 sealed class Screen {
@@ -62,7 +62,7 @@ fun AppRoot(state: AppState) {
         if (!needsSetup && !Graph.runtime.userStopped) Graph.runtime.startServer()
     }
 
-    PoketTheme {
+    SachetTheme {
         CompositionLocalProvider(LocalStrings provides stringsFor(lang)) {
             Surface(color = MaterialTheme.colorScheme.background) {
                 if (needsSetup) {

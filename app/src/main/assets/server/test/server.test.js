@@ -13,8 +13,8 @@ const { startMockGateway, collectSse, getJson } = require('./mock-gateway');
 
 // Isolated env for the server under test.
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'pkt-srv-'));
-process.env.POKET_WORKDIR = path.join(ROOT, 'root', 'work');
-process.env.POKET_PORT = '0'; // will be replaced once we know a free port
+process.env.SACHET_WORKDIR = path.join(ROOT, 'root', 'work');
+process.env.SACHET_PORT = '0'; // will be replaced once we know a free port
 
 /** Point both providers at the given mock gateways and reset the roots. */
 function useGateways({ apinex, nvidia }) {
@@ -113,7 +113,7 @@ test('agent loop: APInex rate-limit (429) error carries a clear hint', async (t)
       emit: () => {},
     }),
     (e) => e.message.includes('429') && e.message.includes('Too many requests') &&
-      e.message.includes('Batas laju APInex') && e.message.includes('15 permintaan/menit')
+      e.message.includes('Batas laju APInex tercapai')
   );
 });
 
@@ -131,7 +131,7 @@ test('agent loop: NVIDIA NIM rate-limit (429) hint differs from APInex', async (
       emit: () => {},
     }),
     (e) => e.message.includes('429') &&
-      e.message.includes('Batas laju NVIDIA NIM') && e.message.includes('40 permintaan/menit') &&
+      e.message.includes('Batas laju NVIDIA NIM tercapai') &&
       !e.message.includes('Batas laju APInex')
   );
 });
@@ -175,7 +175,7 @@ test('HTTP chat route: gateway errors become error + done SSE events', async (t)
 
   const events = await collectSse(
     port, '/api/chat',
-    { 'x-poket-key': 'sk-test-123', 'content-type': 'application/json' },
+    { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
     { model: 'test-pro', messages: [{ role: 'user', content: 'hai' }] }
   );
   const err = events.find((e) => e.type === 'error');
@@ -195,20 +195,20 @@ test('HTTP server: unknown provider is rejected with 400', async (t) => {
   await new Promise((r) => srv.on('listening', r));
   const port = srv.address().port;
 
-  const r = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123', 'x-poket-provider': 'bogus' });
+  const r = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-test-123', 'x-sachet-provider': 'bogus' });
   assert.strictEqual(r.status, 400);
   assert.ok(r.body.error.includes('Provider tidak dikenal'));
 
   const chat = await collectSse(
     port, '/api/chat',
-    { 'x-poket-key': 'sk-test-123', 'x-poket-provider': 'bogus', 'content-type': 'application/json' },
+    { 'x-sachet-key': 'sk-test-123', 'x-sachet-provider': 'bogus', 'content-type': 'application/json' },
     { model: 'x', messages: [{ role: 'user', content: 'hai' }] }
   ).catch((e) => e);
   // The route answers 400 JSON before the SSE stream starts.
   assert.ok(String(chat).includes('HTTP 400'));
 });
 
-test('HTTP server: X-Poket-Provider routes models to the right gateway', async (t) => {
+test('HTTP server: X-Sachet-Provider routes models to the right gateway', async (t) => {
   const ap = await startMockGateway([]);
   const nv = await startMockGateway([], { key: 'nvapi-test-123', models: ['nvidia/nemotron-3.5-bolt-e4b', 'deepseek-ai/deepseek-v4.1-flash'] });
   t.after(() => ap.close());
@@ -223,19 +223,19 @@ test('HTTP server: X-Poket-Provider routes models to the right gateway', async (
   const port = srv.address().port;
 
   // default (no header) → apinex
-  const def = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123' });
+  const def = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-test-123' });
   assert.strictEqual(def.status, 200);
   assert.deepStrictEqual(def.body.models, ['test-mini', 'test-pro']);
 
   // nvidia header → nvidia mock, with the nvidia key
-  const nvRes = await getJson(port, '/api/models', { 'x-poket-key': 'nvapi-test-123', 'x-poket-provider': 'nvidia' });
+  const nvRes = await getJson(port, '/api/models', { 'x-sachet-key': 'nvapi-test-123', 'x-sachet-provider': 'nvidia' });
   assert.strictEqual(nvRes.status, 200);
   assert.deepStrictEqual(nvRes.body.models, ['deepseek-ai/deepseek-v4.1-flash', 'nvidia/nemotron-3.5-bolt-e4b']);
   assert.strictEqual(ap.modelRequests.length, 1); // only the default call hit apinex
   assert.strictEqual(nv.modelRequests.length, 1);
 
   // wrong key for the chosen provider still fails
-  const bad = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123', 'x-poket-provider': 'nvidia' });
+  const bad = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-test-123', 'x-sachet-provider': 'nvidia' });
   assert.strictEqual(bad.status, 502);
 });
 
@@ -262,16 +262,16 @@ test('HTTP server: health, models proxy, chat SSE, file explorer', async (t) => 
   assert.ok('nvidia' in h.body.providers);
 
   // models proxy: good key and bad key
-  const ok = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123' });
+  const ok = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-test-123' });
   assert.strictEqual(ok.status, 200);
   assert.deepStrictEqual(ok.body.models, ['test-mini', 'test-pro']);
-  const bad = await getJson(port, '/api/models', { 'x-poket-key': 'sk-salah' });
+  const bad = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-salah' });
   assert.strictEqual(bad.status, 502);
 
   // chat: agent writes a real file through the tool, then answers
   const events = await collectSse(
     port, '/api/chat',
-    { 'x-poket-key': 'sk-test-123', 'content-type': 'application/json' },
+    { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
     { model: 'test-pro', messages: [{ role: 'user', content: 'tulis file notes.txt' }] }
   );
   assert.ok(events.some((e) => e.type === 'tool' && e.name === 'write_file'));
@@ -308,27 +308,27 @@ test('HTTP server: models are cached per provider+key (5 min TTL)', async (t) =>
   const port = srv.address().port;
 
   // first call hits the gateway
-  const first = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123' });
+  const first = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-test-123' });
   assert.strictEqual(first.status, 200);
   assert.deepStrictEqual(first.body.models, ['test-mini', 'test-pro']);
   assert.notStrictEqual(first.body.cached, true);
 
   // second call is served from cache: same payload, no extra gateway hit
-  const second = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123' });
+  const second = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-test-123' });
   assert.strictEqual(second.status, 200);
   assert.strictEqual(second.body.cached, true);
   assert.deepStrictEqual(second.body.models, first.body.models);
   assert.strictEqual(ap.modelRequests.length, 1);
 
   // the SAME key under the nvidia provider is a different cache entry
-  const nvRes = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123', 'x-poket-provider': 'nvidia' });
+  const nvRes = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-test-123', 'x-sachet-provider': 'nvidia' });
   assert.strictEqual(nvRes.status, 502); // sk-… is not the nvidia mock's key
   assert.strictEqual(nv.modelRequests.length, 1);
 
   // a different key must not reuse the cache (and its failure is not cached)
-  const other = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123-lain' });
+  const other = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-test-123-lain' });
   assert.strictEqual(other.status, 502);
-  const retryOther = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123-lain' });
+  const retryOther = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-test-123-lain' });
   assert.strictEqual(retryOther.status, 502);
   assert.strictEqual(ap.modelRequests.length, 3);
 });

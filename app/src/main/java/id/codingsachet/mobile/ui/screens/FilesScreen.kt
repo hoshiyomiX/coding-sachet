@@ -1,4 +1,4 @@
-package id.poketcoding.mobile.ui.screens
+package id.codingsachet.mobile.ui.screens
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -43,10 +43,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import id.poketcoding.mobile.Graph
-import id.poketcoding.mobile.ui.FolderIcon
-import id.poketcoding.mobile.ui.LocalStrings
-import id.poketcoding.mobile.ui.TextFileIcon
+import id.codingsachet.mobile.Graph
+import id.codingsachet.mobile.ui.FolderIcon
+import id.codingsachet.mobile.ui.LocalStrings
+import id.codingsachet.mobile.ui.TextFileIcon
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean

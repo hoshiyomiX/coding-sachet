@@ -1,12 +1,12 @@
-package id.poketcoding.mobile.runtime
+package id.codingsachet.mobile.runtime
 
 import android.app.Application
 import android.content.Intent
 import android.util.Log
 import androidx.core.content.ContextCompat
-import id.poketcoding.mobile.BuildConfig
-import id.poketcoding.mobile.api.AgentApi
-import id.poketcoding.mobile.data.Prefs
+import id.codingsachet.mobile.BuildConfig
+import id.codingsachet.mobile.api.AgentApi
+import id.codingsachet.mobile.data.Prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,7 +31,7 @@ sealed class RuntimeState {
 
 /**
  * Installs the Ubuntu rootfs + Node.js + agent server, then keeps
- * `node /opt/poket/server.js` alive inside proot.
+ * `node /opt/sachet/server.js` alive inside proot.
  */
 class RuntimeController(
     private val app: Application,
@@ -42,22 +42,24 @@ class RuntimeController(
     companion object {
         // The environment ships inside the APK (assets/env), prepared by CI
         // with ultra compression (xz). Nothing is downloaded at first run.
-        const val ROOTFS_ASSET = "env/ubuntu-24.04.5-arm64.tar.xz"
-        const val NODE_ASSET = "env/node-26.13.0-linux-arm64.tar.xz"
-        const val NODE_VERSION = "26.13.0"
+        // Asset names are arch-neutral: each CI build pass fills them with the
+        // matching rootfs/node for its ABI (arm64-v8a, armeabi-v7a, x86_64).
+        const val ROOTFS_ASSET = "env/ubuntu-rootfs.tar.xz"
+        const val NODE_ASSET = "env/node-runtime.tar.xz"
 
         const val NODE_GUEST = "/usr/local/bin/node"
-        const val SERVER_JS_GUEST = "/opt/poket/server.js"
+        const val SERVER_JS_GUEST = "/opt/sachet/server.js"
         val SERVER_FILES = listOf("config.js", "agent.js", "tools.js", "server.js")
 
-        // The pinned Node arm64 build needs libatomic.so.1, which the minimal
-        // ubuntu-base rootfs does not ship (verified via readelf against the
-        // extracted rootfs: every other NEEDED library is already present).
-        // The library travels inside the APK and is copied into the rootfs.
-        private const val GUEST_LIB_DIR = "/usr/lib/aarch64-linux-gnu"
+        // The pinned Node builds need libatomic.so.1, which the minimal
+        // ubuntu-base rootfs does not ship (verified per-arch via readelf
+        // against the extracted rootfs: every other NEEDED library is already
+        // present). The per-arch library travels inside the APK and is copied
+        // into the rootfs under its guest multiarch directory.
+        private val GUEST_LIB_DIR = "/usr/lib/${BuildConfig.GUEST_TRIPLET}"
         private val RUNTIME_LIBS = listOf("libatomic.so.1")
 
-        const val TAG = "Poket"
+        const val TAG = "Sachet"
     }
 
     val state = MutableStateFlow<RuntimeState>(
@@ -124,11 +126,11 @@ class RuntimeController(
     }
 
     private fun installNode() {
-        step("Memasang Node.js $NODE_VERSION (dari APK)", 0f)
+        step("Memasang Node.js ${BuildConfig.NODE_VERSION} (dari APK)", 0f)
         val staging = File(paths.tmp, "node-extract")
         staging.deleteRecursively()
-        extractAsset(NODE_ASSET, staging) { d, t -> step("Memasang Node.js $NODE_VERSION", frac(d, t), mb(d, t)) }
-        // The tarball contains one top directory (node-vX…-linux-arm64/);
+        extractAsset(NODE_ASSET, staging) { d, t -> step("Memasang Node.js ${BuildConfig.NODE_VERSION}", frac(d, t), mb(d, t)) }
+        // The tarball contains one top directory (node-vX…-linux-<arch>/);
         // its children become /usr/local/*.
         val top = staging.listFiles()?.firstOrNull { it.isDirectory }
             ?: error("Arsip Node tidak berisi direktori")
@@ -142,7 +144,7 @@ class RuntimeController(
         // Ensure the binary is executable.
         File(local, "bin/node").setExecutable(true, false)
         staging.deleteRecursively()
-        logLine("Node.js $NODE_VERSION terpasang")
+        logLine("Node.js ${BuildConfig.NODE_VERSION} terpasang")
     }
 
     /** Copy the agent-server JS from assets into the rootfs. */
@@ -172,10 +174,20 @@ class RuntimeController(
         for (name in RUNTIME_LIBS) {
             val dest = paths.host("$GUEST_LIB_DIR/$name")
             dest.parentFile?.mkdirs()
-            app.assets.open("runtime-libs/$name").use { input ->
+            app.assets.open("runtime-libs/${runtimeLibAsset(name)}").use { input ->
                 dest.outputStream().use { output -> input.copyTo(output) }
             }
         }
+    }
+
+    /** The bundled copy of a runtime lib matching this build's guest arch. */
+    private fun runtimeLibAsset(name: String): String = when (name) {
+        "libatomic.so.1" -> when (BuildConfig.GUEST_TRIPLET) {
+            "arm-linux-gnueabihf" -> "libatomic-armhf.so"
+            "x86_64-linux-gnu" -> "libatomic-amd64.so"
+            else -> "libatomic-arm64.so"
+        }
+        else -> name
     }
 
     private suspend fun smokeTest() {
@@ -208,7 +220,7 @@ class RuntimeController(
         }
         write("/etc/resolv.conf", "nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
         write("/etc/hosts", "127.0.0.1 localhost\n::1 localhost ip6-localhost\n")
-        write("/etc/hostname", "poket\n")
+        write("/etc/hostname", "sachet\n")
         // apt inside proot cannot drop privileges to the _apt user.
         write("/etc/apt/apt.conf.d/99proot", "APT::Sandbox::User \"root\";\nAcquire::Retries \"3\";\n")
         val pem = app.assets.open("cacert.pem").use { it.readBytes() }
@@ -220,7 +232,7 @@ class RuntimeController(
         }
         paths.workdir.mkdirs()
         paths.host("/tmp").mkdirs()
-        File(paths.rootfs, ".poket-configured").writeText("1")
+        File(paths.rootfs, ".sachet-configured").writeText("1")
     }
 
     private fun step(name: String, p: Float?, detail: String = "") {
@@ -252,7 +264,7 @@ class RuntimeController(
             val pb = launcher().processBuilder(
                 listOf(NODE_GUEST, SERVER_JS_GUEST),
                 cwd = "/root",
-                extraEnv = mapOf("POKET_PORT" to prefs.serverPort.toString()),
+                extraEnv = mapOf("SACHET_PORT" to prefs.serverPort.toString()),
             )
             val p = try {
                 pb.start()
@@ -330,7 +342,7 @@ class RuntimeController(
     fun killLeftoverServer() {
         runCatching {
             val p = launcher().processBuilder(
-                listOf("/bin/sh", "-c", "pkill -f '[p]oket/server.js'; sleep 0.4; pkill -9 -f '[p]oket/server.js'; exit 0"),
+                listOf("/bin/sh", "-c", "pkill -f '[s]achet/server.js'; sleep 0.4; pkill -9 -f '[s]achet/server.js'; exit 0"),
                 cwd = "/root",
             ).start()
             if (!p.waitFor(8, TimeUnit.SECONDS)) p.destroyForcibly()

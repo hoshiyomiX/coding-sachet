@@ -1,4 +1,4 @@
-package id.poketcoding.mobile.ui.components
+package id.codingsachet.mobile.ui.components
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column

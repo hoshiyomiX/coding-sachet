@@ -1,6 +1,6 @@
-package id.poketcoding.mobile.api
+package id.codingsachet.mobile.api
 
-import id.poketcoding.mobile.BuildConfig
+import id.codingsachet.mobile.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit
 /**
  * Client for the local agent server (127.0.0.1) and for key validation
  * against the selected provider (APInex or NVIDIA NIM). Chat and model
- * requests carry X-Poket-Key + X-Poket-Provider; the server routes them
+ * requests carry X-Sachet-Key + X-Sachet-Provider; the server routes them
  * to the right gateway.
  */
 class AgentApi(private val port: () -> Int) {
@@ -84,8 +84,8 @@ class AgentApi(private val port: () -> Int) {
     private fun fetchModelsViaServer(apiKey: String, provider: Provider): List<String> {
         val req = Request.Builder()
             .url(baseUrl() + "/api/models")
-            .header("X-Poket-Key", apiKey)
-            .header("X-Poket-Provider", provider.id)
+            .header("X-Sachet-Key", apiKey)
+            .header("X-Sachet-Provider", provider.id)
             .build()
         slowClient.newCall(req).execute().use { r ->
             val body = r.body.string()
@@ -166,7 +166,7 @@ class AgentApi(private val port: () -> Int) {
         apiKey: String,
         provider: Provider,
         model: String,
-        messages: List<id.poketcoding.mobile.data.Msg>,
+        messages: List<id.codingsachet.mobile.data.Msg>,
         systemPrompt: String?,
         onEvent: (JsonObject) -> Unit,
         onError: (String) -> Unit,
@@ -180,8 +180,8 @@ class AgentApi(private val port: () -> Int) {
         val wire = json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), body)
         val req = Request.Builder()
             .url(baseUrl() + "/api/chat")
-            .header("X-Poket-Key", apiKey)
-            .header("X-Poket-Provider", provider.id)
+            .header("X-Sachet-Key", apiKey)
+            .header("X-Sachet-Provider", provider.id)
             .post(wire.toRequestBody("application/json".toMediaType()))
             .build()
 

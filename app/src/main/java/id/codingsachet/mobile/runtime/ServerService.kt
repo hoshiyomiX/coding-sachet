@@ -1,4 +1,4 @@
-package id.poketcoding.mobile.runtime
+package id.codingsachet.mobile.runtime
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -9,8 +9,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import android.os.PowerManager
-import id.poketcoding.mobile.MainActivity
-import id.poketcoding.mobile.R
+import id.codingsachet.mobile.MainActivity
+import id.codingsachet.mobile.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -22,8 +22,8 @@ import kotlinx.coroutines.launch
 class ServerService : Service() {
 
     companion object {
-        const val ACTION_START = "id.poketcoding.mobile.START"
-        const val ACTION_STOP = "id.poketcoding.mobile.STOP"
+        const val ACTION_START = "id.codingsachet.mobile.START"
+        const val ACTION_STOP = "id.codingsachet.mobile.STOP"
         private const val CHANNEL = "server"
         private const val NOTIF_ID = 1
     }
@@ -44,7 +44,7 @@ class ServerService : Service() {
         }
         if (GraphHolder.prefs.keepAwake && wake == null) {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "poket:server").apply {
+            wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sachet:server").apply {
                 setReferenceCounted(false)
                 acquire()
             }
@@ -91,7 +91,7 @@ class ServerService : Service() {
         )
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("Poket Coding")
+            .setContentTitle("Coding Sachet")
             .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
@@ -100,8 +100,8 @@ class ServerService : Service() {
     }
 }
 
-/** Holds the app-wide singletons for the service (set in PoketApp.onCreate). */
+/** Holds the app-wide singletons for the service (set in SachetApp.onCreate). */
 object GraphHolder {
     lateinit var runtime: RuntimeController
-    lateinit var prefs: id.poketcoding.mobile.data.Prefs
+    lateinit var prefs: id.codingsachet.mobile.data.Prefs
 }

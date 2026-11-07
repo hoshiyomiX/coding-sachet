@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "poket-coding"
+rootProject.name = "coding-sachet"
 include(":app")

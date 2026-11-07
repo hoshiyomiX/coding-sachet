@@ -1,10 +1,10 @@
-package id.poketcoding.mobile.ui
+package id.codingsachet.mobile.ui
 
-import id.poketcoding.mobile.Graph
-import id.poketcoding.mobile.api.AgentApi
-import id.poketcoding.mobile.data.Msg
-import id.poketcoding.mobile.data.Session
-import id.poketcoding.mobile.data.ToolCall
+import id.codingsachet.mobile.Graph
+import id.codingsachet.mobile.api.AgentApi
+import id.codingsachet.mobile.data.Msg
+import id.codingsachet.mobile.data.Session
+import id.codingsachet.mobile.data.ToolCall
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

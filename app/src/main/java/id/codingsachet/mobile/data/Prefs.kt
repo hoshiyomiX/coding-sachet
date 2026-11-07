@@ -1,13 +1,13 @@
-package id.poketcoding.mobile.data
+package id.codingsachet.mobile.data
 
 import android.content.Context
 import android.content.SharedPreferences
-import id.poketcoding.mobile.api.Provider
-import id.poketcoding.mobile.api.Providers
+import id.codingsachet.mobile.api.Provider
+import id.codingsachet.mobile.api.Providers
 
 /** Small preference store. The API keys live in app-private storage only. */
 class Prefs(ctx: Context) {
-    private val sp: SharedPreferences = ctx.getSharedPreferences("poket", Context.MODE_PRIVATE)
+    private val sp: SharedPreferences = ctx.getSharedPreferences("sachet", Context.MODE_PRIVATE)
 
     /** The active provider: "apinex" (default) or "nvidia". */
     var provider: String

@@ -1,4 +1,4 @@
-package id.poketcoding.mobile.ui
+package id.codingsachet.mobile.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -7,14 +7,14 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-/** Sky as the accent (Poket Coding: sky-400 #38BDF8). */
-val PoketSky = Color(0xFF38BDF8)
-val PoketSkyDark = Color(0xFF0369A1)
+/** Sky as the accent (Coding Sachet: sky-400 #38BDF8). */
+val SachetSky = Color(0xFF38BDF8)
+val SachetSkyDark = Color(0xFF0369A1)
 
 private val DarkScheme = darkColorScheme(
-    primary = PoketSky,
+    primary = SachetSky,
     onPrimary = Color(0xFF00344F),
-    primaryContainer = PoketSkyDark,
+    primaryContainer = SachetSkyDark,
     onPrimaryContainer = Color(0xFFCDEBFF),
     secondary = Color(0xFF8FCBF5),
     background = Color(0xFF101418),
@@ -27,7 +27,7 @@ private val DarkScheme = darkColorScheme(
 )
 
 private val LightScheme = lightColorScheme(
-    primary = PoketSkyDark,
+    primary = SachetSkyDark,
     onPrimary = Color.White,
     primaryContainer = Color(0xFFCDEBFF),
     onPrimaryContainer = Color(0xFF001E30),
@@ -42,7 +42,7 @@ private val LightScheme = lightColorScheme(
 )
 
 @Composable
-fun PoketTheme(content: @Composable () -> Unit) {
+fun SachetTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     MaterialTheme(
         colorScheme = if (dark) DarkScheme else LightScheme,

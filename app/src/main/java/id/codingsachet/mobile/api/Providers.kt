@@ -1,11 +1,11 @@
-package id.poketcoding.mobile.api
+package id.codingsachet.mobile.api
 
-import id.poketcoding.mobile.BuildConfig
+import id.codingsachet.mobile.BuildConfig
 
 /**
  * The gateways this app talks to. Both are OpenAI-compatible, so the agent
  * server proxies either one unchanged; what differs is the base URL, the
- * key format, the free-tier semantics and the default model.
+ * key format and the default model.
  */
 data class Provider(
     val id: String,
@@ -14,10 +14,8 @@ data class Provider(
     val keyPrefix: String,
     val docsUrl: String,
     val defaultModel: String,
-    /** Model ids with this prefix are free (APInex); null = all free to prototype (NIM). */
+    /** Model ids with this prefix are free (APInex); null = whole catalog (NIM). */
     val freeModelPrefix: String?,
-    /** Free-tier terms shown in the UI. */
-    val freeTierNote: String,
     /** How a key is validated against this provider. */
     val validateViaChat: Boolean,
 )
@@ -31,7 +29,6 @@ object Providers {
         docsUrl = "https://apinex.bond",
         defaultModel = "free/glm-5.3",
         freeModelPrefix = "free/",
-        freeTierNote = "20 juta token/hari · 15 permintaan/menit (model free/)",
         validateViaChat = false,
     )
 
@@ -43,7 +40,6 @@ object Providers {
         docsUrl = "https://build.nvidia.com",
         defaultModel = "nvidia/nemotron-3.5-bolt-e4b",
         freeModelPrefix = null,
-        freeTierNote = "prototyping gratis · ±40 permintaan/menit",
         validateViaChat = true,
     )
 

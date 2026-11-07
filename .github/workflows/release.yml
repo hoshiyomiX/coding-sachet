@@ -31,7 +31,7 @@ jobs:
   apk:
     needs: test-agent
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -66,84 +66,110 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Decode signing keystore (optional)
-        env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
-        run: |
-          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
-            mkdir -p keystore
-            printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > keystore/release.jks
-            {
-              echo "storeFile=release.jks"
-              echo "storePassword=${{ secrets.RELEASE_KEYSTORE_PASSWORD }}"
-              echo "keyAlias=${{ secrets.RELEASE_KEY_ALIAS }}"
-              echo "keyPassword=${{ secrets.RELEASE_KEY_PASSWORD }}"
-            } > keystore/keystore.properties
-          else
-            echo "No signing secrets: the release APK will be debug-signed (still installable)."
-          fi
-
-      - name: Prepare bundled environment (ultra compression, xz)
+      - name: Build one APK per ABI (split ABI)
         run: |
           set -e
-          mkdir -p app/src/main/assets/env
-          UB_URL="https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-arm64.tar.gz"
-          UB_SHA="a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2"
-          NODE_URL="https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.xz"
-          NODE_SHA="406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92"
-          for i in 1 2 3; do
-            curl -sSL --retry 3 -o /tmp/ubuntu.tar.gz "$UB_URL" && break || { echo "retry ubuntu ($i)"; sleep 5; }
-          done
-          echo "$UB_SHA  /tmp/ubuntu.tar.gz" | sha256sum -c -
-          # Ultra compression: pristine rootfs repacked from gzip to xz -9e
-          # (~30 MB gz -> ~17 MB xz). Node ships an official .tar.xz already.
-          gunzip -c /tmp/ubuntu.tar.gz | xz -9e -T0 > app/src/main/assets/env/ubuntu-24.04.5-arm64.tar.xz
-          for i in 1 2 3; do
-            curl -sSL --retry 3 -o app/src/main/assets/env/node-26.13.0-linux-arm64.tar.xz "$NODE_URL" && break || { echo "retry node ($i)"; sleep 5; }
-          done
-          echo "$NODE_SHA  app/src/main/assets/env/node-26.13.0-linux-arm64.tar.xz" | sha256sum -c -
-          ls -l app/src/main/assets/env/
+          N="$GITHUB_RUN_NUMBER"
+          VERSION="1.0.$N"
+          #        ABI            guest triplet          node ver   node arch  verCode idx
+          MATRIX="arm64-v8a|aarch64-linux-gnu|26.13.0|arm64|1
+          armeabi-v7a|arm-linux-gnueabihf|22.20.0|armv7l|2
+          x86_64|x86_64-linux-gnu|26.13.0|x64|3"
+          #          rootfs arch | ubuntu-base 24.04.5 sha256
+          UB_SHA_arm64=a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2
+          UB_SHA_armhf=4fcee4d278f1c5232e085a021a85e4c6cef3853557a88d98ff380b5e5d5841bb
+          UB_SHA_amd64=e77b6f10c2590cef872b33ee9f635a0e3fd1f57fb074c0e52b5c7f56147a0c86
+          #          node tarball sha256
+          NODE_SHA_26.13.0_arm64=406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92
+          NODE_SHA_26.13.0_x64=d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997
+          NODE_SHA_22.20.0_armv7l=c599a33d91c9a39b7de3319929948f91f6ac42afaa1417f4340a5cc1b2efceda
 
-      - name: Build APKs
-        run: |
-          ./gradlew --no-daemon assembleDebug assembleRelease \
-            -PappVersionCode=${{ github.run_number }} \
-            -PappVersionName=1.0.${{ github.run_number }}
+          echo "$MATRIX" | while IFS='|' read -r ABI TRIPLET NODEVER NODEARCH IDX; do
+            [ -n "$ABI" ] || continue
+            case "$ABI" in
+              arm64-v8a)    UB_ARCH=arm64 ;;
+              armeabi-v7a)  UB_ARCH=armhf ;;
+              x86_64)       UB_ARCH=amd64 ;;
+            esac
+            echo "===== ABI $ABI (rootfs $UB_ARCH, node v$NODEVER-$NODEARCH, idx $IDX) ====="
+            mkdir -p app/src/main/assets/env
+            UB_URL="https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-$UB_ARCH.tar.gz"
+            for i in 1 2 3; do
+              curl -sSL --retry 3 -o /tmp/ubuntu.tar.gz "$UB_URL" && break || { echo "retry ubuntu ($i)"; sleep 5; }
+            done
+            UB_SHA_VAR="UB_SHA_$UB_ARCH"
+            echo "${!UB_SHA_VAR}  /tmp/ubuntu.tar.gz" | sha256sum -c -
+            # Ultra compression: pristine rootfs repacked from gzip to xz -9e.
+            gunzip -c /tmp/ubuntu.tar.gz | xz -9e -T0 > app/src/main/assets/env/ubuntu-rootfs.tar.xz
+            NODE_URL="https://nodejs.org/dist/v$NODEVER/node-v$NODEVER-linux-$NODEARCH.tar.xz"
+            for i in 1 2 3; do
+              curl -sSL --retry 3 -o app/src/main/assets/env/node-runtime.tar.xz "$NODE_URL" && break || { echo "retry node ($i)"; sleep 5; }
+            done
+            NODE_SHA_VAR="NODE_SHA_${NODEVER}_${NODEARCH}"
+            echo "${!NODE_SHA_VAR}  app/src/main/assets/env/node-runtime.tar.xz" | sha256sum -c -
+            ls -l app/src/main/assets/env/
 
-      - name: Verify APK signature
+            VC=$(( N * 10 + IDX ))
+            TARGETS="assembleRelease"
+            if [ "$IDX" = "1" ]; then TARGETS="assembleDebug assembleRelease"; fi
+            ./gradlew --no-daemon $TARGETS \
+              -Pabi="$ABI" \
+              -PguestTriplet="$TRIPLET" \
+              -PnodeVersion="$NODEVER" \
+              -PappVersionCode="$VC" \
+              -PappVersionName="$VERSION"
+            cp app/build/outputs/apk/release/app-release.apk "coding-sachet-$VERSION-$N-$ABI.apk"
+            if [ "$IDX" = "1" ]; then
+              cp app/build/outputs/apk/debug/app-debug.apk "coding-sachet-debug-$N.apk"
+            fi
+          done
+          ls -l coding-sachet-*.apk
+
+      - name: Verify APK signatures
         run: |
-          APK="app/build/outputs/apk/release/app-release.apk"
+          set -e
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
-          "$APKSIGNER" verify --print-certs "$APK"
+          for APK in coding-sachet-*.apk; do
+            echo "--- $APK"
+            "$APKSIGNER" verify --print-certs "$APK" | head -3
+          done
 
       - name: Prepare release files
         run: |
-          VERSION="1.0.${GITHUB_RUN_NUMBER}"
-          APK_NAME="poket-coding-${VERSION}-${GITHUB_RUN_NUMBER}.apk"
-          cp app/build/outputs/apk/release/app-release.apk "$APK_NAME"
-          cp app/build/outputs/apk/debug/app-debug.apk "poket-coding-debug-${GITHUB_RUN_NUMBER}.apk"
-          sha256sum "$APK_NAME" > "$APK_NAME.sha256"
-          echo "APK_NAME=$APK_NAME" >> "$GITHUB_ENV"
+          set -e
+          for APK in coding-sachet-1.0.*.apk coding-sachet-debug-*.apk; do
+            sha256sum "$APK" > "$APK.sha256"
+          done
+          ls -l coding-sachet-*
 
-      - name: Publish GitHub Release
+      - name: Publish GitHub Release (tag beta)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v1.0.${{ github.run_number }}"
-          gh release create "$TAG" \
-            "$APK_NAME" \
-            "$APK_NAME.sha256" \
-            "poket-coding-debug-${{ github.run_number }}.apk" \
-            --title "Poket Coding build ${{ github.run_number }}" \
-            --notes "Poket Coding — Ubuntu 24.04 (proot) + Node agent server, environment bundled in-APK (xz, no first-run downloads). Providers: APInex (https://api.apinex.bond/v1, free/ models) & NVIDIA NIM (https://integrate.api.nvidia.com/v1, free prototyping)." \
-            --prerelease || true
+          set -e
+          TAG="beta"
+          NOTES="Coding Sachet beta build ${{ github.run_number }} — split ABI APKs (arm64-v8a, armeabi-v7a, x86_64). Ubuntu 24.04 + Node.js bundled inside the APK (xz ultra compression, no first-run downloads). Providers: APInex (https://api.apinex.bond/v1) & NVIDIA NIM (https://integrate.api.nvidia.com/v1)."
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "Coding Sachet beta build ${{ github.run_number }}" --notes "$NOTES" --prerelease
+          fi
+          # Replace whatever the previous build left under this tag.
+          gh release view "$TAG" --json assets --jq '.assets[].name' | while read -r A; do
+            if [ -n "$A" ]; then gh release delete-asset "$TAG" "$A" --yes; fi
+          done
+          gh release upload "$TAG" \
+            coding-sachet-1.0.*.apk \
+            coding-sachet-1.0.*.apk.sha256 \
+            coding-sachet-debug-*.apk \
+            coding-sachet-debug-*.apk.sha256
+          gh release edit "$TAG" --title "Coding Sachet beta build ${{ github.run_number }}" --notes "$NOTES"
 
-      - name: Upload APK artifact
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: poket-coding-${{ github.run_number }}
+          name: coding-sachet-${{ github.run_number }}
           path: |
-            ${{ env.APK_NAME }}
-            ${{ env.APK_NAME }}.sha256
-            poket-coding-debug-${{ github.run_number }}.apk
+            coding-sachet-1.0.*.apk
+            coding-sachet-1.0.*.apk.sha256
+            coding-sachet-debug-${{ github.run_number }}.apk
+            coding-sachet-debug-${{ github.run_number }}.apk.sha256
           retention-days: 30

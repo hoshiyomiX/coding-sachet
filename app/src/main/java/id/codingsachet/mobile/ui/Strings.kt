@@ -1,9 +1,9 @@
-package id.poketcoding.mobile.ui
+package id.codingsachet.mobile.ui
 
 import androidx.compose.runtime.staticCompositionLocalOf
 
 /** All UI strings, Indonesian by default, English optional (Settings). */
-data class PoketStrings(
+data class SachetStrings(
     val appTagline: String,
     val onboardingTitle: String,
     val onboardingBody: String,
@@ -78,7 +78,6 @@ data class PoketStrings(
     val about: String,
     val gateway: String,
     val workdirLabel: String,
-    val licenses: String,
     val runtimeStarting: String,
     val runtimeRunning: String,
     val runtimeCrashed: String,
@@ -89,10 +88,10 @@ data class PoketStrings(
     val grant: String,
 )
 
-val IdStrings = PoketStrings(
+val IdStrings = SachetStrings(
     appTagline = "Agent coding Ubuntu di saku kamu",
     onboardingTitle = "Selamat datang",
-    onboardingBody = "Poket Coding menjalankan Ubuntu 24.04 lewat proot di HP kamu (tanpa root) dengan agent coding bawaan. Pilih penyedia AI — APInex (model free/ gratis, 20 juta token per hari, 15 permintaan per menit) atau NVIDIA NIM (prototyping gratis, sekitar 40 permintaan per menit) — lalu masukkan API key kamu. Ubuntu dan Node.js sudah dibundel di dalam APK.",
+    onboardingBody = "Coding Sachet menjalankan Ubuntu 24.04 lewat proot di HP kamu (tanpa root) dengan agent coding bawaan. Pilih penyedia AI — APInex atau NVIDIA NIM — lalu masukkan API key kamu. Ubuntu dan Node.js sudah dibundel di dalam APK.",
     providerSection = "Penyedia AI",
     providerSwitchNote = "Key dan model disimpan terpisah per penyedia",
     apiKeyLabel = "API key",
@@ -164,7 +163,6 @@ val IdStrings = PoketStrings(
     about = "Tentang",
     gateway = "Gateway",
     workdirLabel = "Folder kerja",
-    licenses = "Lisensi & atribusi",
     runtimeStarting = "Menyalakan server…",
     runtimeRunning = "Server aktif",
     runtimeCrashed = "Server mati — memulai ulang…",
@@ -175,10 +173,10 @@ val IdStrings = PoketStrings(
     grant = "Beri izin",
 )
 
-val EnStrings = PoketStrings(
+val EnStrings = SachetStrings(
     appTagline = "An Ubuntu coding agent in your pocket",
     onboardingTitle = "Welcome",
-    onboardingBody = "Poket Coding runs Ubuntu 24.04 through proot on your phone (no root needed) with a built-in coding agent. Pick an AI provider — APInex (free/ models, 20M tokens per day, 15 requests per minute) or NVIDIA NIM (free prototyping, about 40 requests per minute) — and enter your API key. Ubuntu and Node.js are bundled inside the APK.",
+    onboardingBody = "Coding Sachet runs Ubuntu 24.04 through proot on your phone (no root needed) with a built-in coding agent. Pick an AI provider — APInex or NVIDIA NIM — and enter your API key. Ubuntu and Node.js are bundled inside the APK.",
     providerSection = "AI provider",
     providerSwitchNote = "Keys and models are stored per provider",
     apiKeyLabel = "API key",
@@ -250,7 +248,6 @@ val EnStrings = PoketStrings(
     about = "About",
     gateway = "Gateway",
     workdirLabel = "Work folder",
-    licenses = "Licenses & attribution",
     runtimeStarting = "Starting server…",
     runtimeRunning = "Server running",
     runtimeCrashed = "Server down — restarting…",
@@ -263,4 +260,4 @@ val EnStrings = PoketStrings(
 
 val LocalStrings = staticCompositionLocalOf { IdStrings }
 
-fun stringsFor(lang: String): PoketStrings = if (lang == "en") EnStrings else IdStrings
+fun stringsFor(lang: String): SachetStrings = if (lang == "en") EnStrings else IdStrings

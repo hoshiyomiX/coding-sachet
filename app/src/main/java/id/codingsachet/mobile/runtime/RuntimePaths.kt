@@ -1,4 +1,4 @@
-package id.poketcoding.mobile.runtime
+package id.codingsachet.mobile.runtime
 
 import android.content.Context
 import java.io.File
@@ -18,11 +18,11 @@ class RuntimePaths(ctx: Context) {
     val fake = File(base, "fake")
 
     val nodeBin = File(rootfs, "usr/local/bin/node")
-    val serverDir = File(rootfs, "opt/poket")
+    val serverDir = File(rootfs, "opt/sachet")
     val workdir = File(rootfs, "root/work")
 
     val rootfsReady: Boolean
-        get() = File(rootfs, "etc/os-release").exists() && File(rootfs, ".poket-configured").exists()
+        get() = File(rootfs, "etc/os-release").exists() && File(rootfs, ".sachet-configured").exists()
 
     /** Map a guest path to the same file on the host. */
     fun host(guestPath: String): File = File(rootfs, guestPath.trimStart('/'))

@@ -9,10 +9,10 @@ const path = require('path');
 
 // Point the sandbox at a temp dir before requiring config/tools.
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'apx-tools-'));
-process.env.POKET_WORKDIR = path.join(ROOT, 'root', 'work');
+process.env.SACHET_WORKDIR = path.join(ROOT, 'root', 'work');
 const { config } = require('../config');
 config.allowedRoots = [path.join(ROOT, 'root'), path.join(ROOT, 'tmp')];
-fs.mkdirSync(process.env.POKET_WORKDIR, { recursive: true });
+fs.mkdirSync(process.env.SACHET_WORKDIR, { recursive: true });
 fs.mkdirSync(path.join(ROOT, 'tmp'), { recursive: true });
 
 const { safePath, listDir, readFile, writeFile, runBash } = require('../tools');
@@ -60,7 +60,7 @@ test('listDir walks subdirectories', () => {
 test('bash runs in the workdir and reports the exit code', async () => {
   const r = await runBash('pwd && echo halo');
   assert.strictEqual(r.ok, true);
-  assert.ok(r.output.includes(process.env.POKET_WORKDIR));
+  assert.ok(r.output.includes(process.env.SACHET_WORKDIR));
   assert.ok(r.output.includes('halo'));
 
   const bad = await runBash('exit 3');

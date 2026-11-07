@@ -1,4 +1,4 @@
-package id.poketcoding.mobile.ui.screens
+package id.codingsachet.mobile.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -37,12 +37,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import id.poketcoding.mobile.Graph
-import id.poketcoding.mobile.api.Provider
-import id.poketcoding.mobile.api.Providers
-import id.poketcoding.mobile.runtime.RuntimeState
-import id.poketcoding.mobile.ui.LocalStrings
-import id.poketcoding.mobile.ui.PoketSky
+import id.codingsachet.mobile.Graph
+import id.codingsachet.mobile.api.Provider
+import id.codingsachet.mobile.api.Providers
+import id.codingsachet.mobile.runtime.RuntimeState
+import id.codingsachet.mobile.ui.LocalStrings
+import id.codingsachet.mobile.ui.SachetSky
 import kotlinx.coroutines.launch
 
 /** Welcome → provider → API key → environment install (bundled in the APK). */
@@ -88,7 +88,7 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("Poket Coding", style = MaterialTheme.typography.displaySmall, color = PoketSky)
+            Text("Coding Sachet", style = MaterialTheme.typography.displaySmall, color = SachetSky)
             Text(s.appTagline, style = MaterialTheme.typography.bodyLarge)
 
             // language chips
@@ -111,7 +111,7 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
                 }
             }
             Text(
-                "${provider.label}: ${provider.freeTierNote} · ${provider.docsUrl.removePrefix("https://")}",
+                "${provider.label} · ${provider.docsUrl.removePrefix("https://")}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

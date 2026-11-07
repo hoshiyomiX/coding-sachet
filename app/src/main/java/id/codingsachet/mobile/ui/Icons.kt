@@ -1,4 +1,4 @@
-package id.poketcoding.mobile.ui
+package id.codingsachet.mobile.ui
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor

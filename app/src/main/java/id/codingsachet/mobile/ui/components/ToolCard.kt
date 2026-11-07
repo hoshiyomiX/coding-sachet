@@ -1,4 +1,4 @@
-package id.poketcoding.mobile.ui.components
+package id.codingsachet.mobile.ui.components
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
@@ -29,8 +29,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import id.poketcoding.mobile.ui.LocalStrings
-import id.poketcoding.mobile.ui.ToolCardUi
+import id.codingsachet.mobile.ui.LocalStrings
+import id.codingsachet.mobile.ui.ToolCardUi
 
 /** Small monogram chip identifying a tool. */
 @Composable
@@ -50,7 +50,7 @@ private fun ToolBadge(name: String) {
     }
 }
 
-private fun toolLabel(name: String, s: id.poketcoding.mobile.ui.PoketStrings): String = when (name) {
+private fun toolLabel(name: String, s: id.codingsachet.mobile.ui.SachetStrings): String = when (name) {
     "bash" -> s.toolBash
     "read_file" -> s.toolRead
     "write_file" -> s.toolWrite
