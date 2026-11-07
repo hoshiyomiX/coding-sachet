@@ -3,9 +3,9 @@
 // Listens on 127.0.0.1 only. The Android app is its sole client.
 //
 // Routes:
-//   GET  /health              liveness + versions
-//   GET  /api/models          gateway model list (needs X-Poket-Key)
-//   POST /api/chat            agent loop, SSE events (needs X-Poket-Key)
+//   GET  /health              liveness + versions + providers
+//   GET  /api/models          provider model list (X-Poket-Key + X-Poket-Provider)
+//   POST /api/chat            agent loop, SSE events (X-Poket-Key + X-Poket-Provider)
 //   GET  /api/fs?path=        list directory           (file explorer)
 //   GET  /api/fs/file?path=   read a file
 //   PUT  /api/fs/file         write a file {path, content}
@@ -13,7 +13,7 @@
 
 const http = require('http');
 const fs = require('fs');
-const { config } = require('./config');
+const { config, providerById } = require('./config');
 const { runAgent } = require('./agent');
 const { safePath, listDir, readFile, writeFile } = require('./tools');
 
@@ -44,10 +44,10 @@ function readJson(req, limit) {
 }
 
 // ---------- models cache ----------
-// The gateway is fast, but the guest's network path (proot + carrier DNS)
+// The gateways are fast, but the guest's network path (proot + carrier DNS)
 // can be slow on the first call. A short per-key cache makes retries and
 // repeated opens of the model picker instant.
-const modelsCache = new Map(); // `${key}|${baseUrl}` -> { at, ids }
+const modelsCache = new Map(); // `${providerId}|${baseUrl}|${key}` -> { at, ids }
 const MODELS_CACHE_TTL = 5 * 60 * 1000;
 
 // ---------- upstream helpers ----------
@@ -58,9 +58,16 @@ function gatewayKey(req) {
   return h.trim();
 }
 
-/** GET {baseUrl}/models through the gateway with the caller's key. */
-async function fetchModels(apiKey) {
-  const res = await fetch(config.baseUrl + '/models', {
+/** The X-Poket-Provider header selects the upstream; default "apinex". */
+function gatewayProviderId(req) {
+  const h = req.headers['x-poket-provider'];
+  if (typeof h !== 'string' || !h.trim()) return config.defaultProvider;
+  return h.trim().toLowerCase();
+}
+
+/** GET {provider.baseUrl}/models with the caller's key. */
+async function fetchModels(apiKey, provider) {
+  const res = await fetch(provider.baseUrl + '/models', {
     headers: { Authorization: `Bearer ${apiKey}` },
     // Keep this comfortably below the app-side read timeout (35 s) so the
     // app always receives our error JSON instead of its own "timeout".
@@ -89,20 +96,28 @@ async function route(req, res) {
   if (req.method === 'GET' && url.pathname === '/health') {
     return sendJson(res, 200, {
       ok: true, service: 'poket-agent', version: config.version,
-      node: process.version, baseUrl: config.baseUrl, workdir: config.workdir,
+      node: process.version, workdir: config.workdir,
+      providers: Object.fromEntries(
+        Object.entries(config.providers).map(([id, p]) => [id, p.baseUrl])
+      ),
     });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/models') {
     const key = gatewayKey(req);
     if (!key) return sendJson(res, 401, { error: 'X-Poket-Key hilang' });
-    const cacheKey = `${key}|${config.baseUrl}`;
+    const providerId = gatewayProviderId(req);
+    const provider = providerById(providerId);
+    if (!provider) {
+      return sendJson(res, 400, { error: `Provider tidak dikenal: ${providerId}` });
+    }
+    const cacheKey = `${providerId}|${provider.baseUrl}|${key}`;
     const hit = modelsCache.get(cacheKey);
     if (hit && Date.now() - hit.at < MODELS_CACHE_TTL) {
       return sendJson(res, 200, { models: hit.ids, cached: true });
     }
     try {
-      const ids = await fetchModels(key);
+      const ids = await fetchModels(key, provider);
       modelsCache.set(cacheKey, { at: Date.now(), ids });
       return sendJson(res, 200, { models: ids });
     } catch (e) {
@@ -113,6 +128,11 @@ async function route(req, res) {
   if (req.method === 'POST' && url.pathname === '/api/chat') {
     const key = gatewayKey(req);
     if (!key) return sendJson(res, 401, { error: 'X-Poket-Key hilang' });
+    const providerId = gatewayProviderId(req);
+    const provider = providerById(providerId);
+    if (!provider) {
+      return sendJson(res, 400, { error: `Provider tidak dikenal: ${providerId}` });
+    }
     let body;
     try { body = await readJson(req, config.jsonBodyLimit); } catch (e) {
       return sendJson(res, 400, { error: `body: ${e.message}` });
@@ -139,6 +159,7 @@ async function route(req, res) {
     try {
       await runAgent({
         apiKey: key,
+        providerId,
         model: body.model,
         messages: body.messages,
         systemPrompt: body.systemPrompt,
@@ -224,7 +245,9 @@ function start() {
   });
   srv.listen(config.port, config.host, () => {
     log(`poket-agent ${config.version} di ${config.host}:${config.port}`);
-    log(`gateway: ${config.baseUrl}`);
+    for (const [id, p] of Object.entries(config.providers)) {
+      log(`provider ${id}: ${p.baseUrl}`);
+    }
     log(`workdir: ${config.workdir}`);
   });
   // Die loudly if the event loop breaks: the app's supervisor restarts us.
@@ -265,9 +288,11 @@ function productionSetup() {
 
   try { require('node:dns').setDefaultResultOrder('ipv4first'); } catch { /* older node */ }
 
-  fetch(config.baseUrl + '/models', { signal: AbortSignal.timeout(10000) })
-    .then((r) => log(`warm-up gateway: HTTP ${r.status}`))
-    .catch((e) => log('warm-up gateway gagal:', e.message));
+  for (const p of Object.values(config.providers)) {
+    fetch(p.baseUrl + '/models', { signal: AbortSignal.timeout(10000) })
+      .then((r) => log(`warm-up ${p.baseUrl}: HTTP ${r.status}`))
+      .catch((e) => log(`warm-up ${p.baseUrl} gagal:`, e.message));
+  }
 }
 
 if (require.main === module) main();

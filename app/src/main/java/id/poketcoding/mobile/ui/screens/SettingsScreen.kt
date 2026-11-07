@@ -47,6 +47,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import id.poketcoding.mobile.BuildConfig
 import id.poketcoding.mobile.Graph
+import id.poketcoding.mobile.api.Provider
+import id.poketcoding.mobile.api.Providers
 import id.poketcoding.mobile.runtime.RuntimeState
 import id.poketcoding.mobile.ui.LocalStrings
 import kotlinx.coroutines.launch
@@ -60,7 +62,8 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
     val runtimeState by Graph.runtime.state.collectAsState()
     val serverLog by Graph.runtime.log.collectAsState()
 
-    var key by remember { mutableStateOf(Graph.prefs.apiKey) }
+    var provider by remember { mutableStateOf(Graph.prefs.active) }
+    var key by remember { mutableStateOf(Graph.prefs.keyFor(provider.id)) }
     var keyNote by remember { mutableStateOf<String?>(null) }
     var checking by remember { mutableStateOf(false) }
     var keepAwake by remember { mutableStateOf(Graph.prefs.keepAwake) }
@@ -99,13 +102,36 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                 )
             }
 
+            // ---- provider ----
+            SectionTitle(s.providerSection)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Providers.ALL.forEach { p: Provider ->
+                    FilterChip(
+                        selected = provider.id == p.id,
+                        onClick = {
+                            provider = p
+                            Graph.prefs.provider = p.id
+                            key = Graph.prefs.keyFor(p.id)
+                            keyNote = null
+                        },
+                        label = { Text(p.label) },
+                    )
+                }
+            }
+            Text(
+                "${provider.freeTierNote} · ${provider.docsUrl.removePrefix("https://")}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(s.providerSwitchNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
             // ---- api key ----
             SectionTitle(s.apiKeySection)
             OutlinedTextField(
                 value = key,
                 onValueChange = { key = it.trim(); keyNote = null },
-                label = { Text(s.apiKeyLabel) },
-                placeholder = { Text(s.apiKeyPlaceholder) },
+                label = { Text("${s.apiKeyLabel} ${provider.label}") },
+                placeholder = { Text(provider.keyPrefix + "…") },
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -113,7 +139,7 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = {
-                        Graph.prefs.apiKey = key
+                        Graph.prefs.setKeyFor(provider.id, key)
                         keyNote = "OK"
                     },
                     enabled = key.isNotBlank(),
@@ -122,7 +148,7 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                     onClick = {
                         checking = true
                         scope.launch {
-                            val r = Graph.api.validateKey(key)
+                            val r = Graph.api.validateKey(key, provider)
                             checking = false
                             keyNote = if (r.isSuccess) s.keyOk else (s.apiKeyInvalid + " (" + r.exceptionOrNull()?.message + ")")
                         }
@@ -223,7 +249,10 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
             // ---- about ----
             SectionTitle(s.about)
             Text("Poket Coding ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium)
-            Text("${s.gateway}: ${BuildConfig.POKET_APINEX_BASE_URL}", style = MaterialTheme.typography.bodySmall)
+            Text("${s.gateway}: ${provider.label} — ${provider.baseUrl}", style = MaterialTheme.typography.bodySmall)
+            Providers.ALL.filter { it.id != provider.id }.forEach { other ->
+                Text("${other.label}: ${other.baseUrl}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             Text("${s.workdirLabel}: /root/work", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(24.dp))
         }

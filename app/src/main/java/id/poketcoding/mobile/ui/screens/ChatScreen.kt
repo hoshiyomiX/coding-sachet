@@ -89,7 +89,7 @@ fun ChatScreen(
     val runtimeState by Graph.runtime.state.collectAsState()
 
     var current by remember { mutableStateOf<Session?>(session) }
-    var model by remember { mutableStateOf(Graph.prefs.model) }
+    var model by remember(Graph.prefs.provider) { mutableStateOf(Graph.prefs.model) }
     var showModels by remember { mutableStateOf(false) }
     var input by remember { mutableStateOf("") }
     var sessionsVersion by remember { mutableIntStateOf(0) }
@@ -442,6 +442,7 @@ private fun ThinkingBlock(thinking: String?) {
 @Composable
 private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
     val s = LocalStrings.current
+    val provider = Graph.prefs.active
     var models by remember { mutableStateOf<List<String>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var query by remember { mutableStateOf("") }
@@ -451,7 +452,7 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
     LaunchedEffect(attempt) {
         models = null
         error = null
-        Graph.api.models(Graph.prefs.apiKey)
+        Graph.api.models(Graph.prefs.apiKey, provider)
             .onSuccess { models = it }
             .onFailure { error = it.message }
     }
@@ -467,15 +468,19 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = freeOnly,
-                    onClick = { freeOnly = !freeOnly },
-                    label = { Text(s.modelFreeOnly) },
-                )
+                // The free/ filter only means something on APInex; NIM's whole
+                // catalogue is free to prototype.
+                if (provider.freeModelPrefix != null) {
+                    FilterChip(
+                        selected = freeOnly,
+                        onClick = { freeOnly = !freeOnly },
+                        label = { Text(s.modelFreeOnly) },
+                    )
+                }
                 val loaded = models
                 if (loaded != null) {
-                    val n = loaded.count { !freeOnly || it.startsWith("free/") }
-                    Text("$n / ${loaded.size}", style = MaterialTheme.typography.bodySmall)
+                    val n = loaded.count { provider.freeModelPrefix == null || !freeOnly || it.startsWith(provider.freeModelPrefix) }
+                    Text("$n / ${loaded.size} · ${provider.label}", style = MaterialTheme.typography.bodySmall)
                 }
             }
             when {
@@ -489,7 +494,7 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                 }
                 else -> LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
                     val filtered = models!!.filter {
-                        (!freeOnly || it.startsWith("free/")) &&
+                        (provider.freeModelPrefix == null || !freeOnly || it.startsWith(provider.freeModelPrefix)) &&
                             it.contains(query, ignoreCase = true)
                     }
                     items(filtered) { m ->

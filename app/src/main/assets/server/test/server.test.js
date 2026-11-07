@@ -1,6 +1,7 @@
 'use strict';
 // Integration tests: the full agent loop against the mock gateway,
-// plus the HTTP surface of server.js.
+// plus the HTTP surface of server.js — for BOTH providers (APInex
+// and NVIDIA NIM), which the mock impersonates on separate ports.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -15,7 +16,17 @@ const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'pkt-srv-'));
 process.env.POKET_WORKDIR = path.join(ROOT, 'root', 'work');
 process.env.POKET_PORT = '0'; // will be replaced once we know a free port
 
-test('agent loop: tool round trip then final text', async (t) => {
+/** Point both providers at the given mock gateways and reset the roots. */
+function useGateways({ apinex, nvidia }) {
+  const { config } = require('../config');
+  if (apinex) config.providers.apinex.baseUrl = `http://127.0.0.1:${apinex.port}/v1`;
+  if (nvidia) config.providers.nvidia.baseUrl = `http://127.0.0.1:${nvidia.port}/v1`;
+  config.allowedRoots = [path.join(ROOT, 'root'), path.join(ROOT, 'tmp')];
+  fs.mkdirSync(config.workdir, { recursive: true });
+  return config;
+}
+
+test('agent loop: tool round trip then final text (apinex)', async (t) => {
   const gw = await startMockGateway([
     {
       kind: 'tools',
@@ -26,15 +37,12 @@ test('agent loop: tool round trip then final text', async (t) => {
   ]);
   t.after(() => gw.close());
 
-  const { config } = require('../config');
-  config.baseUrl = `http://127.0.0.1:${gw.port}/v1`;
-  config.allowedRoots = [path.join(ROOT, 'root'), path.join(ROOT, 'tmp')];
-  fs.mkdirSync(config.workdir, { recursive: true });
-
+  const config = useGateways({ apinex: gw });
   const { runAgent } = require('../agent');
   const events = [];
   const added = await runAgent({
     apiKey: 'sk-test-123',
+    providerId: 'apinex',
     model: 'test-pro',
     messages: [{ role: 'user', content: 'jalankan echo satu-dua-tiga' }],
     signal: null,
@@ -77,14 +85,13 @@ test('agent loop: gateway error surfaces as an error event', async (t) => {
   const gw = await startMockGateway([{ kind: 'error', status: 401, message: 'Invalid token' }]);
   t.after(() => gw.close());
 
-  const { config } = require('../config');
-  config.baseUrl = `http://127.0.0.1:${gw.port}/v1`;
+  useGateways({ apinex: gw });
   const { runAgent } = require('../agent');
 
   // Direct call: the gateway error propagates out of runAgent.
   await assert.rejects(
     runAgent({
-      apiKey: 'sk-salah', model: 'test-pro',
+      apiKey: 'sk-salah', providerId: 'apinex', model: 'test-pro',
       messages: [{ role: 'user', content: 'hai' }],
       emit: () => {},
     }),
@@ -96,32 +103,69 @@ test('agent loop: APInex rate-limit (429) error carries a clear hint', async (t)
   const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Too many requests' }]);
   t.after(() => gw.close());
 
-  const { config } = require('../config');
-  config.baseUrl = `http://127.0.0.1:${gw.port}/v1`;
-  config.allowedRoots = [path.join(ROOT, 'root'), path.join(ROOT, 'tmp')];
-  fs.mkdirSync(config.workdir, { recursive: true });
+  useGateways({ apinex: gw });
   const { runAgent } = require('../agent');
 
-  const events = [];
   await assert.rejects(
     runAgent({
-      apiKey: 'sk-test-123', model: 'test-pro',
+      apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',
       messages: [{ role: 'user', content: 'hai' }],
-      emit: (e) => events.push(e),
+      emit: () => {},
     }),
     (e) => e.message.includes('429') && e.message.includes('Too many requests') &&
       e.message.includes('Batas laju APInex') && e.message.includes('15 permintaan/menit')
   );
 });
 
+test('agent loop: NVIDIA NIM rate-limit (429) hint differs from APInex', async (t) => {
+  const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Too many requests' }]);
+  t.after(() => gw.close());
+
+  useGateways({ nvidia: gw });
+  const { runAgent } = require('../agent');
+
+  await assert.rejects(
+    runAgent({
+      apiKey: 'nvapi-test-123', providerId: 'nvidia', model: 'nvidia/nemotron-3.5-bolt-e4b',
+      messages: [{ role: 'user', content: 'hai' }],
+      emit: () => {},
+    }),
+    (e) => e.message.includes('429') &&
+      e.message.includes('Batas laju NVIDIA NIM') && e.message.includes('40 permintaan/menit') &&
+      !e.message.includes('Batas laju APInex')
+  );
+});
+
+test('agent loop: NVIDIA requests carry max_tokens, APInex requests do not', async (t) => {
+  const nv = await startMockGateway([{ kind: 'text', text: 'ok' }], { key: 'nvapi-test-123' });
+  const ap = await startMockGateway([{ kind: 'text', text: 'ok' }]);
+  t.after(() => nv.close());
+  t.after(() => ap.close());
+
+  useGateways({ apinex: ap, nvidia: nv });
+  const { runAgent } = require('../agent');
+
+  await runAgent({
+    apiKey: 'nvapi-test-123', providerId: 'nvidia', model: 'nv-x',
+    messages: [{ role: 'user', content: 'hai' }],
+    emit: () => {},
+  });
+  assert.strictEqual(nv.requests[0].max_tokens, 4096);
+  assert.strictEqual(nv.chatAuths[0], 'Bearer nvapi-test-123');
+
+  await runAgent({
+    apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',
+    messages: [{ role: 'user', content: 'hai' }],
+    emit: () => {},
+  });
+  assert.strictEqual('max_tokens' in ap.requests[0], false);
+});
+
 test('HTTP chat route: gateway errors become error + done SSE events', async (t) => {
   const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Quota habis' }]);
   t.after(() => gw.close());
 
-  const { config } = require('../config');
-  config.baseUrl = `http://127.0.0.1:${gw.port}/v1`;
-  config.allowedRoots = [path.join(ROOT, 'root'), path.join(ROOT, 'tmp')];
-  fs.mkdirSync(config.workdir, { recursive: true });
+  useGateways({ apinex: gw });
 
   const { start } = require('../server');
   const srv = start();
@@ -139,6 +183,62 @@ test('HTTP chat route: gateway errors become error + done SSE events', async (t)
   assert.strictEqual(events.at(-1).type, 'done');
 });
 
+test('HTTP server: unknown provider is rejected with 400', async (t) => {
+  const gw = await startMockGateway([]);
+  t.after(() => gw.close());
+
+  useGateways({ apinex: gw });
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  const r = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123', 'x-poket-provider': 'bogus' });
+  assert.strictEqual(r.status, 400);
+  assert.ok(r.body.error.includes('Provider tidak dikenal'));
+
+  const chat = await collectSse(
+    port, '/api/chat',
+    { 'x-poket-key': 'sk-test-123', 'x-poket-provider': 'bogus', 'content-type': 'application/json' },
+    { model: 'x', messages: [{ role: 'user', content: 'hai' }] }
+  ).catch((e) => e);
+  // The route answers 400 JSON before the SSE stream starts.
+  assert.ok(String(chat).includes('HTTP 400'));
+});
+
+test('HTTP server: X-Poket-Provider routes models to the right gateway', async (t) => {
+  const ap = await startMockGateway([]);
+  const nv = await startMockGateway([], { key: 'nvapi-test-123', models: ['nvidia/nemotron-3.5-bolt-e4b', 'deepseek-ai/deepseek-v4.1-flash'] });
+  t.after(() => ap.close());
+  t.after(() => nv.close());
+
+  useGateways({ apinex: ap, nvidia: nv });
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  // default (no header) → apinex
+  const def = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123' });
+  assert.strictEqual(def.status, 200);
+  assert.deepStrictEqual(def.body.models, ['test-mini', 'test-pro']);
+
+  // nvidia header → nvidia mock, with the nvidia key
+  const nvRes = await getJson(port, '/api/models', { 'x-poket-key': 'nvapi-test-123', 'x-poket-provider': 'nvidia' });
+  assert.strictEqual(nvRes.status, 200);
+  assert.deepStrictEqual(nvRes.body.models, ['deepseek-ai/deepseek-v4.1-flash', 'nvidia/nemotron-3.5-bolt-e4b']);
+  assert.strictEqual(ap.modelRequests.length, 1); // only the default call hit apinex
+  assert.strictEqual(nv.modelRequests.length, 1);
+
+  // wrong key for the chosen provider still fails
+  const bad = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123', 'x-poket-provider': 'nvidia' });
+  assert.strictEqual(bad.status, 502);
+});
+
 test('HTTP server: health, models proxy, chat SSE, file explorer', async (t) => {
   const gw = await startMockGateway([
     { kind: 'tools', calls: [{ id: 'c1', name: 'write_file', args: { path: path.join(ROOT, 'root/work/notes.txt'), content: 'dari agent' } }] },
@@ -146,10 +246,7 @@ test('HTTP server: health, models proxy, chat SSE, file explorer', async (t) => 
   ]);
   t.after(() => gw.close());
 
-  const { config } = require('../config');
-  config.baseUrl = `http://127.0.0.1:${gw.port}/v1`;
-  config.allowedRoots = [path.join(ROOT, 'root'), path.join(ROOT, 'tmp')];
-  fs.mkdirSync(config.workdir, { recursive: true });
+  const config = useGateways({ apinex: gw });
 
   const { start } = require('../server');
   const srv = start();
@@ -161,7 +258,8 @@ test('HTTP server: health, models proxy, chat SSE, file explorer', async (t) => 
   const h = await getJson(port, '/health');
   assert.strictEqual(h.status, 200);
   assert.strictEqual(h.body.ok, true);
-  assert.strictEqual(h.body.baseUrl, `http://127.0.0.1:${gw.port}/v1`);
+  assert.strictEqual(h.body.providers.apinex, `http://127.0.0.1:${gw.port}/v1`);
+  assert.ok('nvidia' in h.body.providers);
 
   // models proxy: good key and bad key
   const ok = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123' });
@@ -195,14 +293,13 @@ test('HTTP server: health, models proxy, chat SSE, file explorer', async (t) => 
   assert.strictEqual(outside.status, 400);
 });
 
-test('HTTP server: models are cached per key (5 min TTL)', async (t) => {
-  const gw = await startMockGateway([]);
-  t.after(() => gw.close());
+test('HTTP server: models are cached per provider+key (5 min TTL)', async (t) => {
+  const ap = await startMockGateway([]);
+  const nv = await startMockGateway([], { key: 'nvapi-test-123', models: ['nv-a'] });
+  t.after(() => ap.close());
+  t.after(() => nv.close());
 
-  const { config } = require('../config');
-  config.baseUrl = `http://127.0.0.1:${gw.port}/v1`;
-  config.allowedRoots = [path.join(ROOT, 'root'), path.join(ROOT, 'tmp')];
-  fs.mkdirSync(config.workdir, { recursive: true });
+  useGateways({ apinex: ap, nvidia: nv });
 
   const { start } = require('../server');
   const srv = start();
@@ -221,12 +318,17 @@ test('HTTP server: models are cached per key (5 min TTL)', async (t) => {
   assert.strictEqual(second.status, 200);
   assert.strictEqual(second.body.cached, true);
   assert.deepStrictEqual(second.body.models, first.body.models);
-  assert.strictEqual(gw.modelRequests.length, 1);
+  assert.strictEqual(ap.modelRequests.length, 1);
+
+  // the SAME key under the nvidia provider is a different cache entry
+  const nvRes = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123', 'x-poket-provider': 'nvidia' });
+  assert.strictEqual(nvRes.status, 502); // sk-… is not the nvidia mock's key
+  assert.strictEqual(nv.modelRequests.length, 1);
 
   // a different key must not reuse the cache (and its failure is not cached)
   const other = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123-lain' });
   assert.strictEqual(other.status, 502);
   const retryOther = await getJson(port, '/api/models', { 'x-poket-key': 'sk-test-123-lain' });
   assert.strictEqual(retryOther.status, 502);
-  assert.strictEqual(gw.modelRequests.length, 3);
+  assert.strictEqual(ap.modelRequests.length, 3);
 });

@@ -1,20 +1,14 @@
 'use strict';
-// The agent loop: talks to the active provider gateway (OpenAI-compatible,
-// SSE streaming) and executes the tool calls the model asks for.
+// The agent loop: talks to the selected provider gateway (APInex or
+// NVIDIA NIM — both OpenAI-compatible, SSE streaming) and executes the
+// tool calls the model asks for.
 
-const { config } = require('./config');
+const { config, providerById } = require('./config');
 const { toolByName } = require('./tools');
 
-// APInex free-tier rate limit: free accounts are capped at 15 requests per
-// minute across the free/ models (documented at apinex.bond/developers/models).
-// When the cap trips the gateway answers HTTP 429 — surface it with a clear
-// hint instead of a bare status line.
-const RATE_LIMIT_HINT =
-  'Batas laju APInex tercapai (akun gratis: 15 permintaan/menit). ' +
-  'Tunggu sebentar lalu kirim ulang pesanmu.';
-
-/** One streamed call to the gateway. Returns the assembled assistant turn. */
-async function callGateway({ apiKey, model, messages, tools, signal, onDelta }) {
+/** One streamed call to the provider. Returns the assembled assistant turn. */
+async function callGateway({ apiKey, providerId, model, messages, tools, signal, onDelta }) {
+  const provider = providerById(providerId) || config.providers.apinex;
   const controller = new AbortController();
   const onAbort = () => controller.abort();
   if (signal) {
@@ -25,7 +19,7 @@ async function callGateway({ apiKey, model, messages, tools, signal, onDelta }) 
 
   let res;
   try {
-    res = await fetch(config.baseUrl + '/chat/completions', {
+    res = await fetch(provider.baseUrl + '/chat/completions', {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -36,6 +30,9 @@ async function callGateway({ apiKey, model, messages, tools, signal, onDelta }) 
         model,
         messages,
         stream: true,
+        // NIM asks integrations to set max_tokens explicitly; APInex uses
+        // its own default, so the field is only sent when configured.
+        ...(provider.maxTokens ? { max_tokens: provider.maxTokens } : {}),
         ...(tools && tools.length ? { tools, tool_choice: 'auto' } : {}),
       }),
     });
@@ -52,7 +49,10 @@ async function callGateway({ apiKey, model, messages, tools, signal, onDelta }) 
     if (signal) signal.removeEventListener('abort', onAbort);
     let msg = text.slice(0, 500);
     try { msg = JSON.parse(text).error?.message || msg; } catch { /* not JSON */ }
-    const err = new Error(res.status === 429 ? `HTTP ${res.status}: ${msg} — ${RATE_LIMIT_HINT}` : `HTTP ${res.status}: ${msg}`);
+    // 429 carries a provider-specific free-tier hint instead of a bare status line.
+    const err = new Error(
+      res.status === 429 ? `HTTP ${res.status}: ${msg} — ${provider.rateLimitHint}` : `HTTP ${res.status}: ${msg}`
+    );
     err.status = res.status;
     throw err;
   }
@@ -154,7 +154,7 @@ function toOpenAiMessages(messages) {
  * `messages` is the app-owned history in our wire format; the returned
  * list of new messages lets the app extend its persisted history.
  */
-async function runAgent({ apiKey, model, messages, signal, emit, systemPrompt }) {
+async function runAgent({ apiKey, providerId, model, messages, signal, emit, systemPrompt }) {
   const openai = toOpenAiMessages(messages);
   if (systemPrompt) openai.unshift({ role: 'system', content: systemPrompt });
 
@@ -172,7 +172,7 @@ async function runAgent({ apiKey, model, messages, signal, emit, systemPrompt })
     emit({ type: 'turn', n: turn });
 
     const t = await callGateway({
-      apiKey, model, messages: openai, tools: openaiTools, signal,
+      apiKey, providerId, model, messages: openai, tools: openaiTools, signal,
       onDelta: (e) => emit(e),
     });
 

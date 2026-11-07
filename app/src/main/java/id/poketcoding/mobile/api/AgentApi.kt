@@ -20,7 +20,12 @@ import okhttp3.Response
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-/** Client for the local agent server (127.0.0.1) and for key validation against the gateway. */
+/**
+ * Client for the local agent server (127.0.0.1) and for key validation
+ * against the selected provider (APInex or NVIDIA NIM). Chat and model
+ * requests carry X-Poket-Key + X-Poket-Provider; the server routes them
+ * to the right gateway.
+ */
 class AgentApi(private val port: () -> Int) {
 
     val json = Json { ignoreUnknownKeys = true }
@@ -61,25 +66,26 @@ class AgentApi(private val port: () -> Int) {
     // ---------- models ----------
 
     /**
-     * Model list through the local agent server (it proxies the gateway).
+     * Model list through the local agent server (it proxies the provider).
      * If the guest's network path fails or is slow, fall back to calling the
-     * gateway directly — the same route validateKey already proved working.
+     * provider directly — the same route validateKey already proved working.
      */
-    suspend fun models(apiKey: String): Result<List<String>> = withContext(Dispatchers.IO) {
+    suspend fun models(apiKey: String, provider: Provider): Result<List<String>> = withContext(Dispatchers.IO) {
         runCatching {
-            val viaServer = runCatching { fetchModelsViaServer(apiKey) }
+            val viaServer = runCatching { fetchModelsViaServer(apiKey, provider) }
             viaServer.getOrElse {
-                fetchModelsDirect(apiKey).getOrElse { direct ->
+                fetchModelsDirect(apiKey, provider).getOrElse { direct ->
                     throw IOException("${direct.message} · via server: ${it.message?.take(140)}")
                 }
             }
         }
     }
 
-    private fun fetchModelsViaServer(apiKey: String): List<String> {
+    private fun fetchModelsViaServer(apiKey: String, provider: Provider): List<String> {
         val req = Request.Builder()
             .url(baseUrl() + "/api/models")
             .header("X-Poket-Key", apiKey)
+            .header("X-Poket-Provider", provider.id)
             .build()
         slowClient.newCall(req).execute().use { r ->
             val body = r.body.string()
@@ -89,9 +95,9 @@ class AgentApi(private val port: () -> Int) {
         }
     }
 
-    private fun fetchModelsDirect(apiKey: String): Result<List<String>> = runCatching {
+    private fun fetchModelsDirect(apiKey: String, provider: Provider): Result<List<String>> = runCatching {
         val req = Request.Builder()
-            .url(BuildConfig.POKET_APINEX_BASE_URL + "/models")
+            .url(provider.baseUrl + "/models")
             .header("Authorization", "Bearer $apiKey")
             .build()
         client.newCall(req).execute().use { r ->
@@ -103,17 +109,49 @@ class AgentApi(private val port: () -> Int) {
     }
 
     /**
-     * Validate a key directly against the gateway (used during onboarding,
+     * Validate a key directly against the provider (used during onboarding,
      * before the local server exists).
+     *
+     * APInex: GET /models with the bearer key (401/403 = invalid).
+     * NVIDIA NIM: /v1/models is public, so the check is a minimal
+     * POST /chat/completions — 401/403 = invalid, 2xx/429 = valid
+     * (429 proves authentication passed; only the rate limit tripped).
      */
-    suspend fun validateKey(apiKey: String): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun validateKey(apiKey: String, provider: Provider): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val req = Request.Builder()
-                .url(BuildConfig.POKET_APINEX_BASE_URL + "/models")
-                .header("Authorization", "Bearer $apiKey")
-                .build()
-            client.newCall(req).execute().use { r ->
-                if (!r.isSuccessful) throw IOException(errorOf(r.body.string(), r.code))
+            if (!provider.validateViaChat) {
+                val req = Request.Builder()
+                    .url(provider.baseUrl + "/models")
+                    .header("Authorization", "Bearer $apiKey")
+                    .build()
+                client.newCall(req).execute().use { r ->
+                    if (!r.isSuccessful) throw IOException(errorOf(r.body.string(), r.code))
+                }
+            } else {
+                val body = json.encodeToString(
+                    kotlinx.serialization.json.JsonObject.serializer(),
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("model", JsonPrimitive(provider.defaultModel))
+                        put("messages", kotlinx.serialization.json.buildJsonArray {
+                            add(kotlinx.serialization.json.buildJsonObject {
+                                put("role", JsonPrimitive("user"))
+                                put("content", JsonPrimitive("hi"))
+                            })
+                        })
+                        put("max_tokens", JsonPrimitive(1))
+                    }
+                )
+                val req = Request.Builder()
+                    .url(provider.baseUrl + "/chat/completions")
+                    .header("Authorization", "Bearer $apiKey")
+                    .post(body.toRequestBody("application/json".toMediaType()))
+                    .build()
+                client.newCall(req).execute().use { r ->
+                    // 2xx or 429 (rate-limited but authenticated) = the key is real.
+                    if (r.code == 401 || r.code == 403 || !r.isSuccessful) {
+                        throw IOException(errorOf(r.body.string(), r.code))
+                    }
+                }
             }
         }
     }
@@ -126,6 +164,7 @@ class AgentApi(private val port: () -> Int) {
      */
     fun chatStream(
         apiKey: String,
+        provider: Provider,
         model: String,
         messages: List<id.poketcoding.mobile.data.Msg>,
         systemPrompt: String?,
@@ -142,6 +181,7 @@ class AgentApi(private val port: () -> Int) {
         val req = Request.Builder()
             .url(baseUrl() + "/api/chat")
             .header("X-Poket-Key", apiKey)
+            .header("X-Poket-Provider", provider.id)
             .post(wire.toRequestBody("application/json".toMediaType()))
             .build()
 
@@ -238,10 +278,15 @@ class AgentApi(private val port: () -> Int) {
         }
     }
 
+    /** Error text from a gateway body: OpenAI {error:…}, NIM {detail:…}, or raw. */
     private fun errorOf(body: String, code: Int): String {
-        val msg = runCatching {
-            json.parseToJsonElement(body).jsonObject["error"]?.jsonPrimitive?.content
-        }.getOrNull()
+        val o = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull()
+        val msg = o?.let {
+            (it["error"] as? JsonPrimitive)?.content
+                ?: (it["error"] as? JsonObject)?.get("message")?.jsonPrimitive?.content
+                ?: (it["detail"] as? JsonPrimitive)?.content
+                ?: (it["title"] as? JsonPrimitive)?.content
+        }
         return "HTTP $code: ${msg ?: body.take(200)}"
     }
 }

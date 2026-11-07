@@ -1,6 +1,6 @@
 'use strict';
-// A scripted mock gateway (OpenAI-compatible SSE)
-// used by the test suite. No network access needed.
+// A scripted mock gateway (OpenAI-compatible SSE), used by the test
+// suite to impersonate any provider (APInex or NVIDIA NIM). No network.
 
 const http = require('http');
 
@@ -12,11 +12,18 @@ const http = require('http');
  *   { kind: 'tools', text, calls: [{id, name, args}] } → tool_calls round
  *   { kind: 'error', status, message }    → non-200 reply (e.g. 429 rate limit)
  *
- * Returns { server, port, requests, close() }; `requests` collects the
- * parsed bodies of every chat request the mock received.
+ * opts.key:    the bearer token the mock accepts (default 'sk-test-123')
+ * opts.models: model ids served by /v1/models
+ *
+ * Returns { server, port, requests, chatAuths, modelRequests, close() };
+ * `requests` collects parsed chat bodies, `chatAuths` their Authorization
+ * headers, `modelRequests` the /v1/models hits.
  */
-function startMockGateway(script) {
+function startMockGateway(script, opts = {}) {
+  const key = opts.key || 'sk-test-123';
+  const models = opts.models || ['test-mini', 'test-pro'];
   const requests = [];
+  const chatAuths = [];
   const modelRequests = [];
   let n = 0;
   const server = http.createServer((req, res) => {
@@ -25,19 +32,20 @@ function startMockGateway(script) {
     req.on('end', () => {
       if (req.url === '/v1/models' && req.method === 'GET') {
         modelRequests.push({ auth: req.headers.authorization });
-        if (req.headers.authorization !== 'Bearer sk-test-123') {
+        if (req.headers.authorization !== `Bearer ${key}`) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { message: 'Invalid token' } }));
           return;
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ data: [{ id: 'test-mini' }, { id: 'test-pro' }] }));
+        res.end(JSON.stringify({ data: models.map((id) => ({ id })) }));
         return;
       }
 
       if (req.url === '/v1/chat/completions' && req.method === 'POST') {
         const parsed = JSON.parse(body);
         requests.push(parsed);
+        chatAuths.push(req.headers.authorization);
 
         const reply = script[Math.min(n, script.length - 1)];
         n++;
@@ -91,6 +99,7 @@ function startMockGateway(script) {
         server,
         port: server.address().port,
         requests,
+        chatAuths,
         modelRequests,
         close: () => new Promise((r) => server.close(r)),
       });

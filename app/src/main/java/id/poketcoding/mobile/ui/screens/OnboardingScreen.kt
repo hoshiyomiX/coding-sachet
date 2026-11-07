@@ -37,14 +37,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import id.poketcoding.mobile.BuildConfig
 import id.poketcoding.mobile.Graph
+import id.poketcoding.mobile.api.Provider
+import id.poketcoding.mobile.api.Providers
 import id.poketcoding.mobile.runtime.RuntimeState
 import id.poketcoding.mobile.ui.LocalStrings
 import id.poketcoding.mobile.ui.PoketSky
 import kotlinx.coroutines.launch
 
-/** Welcome → API key → environment install. Shown until everything is ready. */
+/** Welcome → provider → API key → environment install (bundled in the APK). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
@@ -53,10 +54,11 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
     val context = LocalContext.current
     val runtimeState by Graph.runtime.state.collectAsState()
 
-    var key by remember { mutableStateOf(Graph.prefs.apiKey) }
+    var provider by remember { mutableStateOf(Graph.prefs.active) }
+    var key by remember { mutableStateOf(Graph.prefs.keyFor(provider.id)) }
     var checking by remember { mutableStateOf(false) }
     var keyError by remember { mutableStateOf<String?>(null) }
-    var keyOk by remember { mutableStateOf(Graph.prefs.apiKey.isNotBlank()) }
+    var keyOk by remember { mutableStateOf(Graph.prefs.keyFor(provider.id).isNotBlank()) }
     var storageGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
@@ -70,6 +72,14 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
 
     fun requestStorage() {
         storageLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+    }
+
+    fun switchProvider(p: Provider) {
+        provider = p
+        Graph.prefs.provider = p.id
+        key = Graph.prefs.keyFor(p.id)
+        keyError = null
+        keyOk = key.isNotBlank()
     }
 
     Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
@@ -89,11 +99,28 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
 
             Text(s.onboardingBody, style = MaterialTheme.typography.bodyMedium)
 
+            // provider chips + free-tier note
+            Text(s.providerSection, style = MaterialTheme.typography.titleSmall)
+            androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Providers.ALL.forEach { p ->
+                    FilterChip(
+                        selected = provider.id == p.id,
+                        onClick = { switchProvider(p) },
+                        label = { Text(p.label) },
+                    )
+                }
+            }
+            Text(
+                "${provider.label}: ${provider.freeTierNote} · ${provider.docsUrl.removePrefix("https://")}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
             OutlinedTextField(
                 value = key,
                 onValueChange = { key = it.trim(); keyError = null },
-                label = { Text(s.apiKeyLabel) },
-                placeholder = { Text(s.apiKeyPlaceholder) },
+                label = { Text("${s.apiKeyLabel} ${provider.label}") },
+                placeholder = { Text(provider.keyPrefix + "…") },
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true,
                 isError = keyError != null,
@@ -107,10 +134,10 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
                 onClick = {
                     checking = true; keyError = null
                     scope.launch {
-                        val r = Graph.api.validateKey(key)
+                        val r = Graph.api.validateKey(key, provider)
                         checking = false
                         r.onSuccess {
-                            Graph.prefs.apiKey = key
+                            Graph.prefs.setKeyFor(provider.id, key)
                             keyOk = true
                         }.onFailure {
                             keyOk = false
@@ -134,7 +161,7 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
                 }
             }
 
-            // ---- install phase ----
+            // ---- install phase (environment is bundled in the APK) ----
             when (val st = runtimeState) {
                 is RuntimeState.NotInstalled, is RuntimeState.InstallFailed -> {
                     Button(
@@ -167,7 +194,7 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
             }
 
             Text(
-                "${s.gateway}: ${BuildConfig.POKET_APINEX_BASE_URL.removeSuffix("/v1")}",
+                "${s.gateway}: ${provider.baseUrl.removeSuffix("/v1")}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

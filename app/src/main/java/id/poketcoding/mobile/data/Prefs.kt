@@ -2,18 +2,46 @@ package id.poketcoding.mobile.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import id.poketcoding.mobile.api.Provider
+import id.poketcoding.mobile.api.Providers
 
-/** Small preference store. The API key lives in app-private storage only. */
+/** Small preference store. The API keys live in app-private storage only. */
 class Prefs(ctx: Context) {
     private val sp: SharedPreferences = ctx.getSharedPreferences("poket", Context.MODE_PRIVATE)
 
-    var apiKey: String
-        get() = sp.getString("apiKey", "") ?: ""
-        set(v) = sp.edit().putString("apiKey", v).apply()
+    /** The active provider: "apinex" (default) or "nvidia". */
+    var provider: String
+        get() = sp.getString("provider", DEFAULT_PROVIDER) ?: DEFAULT_PROVIDER
+        set(v) = sp.edit().putString("provider", v).apply()
 
+    val active: Provider get() = Providers.byId(provider)
+
+    // ---- per-provider API keys ----
+
+    fun keyFor(providerId: String): String =
+        sp.getString("key.$providerId", "") ?: ""
+
+    fun setKeyFor(providerId: String, v: String) =
+        sp.edit().putString("key.$providerId", v).apply()
+
+    /** Key of the active provider (used by chat + model list). */
+    var apiKey: String
+        get() = keyFor(provider)
+        set(v) = setKeyFor(provider, v)
+
+    // ---- per-provider models ----
+
+    fun modelFor(providerId: String): String =
+        sp.getString("model.$providerId", "")?.ifBlank { null }
+            ?: Providers.byId(providerId).defaultModel
+
+    fun setModelFor(providerId: String, v: String) =
+        sp.edit().putString("model.$providerId", v).apply()
+
+    /** Model of the active provider. */
     var model: String
-        get() = sp.getString("model", DEFAULT_MODEL) ?: DEFAULT_MODEL
-        set(v) = sp.edit().putString("model", v).apply()
+        get() = modelFor(provider)
+        set(v) = setModelFor(provider, v)
 
     /** "id" (default) or "en" */
     var lang: String
@@ -48,8 +76,6 @@ class Prefs(ctx: Context) {
 
     companion object {
         const val DEFAULT_PORT = 8765
-
-        /** The model this app is built around (APInex free GLM model). */
-        const val DEFAULT_MODEL = "free/glm-5.3"
+        const val DEFAULT_PROVIDER = "apinex"
     }
 }

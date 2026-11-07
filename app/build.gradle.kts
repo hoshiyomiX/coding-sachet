@@ -27,10 +27,12 @@ android {
         versionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 1
         versionName = (project.findProperty("appVersionName") as String?) ?: "1.0.0"
         ndk { abiFilters += "arm64-v8a" }
-        // The gateway this app is built around (APInex, OpenAI-compatible;
-        // models prefixed free/ bill $0 within the 20M-token daily quota).
+        // Gateway base URLs (both OpenAI-compatible):
+        // APInex  — free/ models are $0 within the 20M-token daily quota.
+        // NVIDIA NIM — free prototyping, ~40 requests/minute.
         // Overridable only for local experiments.
-        buildConfigField("String", "POKET_APINEX_BASE_URL", "\"https://api.apinex.bond/v1\"")
+        buildConfigField("String", "APINEX_BASE_URL", "\"https://api.apinex.bond/v1\"")
+        buildConfigField("String", "NVIDIA_BASE_URL", "\"https://integrate.api.nvidia.com/v1\"")
         buildConfigField("String", "SERVER_PORT_DEFAULT", "\"8765\"")
     }
 

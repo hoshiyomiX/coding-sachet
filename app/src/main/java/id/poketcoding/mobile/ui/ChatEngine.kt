@@ -72,6 +72,7 @@ class ChatEngine(val session: Session) {
         }
         call = Graph.api.chatStream(
             apiKey = key,
+            provider = Graph.prefs.active,
             model = model,
             messages = session.wireHistory(),
             systemPrompt = SYSTEM_PROMPT,
