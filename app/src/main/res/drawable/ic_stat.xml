@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification icon: simple terminal prompt glyph -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M4,5L12,5A2,2 0 0,1 14,7L14,8L7,8A1,1 0 0,0 6,9L6,15A1,1 0 0,0 7,16L14,16L14,17A2,2 0 0,1 12,19L4,19A2,2 0 0,1 2,17L2,7A2,2 0 0,1 4,5ZM17,8L20,10.5L17,13L17,8ZM16,15A1,1 0 0,1 17,14L22,14A1,1 0 0,1 22,16L17,16A1,1 0 0,1 16,15Z" />
+</vector>

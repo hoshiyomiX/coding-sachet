@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher foreground: chat bubble mark with three dots -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group android:scaleX="0.55" android:scaleY="0.55" android:pivotX="54" android:pivotY="54">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M54,16C32,16 20,26 20,40C20,50 27,58 38,61L33,72C32.5,73.2 33.8,74.3 34.9,73.6L50,64C51.3,64.1 52.6,64.2 54,64.2C76,64.2 88,54 88,40C88,26 76,16 54,16ZM38,34C41.3,34 44,36.7 44,40C44,43.3 41.3,46 38,46C34.7,46 32,43.3 32,40C32,36.7 34.7,34 38,34ZM54,34C57.3,34 60,36.7 60,40C60,43.3 57.3,46 54,46C50.7,46 48,43.3 48,40C48,36.7 50.7,34 54,34ZM70,34C73.3,34 76,36.7 76,40C76,43.3 73.3,46 70,46C66.7,46 64,43.3 64,40C64,36.7 66.7,34 70,34Z" />
+    </group>
+</vector>

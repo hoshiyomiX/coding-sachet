@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test-agent:
+    # The Node agent server is the heart of the app: run its test suite first.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Agent server tests (mock gateway)
+        run: |
+          cd app/src/main/assets/server
+          node --test test/*.test.js
+
+  apk:
+    needs: test-agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install Android SDK components
+        run: |
+          set -e
+          AH="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          if [ -x "$AH/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKM="$AH/cmdline-tools/latest/bin/sdkmanager"
+          elif command -v sdkmanager >/dev/null 2>&1; then
+            SDKM="sdkmanager"
+          else
+            mkdir -p "$AH/cmdline-tools/latest"
+            curl -sSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/ctl.zip
+            unzip -q /tmp/ctl.zip -d /tmp/ctl
+            mv /tmp/ctl/cmdline-tools/* "$AH/cmdline-tools/latest/"
+            SDKM="$AH/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" --install "platforms;android-37.0" > /dev/null
+          "$SDKM" --install "build-tools;37.0.0" > /dev/null 2>&1 || echo "build-tools;37.0.0 tidak tersedia — AGP akan pakai versi default"
+          [ -d "$AH/platforms/android-37.0" ] || { echo "FATAL: platform android-37.0 tidak terpasang"; exit 1; }
+          echo "ANDROID_HOME=$AH" >> "$GITHUB_ENV"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Decode signing keystore (optional)
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            mkdir -p keystore
+            printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > keystore/release.jks
+            {
+              echo "storeFile=release.jks"
+              echo "storePassword=${{ secrets.RELEASE_KEYSTORE_PASSWORD }}"
+              echo "keyAlias=${{ secrets.RELEASE_KEY_ALIAS }}"
+              echo "keyPassword=${{ secrets.RELEASE_KEY_PASSWORD }}"
+            } > keystore/keystore.properties
+          else
+            echo "No signing secrets: the release APK will be debug-signed (still installable)."
+          fi
+
+      - name: Build APKs
+        run: |
+          ./gradlew --no-daemon assembleDebug assembleRelease \
+            -PappVersionCode=${{ github.run_number }} \
+            -PappVersionName=1.0.${{ github.run_number }}
+
+      - name: Verify APK signature
+        run: |
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs "$APK"
+
+      - name: Prepare release files
+        run: |
+          VERSION="1.0.${GITHUB_RUN_NUMBER}"
+          APK_NAME="aihubmix-mobile-${VERSION}-${GITHUB_RUN_NUMBER}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$APK_NAME"
+          cp app/build/outputs/apk/debug/app-debug.apk "aihubmix-mobile-debug-${GITHUB_RUN_NUMBER}.apk"
+          sha256sum "$APK_NAME" > "$APK_NAME.sha256"
+          echo "APK_NAME=$APK_NAME" >> "$GITHUB_ENV"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v1.0.${{ github.run_number }}"
+          gh release create "$TAG" \
+            "$APK_NAME" \
+            "$APK_NAME.sha256" \
+            "aihubmix-mobile-debug-${{ github.run_number }}.apk" \
+            --title "AIHubMix build ${{ github.run_number }}" \
+            --notes "AIHubMix — Ubuntu 24.04 (proot) + Node agent server. Gateway: https://aihubmix.com/v1 (OpenAI-compatible; model -free gratis dalam kuota harian)." \
+            --prerelease || true
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aihubmix-mobile-${{ github.run_number }}
+          path: |
+            ${{ env.APK_NAME }}
+            ${{ env.APK_NAME }}.sha256
+            aihubmix-mobile-debug-${{ github.run_number }}.apk
+          retention-days: 30

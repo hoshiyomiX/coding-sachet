@@ -1,0 +1,15 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+app/build/
+keystore/*.jks
+keystore/*.keystore
+# The one stable release key is committed on purpose (private repo): CI runners
+# generate a random debug key per run, which would break in-place app updates.
+!keystore/release.jks

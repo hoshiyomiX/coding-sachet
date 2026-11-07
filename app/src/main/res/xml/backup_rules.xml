@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- The Ubuntu rootfs is huge and rebuilt on demand; sessions and prefs stay backed up. -->
+    <exclude domain="file" path="rootfs" />
+    <exclude domain="file" path="dl" />
+    <exclude domain="file" path="tmp" />
+    <exclude domain="file" path="fake" />
+    <exclude domain="file" path="lib" />
+</full-backup-content>
