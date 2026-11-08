@@ -1,5 +1,6 @@
 package id.codingsachet.mobile.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -68,7 +69,7 @@ fun FilesScreen(onBack: () -> Unit) {
     val s = LocalStrings.current
     val scope = rememberCoroutineScope()
 
-    var path by remember { mutableStateOf("/root/work") }
+    var path by remember { mutableStateOf("") }
     var entries by remember { mutableStateOf<List<Entry>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var viewer by remember { mutableStateOf<String?>(null) }   // path of the opened file
@@ -81,6 +82,9 @@ fun FilesScreen(onBack: () -> Unit) {
         scope.launch {
             Graph.api.fsList(p)
                 .onSuccess { obj ->
+                    // Trust the server's resolved path: an empty request path
+                    // means "the agent workdir" (now /sdcard/coding-sachet).
+                    (obj["path"]?.jsonPrimitive?.content)?.takeIf { it.isNotBlank() }?.let { path = it }
                     val list = obj["entries"]?.jsonArray?.map { el ->
                         val o = el.jsonObject
                         Entry(
@@ -96,9 +100,11 @@ fun FilesScreen(onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(Unit) { load("/root/work") }
+    // Empty path = the server's resolved workdir (/sdcard/coding-sachet,
+    // falling back to /root/work when shared storage is unavailable).
+    LaunchedEffect(Unit) { load("") }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         TopAppBar(
             title = { Text(s.filesTitle, style = MaterialTheme.typography.titleMedium) },
             navigationIcon = {

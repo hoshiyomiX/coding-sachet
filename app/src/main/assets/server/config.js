@@ -8,8 +8,23 @@
 
 const os = require('os');
 const path = require('path');
+const fs = require('fs');
 
 const HOME = '/root';
+
+// Default agent workspace. /sdcard is the Android shared storage bound in
+// by proot when reachable — a project folder there is visible from any file
+// manager, which is what the owner asked for. The probe doubles as creation:
+// mkdirSync fails on a missing bind (no /sdcard in the guest) or a denied
+// permission, and the private /root/work is used instead — never a crash.
+function defaultWorkdir() {
+  try {
+    fs.mkdirSync('/sdcard/coding-sachet', { recursive: true });
+    return '/sdcard/coding-sachet';
+  } catch {
+    return path.join(HOME, 'work');
+  }
+}
 
 // Extra sandbox roots, pushed by the app for rooted devices (SACHET_EXTRA_ROOTS="/,/device"):
 // "/" lets the file explorer navigate the whole guest, "/device" is the
@@ -69,8 +84,11 @@ const config = {
 
   version: '1.0.0',
 
-  // The directory the coding agent works in.
-  workdir: process.env.SACHET_WORKDIR || path.join(HOME, 'work'),
+  // The directory the coding agent works in. Default: the shared-storage
+  // project folder /sdcard/coding-sachet (visible from any file manager);
+  // when the storage bind is missing or unwritable (no storage permission,
+  // unmounted) the private /root/work is used instead. SACHET_WORKDIR wins.
+  workdir: process.env.SACHET_WORKDIR || defaultWorkdir(),
 
   // Agent loop limits.
   maxTurns: Number(process.env.SACHET_MAX_TURNS || 24),

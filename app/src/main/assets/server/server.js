@@ -16,7 +16,8 @@
 
 const http = require('http');
 const fs = require('fs');
-const { config, providerById } = require('./config');
+const path = require('path');
+const { config, providerById, HOME } = require('./config');
 const { runAgent } = require('./agent');
 const { safePath, listDir, readFile, writeFile } = require('./tools');
 const { fetchWithRetry, fetchRetryTimeout, netErrorDetail } = require('./net');
@@ -463,7 +464,15 @@ async function route(req, res) {
 
 /** Start the server; returns the http.Server (useful for tests). */
 function start() {
-  fs.mkdirSync(config.workdir, { recursive: true });
+  try {
+    fs.mkdirSync(config.workdir, { recursive: true });
+  } catch (e) {
+    // Shared storage vanished between config resolution and startup
+    // (unmounted / permission revoked) — fall back to the private rootfs.
+    config.workdir = path.join(HOME, 'work');
+    fs.mkdirSync(config.workdir, { recursive: true });
+    log(`workdir fallback /root/work (${e.message})`);
+  }
   const srv = http.createServer((req, res) => {
     route(req, res).catch((e) => {
       log('route error:', e.message);

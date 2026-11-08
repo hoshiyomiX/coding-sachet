@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -57,6 +58,21 @@ class AgentApi(private val port: () -> Int) {
                 if (!r.isSuccessful) return@withContext null
                 val o = json.parseToJsonElement(r.body.string()).jsonObject
                 o["version"]?.jsonPrimitive?.content
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** The agent server's resolved workdir (from /health) — /sdcard/coding-sachet
+     * when shared storage is writable, /root/work otherwise. Null = server
+     * not reachable. */
+    suspend fun workdir(): String? = withContext(Dispatchers.IO) {
+        try {
+            client.newCall(Request.Builder().url(baseUrl() + "/health").build()).execute().use { r ->
+                if (!r.isSuccessful) return@withContext null
+                val o = json.parseToJsonElement(r.body.string()).jsonObject
+                o["workdir"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
             }
         } catch (_: Exception) {
             null

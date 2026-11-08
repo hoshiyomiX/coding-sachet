@@ -170,7 +170,7 @@ function runBash(command, onOutput) {
 const tools = [
   {
     name: 'bash',
-    description: 'Run a shell command inside the Ubuntu sandbox (workdir /root/work). Use it for git, grep, find, installing packages with apt, running builds and tests. Output is capped.',
+    description: `Run a shell command inside the Ubuntu sandbox (workdir ${config.workdir}). Use it for git, grep, find, installing packages with apt, running builds and tests. Output is capped.`,
     parameters: {
       type: 'object',
       properties: {

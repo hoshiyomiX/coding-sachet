@@ -3,6 +3,7 @@ package id.codingsachet.mobile.ui.screens
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -34,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -82,7 +84,13 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
     var installingTools by remember { mutableStateOf(false) }
     val toolLog = remember { mutableStateListOf<String>() }
 
-    Column(Modifier.fillMaxSize()) {
+    // The agent server's resolved workdir — /sdcard/coding-sachet on shared
+    // storage, /root/work when storage is unavailable (shows which one is
+    // actually in use instead of a hardcoded path).
+    var workdir by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { workdir = Graph.api.workdir() }
+
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         TopAppBar(
             title = { Text(s.settingsTitle) },
             navigationIcon = {
@@ -279,7 +287,7 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
             Providers.ALL.filter { it.id != provider.id }.forEach { other ->
                 Text("${other.label}: ${other.baseUrl}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Text("${s.workdirLabel}: /root/work", style = MaterialTheme.typography.bodySmall)
+            Text("${s.workdirLabel}: ${workdir ?: "…"}", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(24.dp))
         }
     }

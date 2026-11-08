@@ -802,10 +802,12 @@ test('chat: black-holed gateway connect → netretry hints, then a fast connect-
       emit: (e) => events.push(e),
     }),
     (e) => e.message.includes('koneksi') && e.message.includes('percobaan')
+      && e.message.includes('NVIDIA NIM'), 'error names the failing gateway'
   );
   const retries = events.filter((e) => e.type === 'netretry');
   assert.strictEqual(retries.length, 2, 'two fresh-budget retries before giving up');
   assert.strictEqual(retries[0].attempt, 1);
+  assert.strictEqual(retries[0].provider, 'NVIDIA NIM', 'netretry carries the provider label');
   assert.ok(Date.now() - t0 < 8000, 'fails fast instead of the 300s global timeout');
 });
 

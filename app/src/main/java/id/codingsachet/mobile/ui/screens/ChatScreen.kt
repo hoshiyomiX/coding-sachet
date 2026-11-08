@@ -515,9 +515,11 @@ private fun LiveBubble(l: LiveTurn) {
             )
         }
         // Gateway connect retry hint (cold VPN path, fresh-budget retry).
+        // Names the gateway when the server says which one it is retrying —
+        // APInex and NIM failures look identical otherwise.
         l.reconnect?.let {
             Text(
-                "${s.reconnecting} ($it/3)…",
+                "${s.reconnecting} ${l.reconnectTo ?: "gateway"} ($it/3)…",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.tertiary,
                 modifier = Modifier.padding(horizontal = 4.dp),

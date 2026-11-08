@@ -139,7 +139,7 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
           // arrive the stream runs under the global timer alone.
           { timeoutMs: config.connectTimeoutMs, retries: 2, delays: [500, 1500] },
           (attemptNo, err) => {
-            if (onDelta) onDelta({ type: 'netretry', attempt: attemptNo, detail: netErrorDetail(err).slice(0, 120) });
+            if (onDelta) onDelta({ type: 'netretry', attempt: attemptNo, provider: provider.label, detail: netErrorDetail(err).slice(0, 120) });
           }
         );
         if (res.ok || res.status !== 429 || attempt >= MAX_429_RETRIES) break;
@@ -153,13 +153,16 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
       if (e.name === 'AbortError') {
         if (signal && signal.aborted) throw new Error('dibatalkan');
         if (e.connectTimeoutMs) {
+          // Named gateway so the user can tell APInex and NIM apart in the
+          // error bubble (a field report blamed NIM while the failing
+          // request was actually on the APInex provider).
           throw new Error(
-            `gateway timeout (koneksi ${Math.round(e.connectTimeoutMs / 1000)}s × 3 percobaan — cek jaringan/VPN)`
+            `gateway timeout ke ${provider.label} (koneksi ${Math.round(e.connectTimeoutMs / 1000)}s × 3 percobaan — cek jaringan/VPN)`
           );
         }
         throw new Error(`gateway timeout (${config.requestTimeoutMs / 1000}s)`);
       }
-      throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`);
+      throw new Error(`Koneksi ke gateway ${provider.label} gagal: ${netErrorDetail(e)}`);
     }
 
     if (!res.ok) {

@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -43,6 +44,9 @@ data class LiveTurn(
     /** Set while the agent server retries the gateway connect with a fresh
      *  budget (cold VPN path) — the retry attempt number. */
     val reconnect: Int? = null,
+    /** Which gateway is being retried ("APInex" / "NVIDIA NIM"), when the
+     *  agent server names it — null keeps the generic "gateway" wording. */
+    val reconnectTo: String? = null,
 )
 
 /**
@@ -127,13 +131,14 @@ class ChatEngine(val session: Session) {
 
     private suspend fun handle(ev: JsonObject) {
         when (ev["type"]?.jsonPrimitive?.content) {
-            "think" -> { receivedAnything = true; live.value = live.value?.copy(thinking = live.value!!.thinking + ev.str("delta"), waiting = null, reconnect = null) }
-            "text" -> { receivedAnything = true; live.value = live.value?.copy(text = live.value!!.text + ev.str("delta"), waiting = null, reconnect = null) }
+            "think" -> { receivedAnything = true; live.value = live.value?.copy(thinking = live.value!!.thinking + ev.str("delta"), waiting = null, reconnect = null, reconnectTo = null) }
+            "text" -> { receivedAnything = true; live.value = live.value?.copy(text = live.value!!.text + ev.str("delta"), waiting = null, reconnect = null, reconnectTo = null) }
             "netretry" -> {
                 // The agent server is retrying the gateway connect with a
                 // fresh budget (cold VPN path) — show it instead of silence.
                 val n = ev["attempt"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
-                live.value = live.value?.copy(reconnect = n, waiting = null)
+                val to = ev["provider"]?.jsonPrimitive?.contentOrNull
+                live.value = live.value?.copy(reconnect = n, reconnectTo = to?.takeIf { it.isNotBlank() }, waiting = null)
             }
             "ratelimit" -> {
                 // The agent server is waiting out the gateway RPM window
@@ -237,7 +242,9 @@ class ChatEngine(val session: Session) {
     companion object {
         val SYSTEM_PROMPT = """
             Kamu adalah agent coding yang berjalan di Ubuntu 24.04 (proot) pada HP pengguna.
-            Folder kerja: /root/work. Kamu punya tools: bash, read_file, write_file, list_dir.
+            Folder kerja utama: /sdcard/coding-sachet di penyimpanan bersama HP (jika tidak
+            tersedia, /root/work). Pastikan dengan pwd sebelum membuat file proyek.
+            Kamu punya tools: bash, read_file, write_file, list_dir.
             Bekerja sistematis: lihat dulu (list_dir/read_file), baru ubah (write_file/bash),
             lalu verifikasi dengan menjalankan kode. Jawab dalam bahasa yang dipakai pengguna.
             Ringkas saat mengobrol, teliti saat menulis kode.
