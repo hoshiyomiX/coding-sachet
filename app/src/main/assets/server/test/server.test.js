@@ -9,12 +9,17 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { startMockGateway, collectSse, getJson } = require('./mock-gateway');
+const { startMockGateway, collectSse, getJson, postJson } = require('./mock-gateway');
 
 // Isolated env for the server under test.
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'pkt-srv-'));
 process.env.SACHET_WORKDIR = path.join(ROOT, 'root', 'work');
 process.env.SACHET_PORT = '0'; // will be replaced once we know a free port
+// The /api/dns route writes the guest resolver config — point it at a temp
+// file so tests never touch the real /etc/resolv.conf.
+process.env.SACHET_RESOLV_CONF = path.join(ROOT, 'resolv.conf');
+// Keep the fire-and-forget gateway warm-up out of the test process.
+process.env.SACHET_NO_WARMUP = '1';
 
 /** Point both providers at the given mock gateways and reset the roots. */
 function useGateways({ apinex, nvidia }) {
@@ -331,4 +336,191 @@ test('HTTP server: models are cached per provider+key (5 min TTL)', async (t) =>
   const retryOther = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-test-123-lain' });
   assert.strictEqual(retryOther.status, 502);
   assert.strictEqual(ap.modelRequests.length, 3);
+});
+
+test('HTTP server: /api/dns rewrites the guest resolver (VPN-aware DNS push)', async (t) => {
+  const gw = await startMockGateway([]);
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  const r = await postJson(port, '/api/dns', {
+    servers: ['10.11.12.13', '10.11.12.13', 'bogus', 'fd00::1', '1.2.3.4', '5.6.7.8', '9.9.9.10'],
+  });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.ok, true);
+  // deduped, validated, max 3 system servers — fallbacks appended after.
+  assert.deepStrictEqual(
+    r.body.nameservers,
+    ['10.11.12.13', 'fd00::1', '1.2.3.4', '1.1.1.1', '8.8.8.8']
+  );
+
+  const written = fs.readFileSync(process.env.SACHET_RESOLV_CONF, 'utf8');
+  assert.ok(written.includes('# managed by coding-sachet'));
+  assert.ok(written.includes('nameserver 10.11.12.13'));
+  assert.ok(written.includes('options timeout:1 attempts:2 single-request-reopen'));
+
+  const g = await getJson(port, '/api/dns');
+  assert.strictEqual(g.status, 200);
+  assert.ok(g.body.nameservers.includes('10.11.12.13'));
+});
+
+test('HTTP server: /api/quota serves APInex token counters (native + cache + fresh)', async (t) => {
+  const gw = await startMockGateway([], {
+    key: 'sk-quota-1',
+    quota: { unlimited: false, tokenLimit: 20000000, tokensUsed: 700000, tokensRemaining: 19300000, balanceUsd: 38.6 },
+  });
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  const r = await getJson(port, '/api/quota', { 'x-sachet-key': 'sk-quota-1' });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.supported, true);
+  assert.strictEqual(r.body.source, 'native');
+  assert.strictEqual(r.body.unlimited, false);
+  assert.strictEqual(r.body.tokensRemaining, 19300000);
+  assert.strictEqual(r.body.tokensUsed, 700000);
+  assert.strictEqual(r.body.tokenLimit, 20000000);
+  assert.strictEqual(r.body.balanceUsd, 38.6);
+  assert.strictEqual(gw.quotaRequests, 2); // subscription + balance
+
+  // second call within the TTL is cached — no extra gateway hits
+  const r2 = await getJson(port, '/api/quota', { 'x-sachet-key': 'sk-quota-1' });
+  assert.strictEqual(r2.status, 200);
+  assert.strictEqual(r2.body.cached, true);
+  assert.strictEqual(r2.body.tokensRemaining, 19300000);
+  assert.strictEqual(gw.quotaRequests, 2);
+
+  // ?fresh=1 skips the cache read (still refreshes it)
+  const r3 = await getJson(port, '/api/quota?fresh=1', { 'x-sachet-key': 'sk-quota-1' });
+  assert.strictEqual(r3.status, 200);
+  assert.notStrictEqual(r3.body.cached, true);
+  assert.strictEqual(gw.quotaRequests, 4);
+
+  // NIM has no per-key balance API
+  const nv = await getJson(port, '/api/quota', { 'x-sachet-key': 'nvapi-x', 'x-sachet-provider': 'nvidia' });
+  assert.strictEqual(nv.status, 200);
+  assert.strictEqual(nv.body.supported, false);
+
+  // a rejected key surfaces the gateway error
+  const bad = await getJson(port, '/api/quota', { 'x-sachet-key': 'sk-salah' });
+  assert.strictEqual(bad.status, 502);
+  assert.ok(bad.body.error.includes('Invalid token'));
+});
+
+test('HTTP server: /api/quota falls back to the OpenAI billing pair when native is absent', async (t) => {
+  const gw = await startMockGateway([], { key: 'sk-quota-2', billing: { hardLimitUsd: 40, totalUsage: 250 } });
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  const r = await getJson(port, '/api/quota', { 'x-sachet-key': 'sk-quota-2' });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.source, 'billing');
+  // (40 USD − 250 cents) × 500000 units/USD
+  assert.strictEqual(r.body.tokensRemaining, 18750000);
+  assert.strictEqual(r.body.balanceUsd, 37.5);
+});
+
+test('agent loop: history from a mid-session model switch is healed on the wire', async (t) => {
+  const gw = await startMockGateway([{ kind: 'text', text: 'siap' }]);
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+  const { runAgent } = require('../agent');
+
+  // A completed round whose gateway streamed tool calls WITHOUT ids
+  // (some models do), persisted by an older turn.
+  await runAgent({
+    apiKey: 'sk-test-123', providerId: 'apinex', model: 'model-b',
+    messages: [
+      { role: 'user', content: 'tolong cek' },
+      { role: 'assistant', content: '', toolCalls: [{ id: '', name: 'bash', args: { command: 'pwd' } }] },
+      { role: 'tool', content: 'exit=0\n/root/work', toolCallId: '', name: 'bash' },
+      { role: 'user', content: 'lanjut' },
+    ],
+    emit: () => {},
+  });
+
+  const sent = gw.requests[0].messages;
+  const withCalls = sent.find((m) => m.role === 'assistant' && m.tool_calls);
+  assert.ok(withCalls, 'the completed round keeps its tool_calls');
+  assert.ok(withCalls.tool_calls[0].id.length > 4, 'empty ids are synthesized');
+  const toolMsg = sent.find((m) => m.role === 'tool');
+  assert.strictEqual(toolMsg.tool_call_id, withCalls.tool_calls[0].id);
+});
+
+test('agent loop: interrupted tool rounds and orphan results never reach the gateway', async (t) => {
+  const gw = await startMockGateway([{ kind: 'text', text: 'oke' }]);
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+  const { runAgent } = require('../agent');
+
+  await runAgent({
+    apiKey: 'sk-test-123', providerId: 'apinex', model: 'model-b',
+    messages: [
+      { role: 'user', content: 'cek config' },
+      // orphan result: the assistant message that asked for it is gone
+      { role: 'tool', content: 'exit=0\nhantu', toolCallId: 'ghost', name: 'bash' },
+      // interrupted round: stop was pressed before the tool answered
+      // (its result never landed, the next message is a user turn)
+      { role: 'assistant', content: 'Aku cek dulu—', toolCalls: [{ id: '', name: 'bash', args: { command: 'cat app.conf' } }] },
+      { role: 'user', content: 'sudah cukup, lanjut' },
+    ],
+    emit: () => {},
+  });
+
+  const sent = gw.requests[0].messages;
+  assert.ok(!sent.some((m) => m.role === 'assistant' && m.tool_calls), 'dangling tool_calls are folded away');
+  assert.ok(!sent.some((m) => m.role === 'tool'), 'orphan tool results are dropped');
+  const plain = sent.find((m) => m.role === 'assistant');
+  assert.strictEqual(plain.content, 'Aku cek dulu—');
+});
+
+test('agent loop: a connect failure (VPN bring-up race) is retried, not failed', async (t) => {
+  const gw = await startMockGateway([{ kind: 'text', text: 'ok' }], { flakyChat: 1 });
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+  const { runAgent } = require('../agent');
+
+  const added = await runAgent({
+    apiKey: 'sk-test-123', providerId: 'apinex', model: 'x',
+    messages: [{ role: 'user', content: 'hai' }],
+    emit: () => {},
+  });
+  assert.strictEqual(added[0].content, 'ok');
+  assert.strictEqual(gw.chatAttempts, 2); // first destroyed, retry delivered
+  assert.strictEqual(gw.requests.length, 1);
+});
+
+test('HTTP server: /api/models survives a dropped first connection', async (t) => {
+  const gw = await startMockGateway([], { flakyModels: 1, key: 'sk-flaky-1' });
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  const r = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-flaky-1' });
+  assert.strictEqual(r.status, 200);
+  assert.deepStrictEqual(r.body.models, ['test-mini', 'test-pro']);
+  assert.strictEqual(gw.modelAttempts, 2);
 });

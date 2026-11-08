@@ -156,6 +156,78 @@ class AgentApi(private val port: () -> Int) {
         }
     }
 
+    // ---------- dns (VPN-aware resolver push) ----------
+
+    /**
+     * Tell the agent server which DNS servers the Android system currently
+     * uses (VPN-aware). The server rewrites the guest's /etc/resolv.conf
+     * so gateway fetches follow the active network/VPN instead of hitting
+     * public resolvers many VPNs block ("fetch failed" under VPN).
+     */
+    suspend fun pushDns(servers: List<String>): Boolean = withContext(Dispatchers.IO) {
+        if (servers.isEmpty()) return@withContext false
+        runCatching {
+            val body = json.encodeToString(
+                kotlinx.serialization.json.JsonObject.serializer(),
+                kotlinx.serialization.json.buildJsonObject {
+                    put("servers", kotlinx.serialization.json.buildJsonArray {
+                        servers.forEach { add(JsonPrimitive(it)) }
+                    })
+                }
+            )
+            client.newCall(
+                Request.Builder()
+                    .url(baseUrl() + "/api/dns")
+                    .post(body.toRequestBody("application/json".toMediaType()))
+                    .build()
+            ).execute().use { it.isSuccessful }
+        }.getOrDefault(false)
+    }
+
+    // ---------- quota ----------
+
+    /** Remaining-quota info for a provider's key (APInex only for now). */
+    data class QuotaInfo(
+        val unlimited: Boolean,
+        val tokensRemaining: Long?,
+        val tokensUsed: Long?,
+        val tokenLimit: Long?,
+        val balanceUsd: Double?,
+    )
+
+    /**
+     * GET /api/quota through the local server. Returns null when the
+     * provider has no quota API (NIM) — the UI hides the chip then.
+     */
+    suspend fun quota(apiKey: String, provider: Provider, fresh: Boolean = false): Result<QuotaInfo?> = withContext(Dispatchers.IO) {
+        runCatching {
+            val req = Request.Builder()
+                .url(baseUrl() + "/api/quota" + if (fresh) "?fresh=1" else "")
+                .header("X-Sachet-Key", apiKey)
+                .header("X-Sachet-Provider", provider.id)
+                .build()
+            slowClient.newCall(req).execute().use { r ->
+                val body = r.body.string()
+                if (!r.isSuccessful) throw IOException(errorOf(body, r.code))
+                val o = json.parseToJsonElement(body).jsonObject
+                if (o["supported"]?.jsonPrimitive?.content != "true") return@use null
+                QuotaInfo(
+                    unlimited = o["unlimited"]?.jsonPrimitive?.content == "true",
+                    tokensRemaining = o.num("tokensRemaining")?.toLong(),
+                    tokensUsed = o.num("tokensUsed")?.toLong(),
+                    tokenLimit = o.num("tokenLimit")?.toLong(),
+                    balanceUsd = o.num("balanceUsd"),
+                )
+            }
+        }
+    }
+
+    private fun JsonObject.num(key: String): Double? {
+        val p = this[key] as? JsonPrimitive ?: return null
+        if (p is kotlinx.serialization.json.JsonNull) return null
+        return p.content.toDoubleOrNull()
+    }
+
     // ---------- chat (SSE) ----------
 
     /**

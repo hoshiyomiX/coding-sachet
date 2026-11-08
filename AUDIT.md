@@ -42,10 +42,13 @@ Audit teknis kondisi terkini (2026-11-07, pasca-rename penuh ke Coding Sachet). 
 
 - Server lokal 127.0.0.1:8765 (SACHET_PORT), key tidak keluar perangkat selain ke penyedia.
 - Dual-path: proxy via guest + fallback langsung OkHttp (jalur validasi key) — timeout 35 s, DNS hardened, cache 5 menit, retry.
+- **DNS ramah VPN (T-ML10)**: resolv.conf guest tidak lagi hardcode resolver publik — app membaca DNS jaringan aktif via ConnectivityManager (ikut VPN) lalu `POST /api/dns` menulis ulang resolv.conf (DNS sistem ≤3 dulu, 1.1.1.1/8.8.8.8 cadangan, marker `# managed by coding-sachet`); push ulang tiap server hidup + setiap perubahan jaringan (throttle 10 s); productionSetup hanya menulis fallback bila belum ada marker. Semua fetch gateway (models/chat/quota) dibungkus `fetchWithRetry` — retry 2× khusus kegagalan connect-level (delay 400/900 ms, AbortError tak di-retry, stream tak pernah duplikat).
+- **Riwayat lintas model (T-ML10)**: `toOpenAiMessages` melakukan healing — id tool-call kosong disintesis dan dipasangkan posisional dengan tool result; putaran terhenti (stop sebelum tool menjawab) dilipat jadi pesan assistant polos; tool result orphan di-drop — gateway ketat (NIM/OpenAI) tidak lagi menolak 400 saat ganti model di tengah sesi.
+- **Kuota (T-ML10)**: `GET /api/quota` (X-Sachet-Key/Provider, cache 60 s, `?fresh=1`) — primer endpoint natif APInex `/v1/subscription` (tokens_remaining/unlimited) + `/v1/balance` (balance_usd, best-effort); fallback pasangan `/v1/dashboard/billing/*` gaya new-api hanya saat 404/405 (hard_limit_usd − total_usage/100, konversi 500.000 unit/USD). NIM: `{supported:false}` — chip disembunyikan. UI: chip "Sisa token" kanan-atas kolom chat, refresh saat layar dibuka + server Running + tiap akhir giliran + ketuk (fresh).
 - Path tool dipenjara allowed roots `/root`, `/tmp`, `/sdcard`.
 - proot: `--root-id --kill-on-exit --link2symlink`, bind /dev /proc /sys + fake loadavg/stat/uptime/version, /dev/shm dari tmp rootfs, mode kompatibilitas `PROOT_NO_SECCOMP` otomatis bila smoke-test gagal.
 
 ## §5 Hal yang belum terverifikasi
 
-- Chat nyata kedua gateway dengan key resmi: APInex terblokir dari sandbox (Cloudflare), NIM tidak ada key `nvapi-` yang diunggah saat sesi ini. Suite mock 18/18 tetap hijau; validasi nyata menunggu first-run di perangkat.
+- Chat nyata kedua gateway dengan key resmi: APInex terblokir dari sandbox (Cloudflare), NIM tidak ada key `nvapi-` yang diunggah saat sesi ini. Suite mock 25/25 tetap hijau; validasi nyata (termasuk endpoint kuota natif APInex dan perilaku VPN nyata) menunggu first-run di perangkat.
 - Perilaku armv7/x86_64 di perangkat nyata (biner sudah diverifikasi ELF-arch + NEEDED, tapi belum ada uji hardware).

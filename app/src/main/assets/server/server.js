@@ -6,6 +6,9 @@
 //   GET  /health              liveness + versions + providers
 //   GET  /api/models          provider model list (X-Sachet-Key + X-Sachet-Provider)
 //   POST /api/chat            agent loop, SSE events (X-Sachet-Key + X-Sachet-Provider)
+//   GET  /api/quota           remaining tokens/balance (?fresh=1 skips cache)
+//   GET  /api/dns             current guest resolver servers
+//   POST /api/dns             rewrite the guest resolver {servers:[...]} (VPN-aware)
 //   GET  /api/fs?path=        list directory           (file explorer)
 //   GET  /api/fs/file?path=   read a file
 //   PUT  /api/fs/file         write a file {path, content}
@@ -16,6 +19,11 @@ const fs = require('fs');
 const { config, providerById } = require('./config');
 const { runAgent } = require('./agent');
 const { safePath, listDir, readFile, writeFile } = require('./tools');
+const { fetchWithRetry, netErrorDetail } = require('./net');
+
+// Fire-and-forget gateway warm-up after a resolver rewrite is only wanted
+// in production; the test suite sets SACHET_NO_WARMUP=1 to stay hermetic.
+const WARMUP_ENABLED = process.env.SACHET_NO_WARMUP !== '1';
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
@@ -67,12 +75,12 @@ function gatewayProviderId(req) {
 
 /** GET {provider.baseUrl}/models with the caller's key. */
 async function fetchModels(apiKey, provider) {
-  const res = await fetch(provider.baseUrl + '/models', {
+  const res = await fetchWithRetry(provider.baseUrl + '/models', {
     headers: { Authorization: `Bearer ${apiKey}` },
     // Keep this comfortably below the app-side read timeout (35 s) so the
     // app always receives our error JSON instead of its own "timeout".
     signal: AbortSignal.timeout(20000),
-  }).catch((e) => { throw new Error(`Koneksi ke gateway gagal: ${e.message}`); });
+  }).catch((e) => { throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`); });
 
   const text = await res.text().catch(() => '');
   if (!res.ok) {
@@ -86,6 +94,154 @@ async function fetchModels(apiKey, provider) {
     ? j.data.map((m) => m && m.id).filter((x) => typeof x === 'string')
     : Array.isArray(j) ? j.filter((x) => typeof x === 'string') : [];
   return ids.sort((a, b) => a.localeCompare(b));
+}
+
+// ---------- quota cache ----------
+// The app shows a small "sisa token" chip; it refreshes on screen open,
+// after every finished turn, and on tap. A per-key cache keeps that cheap.
+const quotaCache = new Map(); // `${providerId}|${key}` -> { at, payload }
+const QUOTA_CACHE_TTL = 60 * 1000;
+
+const num = (x) => {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+};
+
+async function getJsonBody(res) {
+  const text = await res.text().catch(() => '');
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+/** Error message out of a gateway error body (OpenAI {error}, {detail}, raw). */
+function gatewayErrorText(text) {
+  let msg = String(text || '').slice(0, 300);
+  try {
+    const j = JSON.parse(msg);
+    msg = (j.error && (j.error.message || j.error)) || j.detail || j.message || msg;
+  } catch { /* not JSON */ }
+  return String(msg);
+}
+
+/**
+ * Remaining quota for the caller's key.
+ * Primary: APInex-native /subscription + /balance (token counters).
+ * Fallback: the OpenAI-style billing pair new-api deployments expose —
+ * only when the native endpoints answer 404/405 (not deployed). A network
+ * failure is surfaced directly: the billing endpoints live on the same
+ * host, so retrying them would only burn the caller's timeout.
+ */
+async function fetchQuota(apiKey, provider) {
+  const q = provider.quota;
+  const headers = { Authorization: `Bearer ${apiKey}` };
+  const t = () => ({ signal: AbortSignal.timeout(12000) });
+
+  if (q.subscriptionPath) {
+    let sub;
+    try {
+      sub = await fetchWithRetry(provider.baseUrl + q.subscriptionPath, { headers, ...t() });
+    } catch (e) {
+      throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`);
+    }
+
+    if (sub.ok) {
+      const j = (await getJsonBody(sub)) || {};
+      // Balance is best-effort: any failure just hides the USD hint.
+      let balanceUsd = null;
+      if (q.balancePath) {
+        try {
+          const bal = await fetchWithRetry(provider.baseUrl + q.balancePath, { headers, ...t() });
+          if (bal.ok) balanceUsd = num(((await getJsonBody(bal)) || {}).balance_usd);
+        } catch { /* best effort */ }
+      }
+      return {
+        supported: true,
+        source: 'native',
+        unlimited: j.unlimited === true,
+        tokensRemaining: num(j.tokens_remaining),
+        tokensUsed: num(j.tokens_used),
+        tokenLimit: num(j.token_limit),
+        balanceUsd,
+      };
+    }
+
+    if (sub.status !== 404 && sub.status !== 405) {
+      const text = await sub.text().catch(() => '');
+      throw new Error(`HTTP ${sub.status}: ${gatewayErrorText(text)}`);
+    }
+  }
+
+  if (!q.billingFallback) throw new Error('Gateway tidak menyediakan info kuota');
+
+  const [s2, u2] = await Promise.all([
+    fetchWithRetry(provider.baseUrl + '/dashboard/billing/subscription', { headers, ...t() }),
+    fetchWithRetry(provider.baseUrl + '/dashboard/billing/usage?start_date=1970-01-01&end_date=2038-01-01', { headers, ...t() }),
+  ]);
+  if (!s2.ok) {
+    const text = await s2.text().catch(() => '');
+    throw new Error(`HTTP ${s2.status}: ${gatewayErrorText(text)}`);
+  }
+  if (!u2.ok) {
+    const text = await u2.text().catch(() => '');
+    throw new Error(`HTTP ${u2.status}: ${gatewayErrorText(text)}`);
+  }
+  const sub2 = (await getJsonBody(s2)) || {};
+  const usage2 = (await getJsonBody(u2)) || {};
+  const hardLimit = num(sub2.hard_limit_usd) || 0;
+  const usedUsd = (num(usage2.total_usage) || 0) / 100;
+  const remainingUsd = Math.max(0, hardLimit - usedUsd);
+  const unlimited = hardLimit >= 99999999;
+  return {
+    supported: true,
+    source: 'billing',
+    unlimited,
+    tokensRemaining: unlimited ? null : Math.round(remainingUsd * q.quotaPerUnit),
+    tokensUsed: Math.round(usedUsd * q.quotaPerUnit),
+    tokenLimit: unlimited ? null : Math.round(hardLimit * q.quotaPerUnit),
+    balanceUsd: remainingUsd,
+  };
+}
+
+// ---------- guest resolver (VPN-aware DNS) ----------
+
+// IPv4/IPv6 literals only — no hostnames, no zone indices (%wlan0).
+const DNS_IP_RE = /^[0-9A-Fa-f:.]+$/;
+
+/** Rewrite the guest's resolv.conf: system DNS first, public fallbacks last. */
+function writeResolvConf(systemServers) {
+  const seen = new Set();
+  const valid = [];
+  for (const s of systemServers || []) {
+    const v = String(s || '').trim();
+    if (!v || !DNS_IP_RE.test(v) || seen.has(v)) continue;
+    seen.add(v);
+    valid.push(v);
+    if (valid.length >= 3) break;
+  }
+  const fallbacks = (config.dnsFallbackServers || []).filter((f) => !seen.has(f));
+  const nameservers = [...valid, ...fallbacks];
+  const lines = ['# managed by coding-sachet (/api/dns)'];
+  for (const ns of nameservers) lines.push(`nameserver ${ns}`);
+  lines.push('options timeout:1 attempts:2 single-request-reopen', '');
+  fs.writeFileSync(config.resolvConfPath, lines.join('\n'));
+  return nameservers;
+}
+
+function currentResolvServers() {
+  let text = '';
+  try { text = fs.readFileSync(config.resolvConfPath, 'utf8'); } catch { /* missing */ }
+  return text.split('\n')
+    .filter((l) => l.startsWith('nameserver '))
+    .map((l) => l.slice('nameserver '.length).trim())
+    .filter(Boolean);
+}
+
+/** Fire-and-forget DNS + TLS warm-up for every provider. */
+function warmUpGateways() {
+  for (const p of Object.values(config.providers)) {
+    fetch(p.baseUrl + '/models', { signal: AbortSignal.timeout(10000) })
+      .then((r) => log(`warm-up ${p.baseUrl}: HTTP ${r.status}`))
+      .catch((e) => log(`warm-up ${p.baseUrl} gagal:`, e.message));
+  }
 }
 
 // ---------- routes ----------
@@ -174,6 +330,54 @@ async function route(req, res) {
       try { res.end(); } catch { /* ignore */ }
     }
     return;
+  }
+
+  // ---------- quota + guest resolver ----------
+
+  if (req.method === 'GET' && url.pathname === '/api/quota') {
+    const key = gatewayKey(req);
+    if (!key) return sendJson(res, 401, { error: 'X-Sachet-Key hilang' });
+    const providerId = gatewayProviderId(req);
+    const provider = providerById(providerId);
+    if (!provider) {
+      return sendJson(res, 400, { error: `Provider tidak dikenal: ${providerId}` });
+    }
+    // NIM has no per-key balance API; the app hides the chip.
+    if (!provider.quota) return sendJson(res, 200, { supported: false });
+    const cacheKey = `${providerId}|${key}`;
+    const fresh = url.searchParams.get('fresh') === '1';
+    if (!fresh) {
+      const hit = quotaCache.get(cacheKey);
+      if (hit && Date.now() - hit.at < QUOTA_CACHE_TTL) {
+        return sendJson(res, 200, { ...hit.payload, cached: true });
+      }
+    }
+    try {
+      const payload = await fetchQuota(key, provider);
+      quotaCache.set(cacheKey, { at: Date.now(), payload });
+      return sendJson(res, 200, payload);
+    } catch (e) {
+      return sendJson(res, 502, { error: e.message });
+    }
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/dns') {
+    return sendJson(res, 200, { nameservers: currentResolvServers() });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/dns') {
+    let body;
+    try { body = await readJson(req, 4096); } catch (e) {
+      return sendJson(res, 400, { error: `body: ${e.message}` });
+    }
+    const servers = Array.isArray(body.servers) ? body.servers : [];
+    let nameservers;
+    try { nameservers = writeResolvConf(servers); } catch (e) {
+      return sendJson(res, 500, { error: e.message });
+    }
+    log(`resolv.conf diperbarui: ${nameservers.join(', ')}`);
+    if (WARMUP_ENABLED) warmUpGateways();
+    return sendJson(res, 200, { ok: true, nameservers });
   }
 
   // ---------- file explorer ----------
@@ -269,18 +473,15 @@ function main() {
  */
 function productionSetup() {
   try {
-    const wanted = [
-      'nameserver 1.1.1.1',
-      'nameserver 8.8.8.8',
-      'nameserver 9.9.9.9',
-      'options timeout:2 attempts:2 single-request-reopen',
-      '',
-    ].join('\n');
+    // The app pushes the system's (VPN-aware) DNS servers via POST /api/dns
+    // once the server answers /health, and again on every network change.
+    // Only seed the fallback file when nothing managed is present yet, so a
+    // supervisor restart never clobbers a working VPN resolver config.
     let current = null;
-    try { current = fs.readFileSync('/etc/resolv.conf', 'utf8'); } catch { /* missing */ }
-    if (current !== wanted) {
-      fs.writeFileSync('/etc/resolv.conf', wanted);
-      log('resolv.conf diperbarui (timeout:2 attempts:2 single-request-reopen)');
+    try { current = fs.readFileSync(config.resolvConfPath, 'utf8'); } catch { /* missing */ }
+    if (!current || !current.includes('# managed by coding-sachet')) {
+      const nameservers = writeResolvConf([]);
+      log(`resolv.conf fallback: ${nameservers.join(', ')}`);
     }
   } catch (e) {
     log('resolv.conf tidak bisa diubah:', e.message);
@@ -288,13 +489,9 @@ function productionSetup() {
 
   try { require('node:dns').setDefaultResultOrder('ipv4first'); } catch { /* older node */ }
 
-  for (const p of Object.values(config.providers)) {
-    fetch(p.baseUrl + '/models', { signal: AbortSignal.timeout(10000) })
-      .then((r) => log(`warm-up ${p.baseUrl}: HTTP ${r.status}`))
-      .catch((e) => log(`warm-up ${p.baseUrl} gagal:`, e.message));
-  }
+  if (WARMUP_ENABLED) warmUpGateways();
 }
 
 if (require.main === module) main();
 
-module.exports = { main, start, route, fetchModels, log };
+module.exports = { main, start, route, fetchModels, fetchQuota, writeResolvConf, currentResolvServers, log };

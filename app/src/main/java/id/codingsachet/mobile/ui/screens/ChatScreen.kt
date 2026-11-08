@@ -103,6 +103,30 @@ fun ChatScreen(
     }
     val engine = current?.let { engines.getOrPut(it.id) { ChatEngine(it) } }
 
+    // ---------- sisa token APInex (chip di kanan atas kolom chat) ----------
+    var quotaState by remember { mutableStateOf<QuotaState>(QuotaState.Idle) }
+    fun refreshQuota(fresh: Boolean = false) {
+        if (Graph.prefs.provider != "apinex" || Graph.prefs.apiKey.isBlank()) {
+            quotaState = QuotaState.Idle
+            return
+        }
+        quotaState = QuotaState.Loading
+        val key = Graph.prefs.apiKey
+        val provider = Graph.prefs.active
+        scope.launch {
+            Graph.api.quota(key, provider, fresh).fold(
+                onSuccess = { q ->
+                    quotaState = if (q == null) QuotaState.Failed("tidak tersedia")
+                    else QuotaState.Ok(q.unlimited, q.tokensRemaining, q.balanceUsd)
+                },
+                onFailure = { quotaState = QuotaState.Failed(it.message ?: "gagal") },
+            )
+        }
+    }
+    LaunchedEffect(engine) { engine?.onTurnFinished = { refreshQuota() } }
+    LaunchedEffect(Unit) { refreshQuota() }
+    LaunchedEffect(runtimeState) { if (runtimeState is RuntimeState.Running) refreshQuota() }
+
     val live by (engine?.live ?: nullLive).collectAsState()
     val msgs = current?.messages ?: emptyList()
 
@@ -223,6 +247,11 @@ fun ChatScreen(
                 }
             }
 
+            // ---------- sisa token APInex (di atas kolom chat, kanan) ----------
+            if (Graph.prefs.provider == "apinex" && Graph.prefs.apiKey.isNotBlank()) {
+                QuotaChip(state = quotaState, onRefresh = { refreshQuota(fresh = true) })
+            }
+
             // ---------- composer ----------
             Surface(tonalElevation = 3.dp) {
                 Row(
@@ -261,8 +290,9 @@ fun ChatScreen(
                                 if (current == null) newChat()
                                 val target = current ?: return@IconButton
                                 val e = engines.getOrPut(target.id) { ChatEngine(target) }
-                                e.send(input, model)
-                                input = ""
+                                // Keep the typed text when the turn cannot
+                                // start (e.g. still busy) — it is not lost.
+                                if (e.send(input, model)) input = ""
                             },
                             enabled = input.isNotBlank() && model.isNotBlank(),
                         ) {
@@ -333,6 +363,60 @@ private fun RuntimeChip(state: RuntimeState) {
         else -> s.runtimeStopped to MaterialTheme.colorScheme.onSurfaceVariant
     }
     Text(label, style = MaterialTheme.typography.labelSmall, color = color)
+}
+
+/** Remaining-quota chip state (APInex only; hidden for NIM). */
+private sealed class QuotaState {
+    object Idle : QuotaState()
+    object Loading : QuotaState()
+    data class Ok(val unlimited: Boolean, val tokens: Long?, val balanceUsd: Double?) : QuotaState()
+    data class Failed(val message: String) : QuotaState()
+}
+
+/** Compact Indonesian token counts: 19300000 → "19,3 jt", 45000 → "45,0 rb". */
+private fun formatTokens(tokens: Long): String {
+    val loc = java.util.Locale("id", "ID")
+    return when {
+        tokens >= 1_000_000L -> String.format(loc, "%.1f jt", tokens / 1e6)
+        tokens >= 1_000L -> String.format(loc, "%.1f rb", tokens / 1e3)
+        else -> tokens.toString()
+    }
+}
+
+/** "Sisa token" indicator above the chat composer, right-aligned. */
+@Composable
+private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
+    val s = LocalStrings.current
+    val value = when (state) {
+        QuotaState.Idle -> return
+        QuotaState.Loading -> "…"
+        is QuotaState.Ok -> when {
+            state.unlimited -> "∞"
+            state.tokens != null -> {
+                val usd = state.balanceUsd
+                if (usd != null) {
+                    "±${formatTokens(state.tokens)} · " + String.format(java.util.Locale("id", "ID"), "$%.2f", usd)
+                } else {
+                    "±${formatTokens(state.tokens)}"
+                }
+            }
+            state.balanceUsd != null -> String.format(java.util.Locale("id", "ID"), "$%.2f", state.balanceUsd)
+            else -> "?"
+        }
+        is QuotaState.Failed -> "—"
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        Text(
+            "${s.quotaLabel}: $value",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (state is QuotaState.Failed) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.clickable(onClick = onRefresh).padding(vertical = 2.dp),
+        )
+    }
 }
 
 /** Persisted messages: user bubbles right, assistant content + tool cards left. */

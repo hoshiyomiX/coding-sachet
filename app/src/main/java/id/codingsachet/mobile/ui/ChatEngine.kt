@@ -48,12 +48,21 @@ class ChatEngine(val session: Session) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var call: Call? = null
 
-    val busy: Boolean get() = live.value != null
+    /** Notified after a turn finishes (success or error) — the screen uses
+     *  it to refresh the remaining-token chip. */
+    var onTurnFinished: (() -> Unit)? = null
+
+    // A finished-but-errored turn keeps `live` non-null so the error stays
+    // visible; it must NOT block the next send. Only an in-flight turn is
+    // busy. (The old `live.value != null` check froze the engine forever
+    // after the first error — the send button then ate the input silently.)
+    val busy: Boolean get() = live.value?.busy == true
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun send(text: String, model: String) {
-        if (busy || text.isBlank()) return
+    /** Returns false (caller keeps the input) when a turn cannot start. */
+    fun send(text: String, model: String): Boolean {
+        if (busy || text.isBlank() || model.isBlank()) return false
         scope.launch {
             session.messages += Msg(role = "user", content = text.trim())
             session.model = model
@@ -62,6 +71,7 @@ class ChatEngine(val session: Session) {
             live.value = LiveTurn()
             startStream(model)
         }
+        return true
     }
 
     private fun startStream(model: String) {
@@ -139,6 +149,7 @@ class ChatEngine(val session: Session) {
             live.value = null
         }
         persist()
+        onTurnFinished?.invoke()
     }
 
     fun stop() {
@@ -151,6 +162,7 @@ class ChatEngine(val session: Session) {
 
     fun dispose() {
         call?.cancel()
+        onTurnFinished = null
         scope.cancel()
     }
 

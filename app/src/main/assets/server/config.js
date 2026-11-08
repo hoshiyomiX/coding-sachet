@@ -20,6 +20,18 @@ const providers = {
       'Tunggu sebentar lalu kirim ulang pesanmu.',
     // The gateway applies its own default output limit.
     maxTokens: null,
+    // Remaining-quota endpoints (apinex.bond/developers/balance):
+    //   GET /v1/subscription → token counters (tokens_remaining, unlimited)
+    //   GET /v1/balance      → spendable wallet USD
+    // If the native endpoints ever disappear (404/405), the OpenAI-style
+    // billing pair new-api deployments expose is used as a fallback.
+    quota: {
+      subscriptionPath: '/subscription',
+      balancePath: '/balance',
+      billingFallback: true,
+      // new-api internal quota units per USD (QuotaPerUnit default).
+      quotaPerUnit: 500000,
+    },
   },
   nvidia: {
     label: 'NVIDIA NIM',
@@ -61,6 +73,13 @@ const config = {
   allowedRoots: [HOME, '/tmp', '/sdcard', '/storage/emulated/0'],
 
   jsonBodyLimit: 5 * 1024 * 1024,
+
+  // Where the /api/dns route writes the guest resolver config. The Android
+  // app pushes the system's (VPN-aware) DNS servers there; public
+  // resolvers are only the fallback, because many VPNs block direct
+  // UDP/53 to them ("fetch failed" under VPN).
+  resolvConfPath: process.env.SACHET_RESOLV_CONF || '/etc/resolv.conf',
+  dnsFallbackServers: ['1.1.1.1', '8.8.8.8'],
 };
 
 /** Resolve a provider id ("apinex" | "nvidia") to its spec, or null. */

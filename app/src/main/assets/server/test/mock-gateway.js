@@ -14,10 +14,19 @@ const http = require('http');
  *
  * opts.key:    the bearer token the mock accepts (default 'sk-test-123')
  * opts.models: model ids served by /v1/models
+ * opts.flakyChat:  destroy the socket of the first N chat requests before
+ *                  replying (simulates a VPN bring-up connect failure)
+ * opts.flakyModels: same for /v1/models
+ * opts.quota:  serve the APInex-native quota endpoints:
+ *              { mode, unlimited, tokenLimit, tokensUsed, tokensRemaining, balanceUsd }
+ * opts.billing: serve the OpenAI-style billing pair instead of the native
+ *              endpoints (which answer 404): { hardLimitUsd, totalUsage }
  *
- * Returns { server, port, requests, chatAuths, modelRequests, close() };
+ * Returns { server, port, requests, chatAuths, modelRequests, chatAttempts,
+ *           modelAttempts, quotaRequests, close() };
  * `requests` collects parsed chat bodies, `chatAuths` their Authorization
- * headers, `modelRequests` the /v1/models hits.
+ * headers, `modelRequests` the /v1/models hits, `chatAttempts`/`modelAttempts`
+ * count every connection (including flaky-destroyed ones).
  */
 function startMockGateway(script, opts = {}) {
   const key = opts.key || 'sk-test-123';
@@ -25,24 +34,101 @@ function startMockGateway(script, opts = {}) {
   const requests = [];
   const chatAuths = [];
   const modelRequests = [];
+  let chatAttempts = 0;
+  let modelAttempts = 0;
+  let quotaRequests = 0;
   let n = 0;
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
+      const unauthorized = () => {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Invalid token' } }));
+      };
+
       if (req.url === '/v1/models' && req.method === 'GET') {
-        modelRequests.push({ auth: req.headers.authorization });
-        if (req.headers.authorization !== `Bearer ${key}`) {
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: 'Invalid token' } }));
+        modelAttempts++;
+        if (opts.flakyModels && modelAttempts <= opts.flakyModels) {
+          res.socket.destroy();
           return;
         }
+        modelRequests.push({ auth: req.headers.authorization });
+        if (req.headers.authorization !== `Bearer ${key}`) return unauthorized();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ data: models.map((id) => ({ id })) }));
         return;
       }
 
+      // APInex-native quota endpoints (apinex.bond/developers/balance).
+      if (req.method === 'GET' && (req.url === '/v1/subscription' || req.url === '/v1/balance')) {
+        quotaRequests++;
+        if (!opts.quota) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'not found' } }));
+          return;
+        }
+        if (req.headers.authorization !== `Bearer ${key}`) return unauthorized();
+        if (req.url === '/v1/subscription') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            object: 'subscription',
+            mode: opts.quota.mode || 'free',
+            plan: null,
+            plan_label: 'Free',
+            unlimited: opts.quota.unlimited === true,
+            token_limit: opts.quota.tokenLimit ?? null,
+            tokens_used: opts.quota.tokensUsed ?? 0,
+            tokens_remaining: opts.quota.unlimited === true ? null : opts.quota.tokensRemaining,
+            expires_at_utc: null,
+            resets_at_utc: null,
+            allowed: true,
+          }));
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            object: 'balance',
+            balance_usd: opts.quota.balanceUsd ?? 0,
+            reserved_usd: 0,
+            rpm: 40,
+            rpm_plan: 'free',
+            api_key: { id: 'k_1', spent_usd: 1.4, reserved_usd: 0 },
+          }));
+        }
+        return;
+      }
+
+      // OpenAI-style billing pair (the new-api fallback).
+      if (req.method === 'GET' && req.url.startsWith('/v1/dashboard/billing/')) {
+        quotaRequests++;
+        if (!opts.billing) {
+          res.writeHead(404);
+          res.end('not found');
+          return;
+        }
+        if (req.headers.authorization !== `Bearer ${key}`) return unauthorized();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        if (req.url.startsWith('/v1/dashboard/billing/subscription')) {
+          res.end(JSON.stringify({
+            object: 'billing_subscription',
+            has_payment_method: true,
+            soft_limit_usd: opts.billing.hardLimitUsd,
+            hard_limit_usd: opts.billing.hardLimitUsd,
+            system_hard_limit_usd: opts.billing.hardLimitUsd,
+            access_until: 0,
+          }));
+        } else {
+          res.end(JSON.stringify({ object: 'list', total_usage: opts.billing.totalUsage }));
+        }
+        return;
+      }
+
       if (req.url === '/v1/chat/completions' && req.method === 'POST') {
+        chatAttempts++;
+        if (opts.flakyChat && chatAttempts <= opts.flakyChat) {
+          res.socket.destroy();
+          return;
+        }
         const parsed = JSON.parse(body);
         requests.push(parsed);
         chatAuths.push(req.headers.authorization);
@@ -68,7 +154,11 @@ function startMockGateway(script, opts = {}) {
             send({ choices: [{ delta: { role: 'assistant', content: reply.text }, finish_reason: null }] });
           }
           reply.calls.forEach((c, i) => {
-            send({ choices: [{ delta: { tool_calls: [{ index: i, id: c.id, function: { name: c.name, arguments: '' } }] }, finish_reason: null }] });
+            // Gateways that omit the tool_call id (some models do) send
+            // only index + function — mirror that when c.id is falsy.
+            const head = { index: i };
+            if (c.id) head.id = c.id;
+            send({ choices: [{ delta: { tool_calls: [{ ...head, function: { name: c.name, arguments: '' } }] }, finish_reason: null }] });
             // arguments arrive in two chunks, like real gateways do
             const s = JSON.stringify(c.args);
             const mid = Math.ceil(s.length / 2);
@@ -101,6 +191,10 @@ function startMockGateway(script, opts = {}) {
         requests,
         chatAuths,
         modelRequests,
+        // counters must be read live (a plain property would snapshot 0)
+        get chatAttempts() { return chatAttempts; },
+        get modelAttempts() { return modelAttempts; },
+        get quotaRequests() { return quotaRequests; },
         close: () => new Promise((r) => server.close(r)),
       });
     });
@@ -158,4 +252,27 @@ function getJson(port, path, headers = {}) {
   });
 }
 
-module.exports = { startMockGateway, collectSse, getJson };
+/** JSON POST; resolves with { status, body }. */
+function postJson(port, path, body, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1', port, path, method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+      },
+      (res) => {
+        let b = '';
+        res.on('data', (c) => { b += c; });
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode, body: JSON.parse(b) }); }
+          catch { resolve({ status: res.statusCode, body: b }); }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.write(typeof body === 'string' ? body : JSON.stringify(body));
+    req.end();
+  });
+}
+
+module.exports = { startMockGateway, collectSse, getJson, postJson };

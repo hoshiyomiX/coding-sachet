@@ -1,13 +1,20 @@
 package id.codingsachet.mobile.runtime
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkRequest
 import android.util.Log
 import androidx.core.content.ContextCompat
 import id.codingsachet.mobile.BuildConfig
 import id.codingsachet.mobile.api.AgentApi
 import id.codingsachet.mobile.data.Prefs
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -71,6 +78,15 @@ class RuntimeController(
     @Volatile private var stopRequested = false
     @Volatile private var installing = false
     @Volatile var userStopped = false
+
+    // ---- VPN-aware DNS push ----
+    // The guest resolves gateway hostnames with its own resolv.conf; public
+    // resolvers are unreachable through many VPNs, which surfaced as
+    // "Koneksi ke gateway gagal: fetch failed". The Android system's DNS
+    // list (VPN-aware) is pushed to the server, which rewrites resolv.conf.
+    private val dnsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var netCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var lastDnsPush = 0L
 
     fun logLine(s: String) {
         Log.i(TAG, s)
@@ -284,6 +300,7 @@ class RuntimeController(
                 if (version != null) {
                     state.value = RuntimeState.Running(version)
                     failures = 0
+                    pushSystemDns()
                 }
                 // Watchdog: process alive but not answering → restart it.
                 val dog = launch {
@@ -328,6 +345,54 @@ class RuntimeController(
     }
 
     private fun launcher() = ProotLauncher(paths, prefs.noSeccomp)
+
+    // ---------------------------------------------------------------- dns
+
+    /** The Android system's current DNS servers (follows the active
+     *  network — including a VPN's own resolvers). */
+    fun systemDnsServers(): List<String> = runCatching {
+        val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val net: Network = cm.activeNetwork ?: return emptyList()
+        val lp: LinkProperties = cm.getLinkProperties(net) ?: return emptyList()
+        lp.dnsServers.mapNotNull { it.hostAddress }.filter { !it.contains('%') }
+    }.getOrDefault(emptyList())
+
+    /** Push the system DNS list into the guest's resolv.conf via /api/dns. */
+    fun pushSystemDns() {
+        val servers = systemDnsServers()
+        if (servers.isEmpty()) return
+        lastDnsPush = System.currentTimeMillis()
+        dnsScope.launch {
+            val ok = api.pushDns(servers)
+            logLine(
+                if (ok) "DNS sistem diteruskan ke guest: ${servers.joinToString(", ")}"
+                else "Gagal meneruskan DNS sistem (guest memakai resolver cadangan)"
+            )
+        }
+    }
+
+    /** Network-change hook: re-push DNS at most once per 10 s, only while
+     *  the server runs. Covers VPN toggling on/off and wifi↔cellular moves. */
+    fun maybePushDns() {
+        if (state.value !is RuntimeState.Running) return
+        val now = System.currentTimeMillis()
+        if (now - lastDnsPush < 10_000) return
+        pushSystemDns()
+    }
+
+    /** Register the app-lifetime network watcher (idempotent). */
+    fun startNetworkWatch() {
+        if (netCallback != null) return
+        runCatching {
+            val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) { maybePushDns() }
+                override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) { maybePushDns() }
+            }
+            cm.registerNetworkCallback(NetworkRequest.Builder().build(), cb)
+            netCallback = cb
+        }.onFailure { logLine("Network watcher gagal: ${it.message}") }
+    }
 
     fun portBusy(): Boolean {
         val port = prefs.serverPort

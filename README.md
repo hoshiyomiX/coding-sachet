@@ -12,7 +12,9 @@ Lingkungan (rootfs Ubuntu + Node.js) **dibundel di dalam APK** dengan kompresi u
 - **Dua penyedia AI**: APInex & NVIDIA NIM — key dan model disimpan terpisah per penyedia, ganti kapan saja dari Pengaturan
 - **Environment in-APK**: Ubuntu 24.04.5 + Node.js dikompres `xz -9e` — dibongkar sekali ke penyimpanan aplikasi, tanpa unduhan berulang
 - **Split ABI**: satu APK per arsitektur (arm64-v8a, armeabi-v7a, x86_64) — pasang yang cocok dengan perangkatmu
-- **Chat + agent coding**: streaming SSE, thinking/reasoning, *tool calling* multi-putaran
+- **Chat + agent coding**: streaming SSE, thinking/reasoning, *tool calling* multi-putaran — ganti model/penyedia di tengah sesi aman (riwayat lintas model di-*healing* otomatis: id tool-call disintesis, putaran terhenti dilipat rapi)
+- **Ramah VPN**: daftar DNS sistem Android (ikut jaringan/VPN aktif) didorong ke guest lewat `POST /api/dns` + retry koneksi singkat — perbaiki "Koneksi ke gateway gagal: fetch failed" saat VPN menyala
+- **Chip sisa token APInex**: indikator sisa kuota di kanan atas kolom chat (`/v1/subscription` + `/v1/balance`, fallback pasangan billing OpenAI-style), diperbarui tiap akhir giliran dan bisa diketuk untuk menyegarkan
 - **Kartu tool yang bisa dibentangkan**: `bash`, `read_file`, `write_file`, `list_dir` — argumen + output lengkap
 - **File browser & editor** untuk workdir `/root/work` di dalam guest
 - **Model otomatis** ditarik dari penyedia aktif (`/v1/models`), bisa dicari; filter *gratis saja* untuk APInex (`free/`)

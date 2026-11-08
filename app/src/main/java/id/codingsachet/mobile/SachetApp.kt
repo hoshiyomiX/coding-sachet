@@ -39,5 +39,8 @@ class SachetApp : Application() {
             it.prefs = Graph.prefs
             it.runtime = Graph.runtime
         }
+        // VPN-aware DNS: keep the guest's resolver in sync with the active
+        // network (VPN on/off, wifi↔cellular) for as long as the app lives.
+        Graph.runtime.startNetworkWatch()
     }
 }

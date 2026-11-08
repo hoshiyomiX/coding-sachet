@@ -5,6 +5,17 @@
 
 const { config, providerById } = require('./config');
 const { toolByName } = require('./tools');
+const { fetchWithRetry, netErrorDetail } = require('./net');
+
+// Strict gateways (NIM, OpenAI) require every tool_call to carry an id,
+// but some models stream tool calls without one. Ids are synthesized
+// before anything is persisted or echoed, so a whole round stays
+// consistent even across a mid-session model switch.
+let synthCounter = 0;
+function synthToolCallId() {
+  synthCounter = (synthCounter + 1) % 1e9;
+  return `call_s${Date.now().toString(36)}_${synthCounter}`;
+}
 
 /** One streamed call to the provider. Returns the assembled assistant turn. */
 async function callGateway({ apiKey, providerId, model, messages, tools, signal, onDelta }) {
@@ -19,7 +30,10 @@ async function callGateway({ apiKey, providerId, model, messages, tools, signal,
 
   let res;
   try {
-    res = await fetch(provider.baseUrl + '/chat/completions', {
+    // Connect-level retries only: the fetch either resolves with headers
+    // (never retried afterwards — streamed content must not duplicate) or
+    // rejects before a byte exists. VPN bring-up races fail exactly here.
+    res = await fetchWithRetry(provider.baseUrl + '/chat/completions', {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -40,7 +54,7 @@ async function callGateway({ apiKey, providerId, model, messages, tools, signal,
     clearTimeout(timer);
     if (signal) signal.removeEventListener('abort', onAbort);
     if (e.name === 'AbortError') throw new Error(signal && signal.aborted ? 'dibatalkan' : `gateway timeout (${config.requestTimeoutMs / 1000}s)`);
-    throw new Error(`Koneksi ke gateway gagal: ${e.message}`);
+    throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`);
   }
 
   if (!res.ok) {
@@ -120,30 +134,69 @@ async function callGateway({ apiKey, providerId, model, messages, tools, signal,
   return turn;
 }
 
-/** Convert our wire messages into OpenAI chat format. */
+/**
+ * Convert our wire messages into OpenAI chat format.
+ *
+ * The history can contain turns served by ANY model/provider — users
+ * switch mid-session — and interrupted rounds (stop pressed while tools
+ * were still running). Strict gateways reject such history wholesale, so
+ * the conversion heals it:
+ *   * empty tool_call ids get synthesized ones (paired positionally with
+ *     the tool results that follow the assistant message),
+ *   * a tool round missing results is folded into a plain assistant
+ *     message (dangling tool_calls are a hard 400 on NIM/OpenAI),
+ *   * orphan tool results (their assistant message is gone) are dropped.
+ */
 function toOpenAiMessages(messages) {
   const out = [];
-  for (const m of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
     if (m.role === 'system') {
       out.push({ role: 'system', content: m.content || '' });
     } else if (m.role === 'user') {
       out.push({ role: 'user', content: m.content || '' });
     } else if (m.role === 'assistant') {
-      if (Array.isArray(m.toolCalls) && m.toolCalls.length) {
-        out.push({
-          role: 'assistant',
-          content: m.content || '',
-          tool_calls: m.toolCalls.map((t) => ({
-            id: t.id,
+      const calls = Array.isArray(m.toolCalls) ? m.toolCalls : [];
+      if (calls.length) {
+        // The tool results of a round follow positionally, right after
+        // the assistant message that requested them.
+        const results = [];
+        let j = i + 1;
+        while (j < messages.length && messages[j].role === 'tool') {
+          results.push(messages[j]);
+          j++;
+        }
+        if (results.length >= calls.length) {
+          const wireCalls = calls.map((c) => ({
+            id: c.id || synthToolCallId(),
             type: 'function',
-            function: { name: t.name, arguments: typeof t.args === 'string' ? t.args : JSON.stringify(t.args ?? {}) },
-          })),
-        });
+            function: {
+              name: c.name,
+              arguments: typeof c.args === 'string' ? c.args : JSON.stringify(c.args ?? {}),
+            },
+          }));
+          out.push({ role: 'assistant', content: m.content || '', tool_calls: wireCalls });
+          for (let k = 0; k < wireCalls.length; k++) {
+            const r = results[k];
+            out.push({
+              role: 'tool',
+              tool_call_id: wireCalls[k].id,
+              name: r.name || wireCalls[k].function.name,
+              content: r.content || '',
+            });
+          }
+        } else {
+          // Interrupted round: send it as plain text so the next model
+          // accepts the history instead of rejecting the whole request.
+          out.push({ role: 'assistant', content: m.content || '' });
+        }
+        i = j - 1; // the tool run is consumed
       } else {
         out.push({ role: 'assistant', content: m.content || '' });
       }
     } else if (m.role === 'tool') {
-      out.push({ role: 'tool', tool_call_id: m.toolCallId, name: m.name || 'tool', content: m.content || '' });
+      // Orphan tool result — dropped (see the doc block above).
+      continue;
     }
   }
   return out;
@@ -175,6 +228,12 @@ async function runAgent({ apiKey, providerId, model, messages, signal, emit, sys
       apiKey, providerId, model, messages: openai, tools: openaiTools, signal,
       onDelta: (e) => emit(e),
     });
+
+    // Gateways that omit tool_call ids get synthesized ones here, before
+    // the round is persisted or echoed — the ids then survive in history.
+    for (const c of t.toolCalls) {
+      if (!c.id) c.id = synthToolCallId();
+    }
 
     const wantsTools = t.toolCalls.length > 0 && t.finishReason !== 'stop';
 
