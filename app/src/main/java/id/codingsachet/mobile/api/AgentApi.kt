@@ -100,13 +100,18 @@ class AgentApi(private val port: () -> Int) {
             .url(provider.baseUrl + "/models")
             .header("Authorization", "Bearer $apiKey")
             .build()
-        client.newCall(req).execute().use { r ->
+        // The direct fallback also rides the slow client: a cold VPN path
+        // (first DNS + TLS through the tunnel) can outrun a 10 s read.
+        slowClient.newCall(req).execute().use { r ->
             val body = r.body.string()
             if (!r.isSuccessful) throw IOException(errorOf(body, r.code))
             json.parseToJsonElement(body).jsonObject["data"]!!.jsonArray
                 .map { it.jsonObject["id"]!!.jsonPrimitive.content }
         }
     }
+
+    /** An upstream HTTP error status (not a transport failure) — never retried. */
+    private class HttpUpstreamError(message: String) : IOException(message)
 
     /**
      * Validate a key directly against the provider (used during onboarding,
@@ -116,41 +121,58 @@ class AgentApi(private val port: () -> Int) {
      * NVIDIA NIM: /v1/models is public, so the check is a minimal
      * POST /chat/completions — 401/403 = invalid, 2xx/429 = valid
      * (429 proves authentication passed; only the rate limit tripped).
+     *
+     * A cold VPN path can make the FIRST attempt time out while the tunnel
+     * warms up (the same first-attempt pattern the server's warm-up sees) —
+     * transport failures get one retry; HTTP error statuses never do.
      */
     suspend fun validateKey(apiKey: String, provider: Provider): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            if (!provider.validateViaChat) {
-                val req = Request.Builder()
-                    .url(provider.baseUrl + "/models")
-                    .header("Authorization", "Bearer $apiKey")
-                    .build()
-                client.newCall(req).execute().use { r ->
-                    if (!r.isSuccessful) throw IOException(errorOf(r.body.string(), r.code))
-                }
-            } else {
-                val body = json.encodeToString(
-                    kotlinx.serialization.json.JsonObject.serializer(),
-                    kotlinx.serialization.json.buildJsonObject {
-                        put("model", JsonPrimitive(provider.defaultModel))
-                        put("messages", kotlinx.serialization.json.buildJsonArray {
-                            add(kotlinx.serialization.json.buildJsonObject {
-                                put("role", JsonPrimitive("user"))
-                                put("content", JsonPrimitive("hi"))
-                            })
+            try {
+                validateKeyOnce(apiKey, provider)
+            } catch (e: IOException) {
+                if (e is HttpUpstreamError) throw e
+                Thread.sleep(600)
+                validateKeyOnce(apiKey, provider)
+            }
+        }
+    }
+
+    private fun validateKeyOnce(apiKey: String, provider: Provider) {
+        if (!provider.validateViaChat) {
+            val req = Request.Builder()
+                .url(provider.baseUrl + "/models")
+                .header("Authorization", "Bearer $apiKey")
+                .build()
+            slowClient.newCall(req).execute().use { r ->
+                if (!r.isSuccessful) throw HttpUpstreamError(errorOf(r.body.string(), r.code))
+            }
+        } else {
+            val body = json.encodeToString(
+                kotlinx.serialization.json.JsonObject.serializer(),
+                kotlinx.serialization.json.buildJsonObject {
+                    put("model", JsonPrimitive(provider.defaultModel))
+                    put("messages", kotlinx.serialization.json.buildJsonArray {
+                        add(kotlinx.serialization.json.buildJsonObject {
+                            put("role", JsonPrimitive("user"))
+                            put("content", JsonPrimitive("hi"))
                         })
-                        put("max_tokens", JsonPrimitive(1))
-                    }
-                )
-                val req = Request.Builder()
-                    .url(provider.baseUrl + "/chat/completions")
-                    .header("Authorization", "Bearer $apiKey")
-                    .post(body.toRequestBody("application/json".toMediaType()))
-                    .build()
-                client.newCall(req).execute().use { r ->
-                    // 2xx or 429 (rate-limited but authenticated) = the key is real.
-                    if (r.code == 401 || r.code == 403 || !r.isSuccessful) {
-                        throw IOException(errorOf(r.body.string(), r.code))
-                    }
+                    })
+                    // A real inference roundtrip (NIM): keep the probe tiny
+                    // but leave reasoning models a little room to open their
+                    // stream — 1 token can be rejected outright.
+                    put("max_tokens", JsonPrimitive(16))
+                }
+            )
+            val req = Request.Builder()
+                .url(provider.baseUrl + "/chat/completions")
+                .header("Authorization", "Bearer $apiKey")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .build()
+            slowClient.newCall(req).execute().use { r ->
+                // 2xx or 429 (rate-limited but authenticated) = the key is real.
+                if (r.code == 401 || r.code == 403 || !r.isSuccessful) {
+                    throw HttpUpstreamError(errorOf(r.body.string(), r.code))
                 }
             }
         }

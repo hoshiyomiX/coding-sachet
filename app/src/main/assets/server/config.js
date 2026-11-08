@@ -79,6 +79,11 @@ const config = {
   requestTimeoutMs: Number(process.env.SACHET_TIMEOUT_MS || 300000),
   connectTimeoutMs: 30000,
 
+  // Minimum spacing between fire-and-forget warm-up rounds. The app pushes
+  // the system DNS right after the server answers /health — without a
+  // spacing floor that second round duplicates every warm-up log line.
+  warmupMinIntervalMs: Number(process.env.SACHET_WARMUP_MIN_INTERVAL_MS || 15000),
+
   // Tool limits.
   bashTimeoutMs: Number(process.env.SACHET_BASH_TIMEOUT_MS || 120000),
   bashMaxOutput: 128 * 1024,        // bytes kept from a command's output

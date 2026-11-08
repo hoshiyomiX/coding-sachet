@@ -34,6 +34,16 @@ function useGateways({ apinex, nvidia }) {
   return config;
 }
 
+/** Poll until cond() is true (warm-up fetches are fire-and-forget). */
+async function waitUntil(cond, ms = 3000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (cond()) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.ok(cond(), 'condition never became true');
+}
+
 test('agent loop: tool round trip then final text (apinex)', async (t) => {
   const gw = await startMockGateway([
     {
@@ -679,4 +689,91 @@ test('agent loop: huge read_file results are truncated without slurping the file
   assert.strictEqual(r.truncated, true);
   assert.strictEqual(r.size, 32 * chunk.length);
   assert.strictEqual(Buffer.byteLength(r.content, 'utf8'), config.readMaxBytes);
+});
+
+// ---------- cold-path connection fixes (NIM under VPN, T-ML13) ----------
+
+// The owner's field log: the first warm-up through a cold VPN times out
+// ("The operation was aborted due to timeout"), every later one answers
+// in under a second. These tests pin the healing behaviour.
+
+test('net: fetchRetryTimeout retries a timed-out attempt with a fresh budget', async (t) => {
+  const gw = await startMockGateway([], { models: ['cold-ok'], slowModels: 1, slowModelsMs: 400 });
+  t.after(() => gw.close());
+  const { fetchRetryTimeout } = require('../net');
+
+  // The first /models reply sleeps 400 ms; the client times out at 120 ms
+  // and the retry — with a FRESH budget — lands on the fast second reply.
+  const res = await fetchRetryTimeout(
+    `http://127.0.0.1:${gw.port}/v1/models`,
+    { headers: { Authorization: 'Bearer sk-test-123' } },
+    { timeoutMs: 120, retries: 1, delays: [50] }
+  );
+  assert.strictEqual(res.status, 200);
+  await res.json();
+  assert.strictEqual(gw.modelAttempts, 2);
+});
+
+test('net: fetchRetryTimeout never retries a caller abort', async (t) => {
+  const gw = await startMockGateway([]);
+  t.after(() => gw.close());
+  const { fetchRetryTimeout } = require('../net');
+
+  const ac = new AbortController();
+  ac.abort();
+  await assert.rejects(
+    fetchRetryTimeout(`http://127.0.0.1:${gw.port}/v1/models`, { signal: ac.signal }, { timeoutMs: 5000, retries: 2 }),
+    /abort/i
+  );
+  assert.strictEqual(gw.modelAttempts, 0); // thrown, not retried
+});
+
+test('HTTP server: /api/models survives a slow first reply (cold VPN path)', async (t) => {
+  const gw = await startMockGateway([], { slowModels: 1, slowModelsMs: 400, key: 'sk-slow-1' });
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+
+  const { fetchModels } = require('../server');
+  const { providerById } = require('../config');
+  // Production uses 15 s budgets; the test injects the same retry SHAPE
+  // with a tiny budget so the timeout→retry path runs in milliseconds.
+  const ids = await fetchModels('sk-slow-1', providerById('apinex'), { timeoutMs: 120, retries: 1, delays: [50] });
+  assert.deepStrictEqual(ids, ['test-mini', 'test-pro']);
+  assert.strictEqual(gw.modelAttempts, 2);
+});
+
+test('warm-up: a second round within the spacing window is throttled out', async (t) => {
+  const gw = await startMockGateway([]);
+  t.after(() => gw.close());
+  const config = useGateways({ apinex: gw, nvidia: gw });
+  const orig = config.warmupMinIntervalMs;
+  config.warmupMinIntervalMs = 15000;
+  const { warmUpGateways } = require('../server');
+
+  assert.strictEqual(warmUpGateways(), true);
+  await waitUntil(() => gw.modelAttempts >= 2); // both providers warmed
+  const settled = gw.modelAttempts;
+
+  // The DNS push that follows server startup fires again within the same
+  // second — throttled out, so no duplicate round and no duplicate log
+  // lines (every warm-up line used to appear twice in Log server).
+  assert.strictEqual(warmUpGateways(), false);
+  await new Promise((r) => setTimeout(r, 250));
+  assert.strictEqual(gw.modelAttempts, settled);
+  config.warmupMinIntervalMs = orig;
+});
+
+test('warm-up: a dropped first connection is retried, then logged OK', async (t) => {
+  const flaky = await startMockGateway([], { flakyModels: 1 });
+  const clean = await startMockGateway([]);
+  t.after(() => { flaky.close(); clean.close(); });
+  const config = useGateways({ apinex: flaky, nvidia: clean });
+  const orig = config.warmupMinIntervalMs;
+  config.warmupMinIntervalMs = 0; // the previous test just warmed up
+  const { warmUpGateways } = require('../server');
+
+  assert.strictEqual(warmUpGateways(), true);
+  await waitUntil(() => flaky.modelAttempts >= 2); // destroyed + retry
+  assert.strictEqual(clean.modelAttempts, 1);
+  config.warmupMinIntervalMs = orig;
 });

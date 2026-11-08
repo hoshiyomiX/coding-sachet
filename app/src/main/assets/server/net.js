@@ -31,6 +31,37 @@ async function fetchWithRetry(url, opts = {}, { retries = 2, delays = [400, 900]
 }
 
 /**
+ * fetch() with a FRESH timeout budget per attempt.
+ *
+ * The cold path through a VPN (first DNS lookup + TLS handshake inside
+ * proot) can exceed a short timeout once and then run fast forever after.
+ * Unlike fetchWithRetry — which never retries an AbortError because it may
+ * be a caller cancel — here the timeout signal is OURS, so a timed-out
+ * attempt is always worth one more try. A caller-supplied signal stays
+ * final: when it aborts, the error is rethrown unretried.
+ */
+async function fetchRetryTimeout(url, opts = {}, { timeoutMs = 20000, retries = 2, delays = [500, 1000] } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, delays[Math.min(attempt - 1, delays.length - 1)]));
+    }
+    // Combine a fresh per-attempt timeout with the caller's signal (if any).
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const signal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal;
+    try {
+      return await fetch(url, { ...opts, signal });
+    } catch (e) {
+      lastErr = e;
+      // A caller cancel is final; never retried.
+      if (opts.signal && opts.signal.aborted) throw e;
+      // Anything else (our timeout, a connect-level failure) is retryable.
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * Human detail for a connect-level failure. undici collapses every socket
  * problem into "fetch failed"; the useful fact (ENOTFOUND, ECONNREFUSED,
  * UNABLE_TO_VERIFY_LEAF_SIGNATURE, …) hides in e.cause — surface it so a
@@ -44,4 +75,4 @@ function netErrorDetail(e) {
   return `${msg}${detail}`;
 }
 
-module.exports = { fetchWithRetry, netErrorDetail };
+module.exports = { fetchWithRetry, fetchRetryTimeout, netErrorDetail };

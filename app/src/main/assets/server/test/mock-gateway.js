@@ -17,6 +17,10 @@ const http = require('http');
  * opts.flakyChat:  destroy the socket of the first N chat requests before
  *                  replying (simulates a VPN bring-up connect failure)
  * opts.flakyModels: same for /v1/models
+ * opts.slowModels:  delay the first N /v1/models replies by slowModelsMs
+ *                  (default 1200) — simulates a cold VPN path whose first
+ *                  TLS/DNS roundtrip outruns a short client timeout
+ * opts.slowModelsMs: the delay above, in milliseconds
  * opts.quota:  serve the APInex-native quota endpoints:
  *              { mode, unlimited, tokenLimit, tokensUsed, tokensRemaining, balanceUsd }
  * opts.billing: serve the OpenAI-style billing pair instead of the native
@@ -49,14 +53,24 @@ function startMockGateway(script, opts = {}) {
 
       if (req.url === '/v1/models' && req.method === 'GET') {
         modelAttempts++;
+        const replyModels = () => {
+          // A client that timed out (slowModels) has destroyed its socket —
+          // writing the late reply would only noise up the test process.
+          if (res.socket && res.socket.destroyed) return;
+          modelRequests.push({ auth: req.headers.authorization });
+          if (req.headers.authorization !== `Bearer ${key}`) return unauthorized();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ data: models.map((id) => ({ id })) }));
+        };
+        if (opts.slowModels && modelAttempts <= opts.slowModels) {
+          setTimeout(replyModels, opts.slowModelsMs ?? 1200);
+          return;
+        }
         if (opts.flakyModels && modelAttempts <= opts.flakyModels) {
           res.socket.destroy();
           return;
         }
-        modelRequests.push({ auth: req.headers.authorization });
-        if (req.headers.authorization !== `Bearer ${key}`) return unauthorized();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ data: models.map((id) => ({ id })) }));
+        replyModels();
         return;
       }
 

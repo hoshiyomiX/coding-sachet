@@ -19,7 +19,7 @@ const fs = require('fs');
 const { config, providerById } = require('./config');
 const { runAgent } = require('./agent');
 const { safePath, listDir, readFile, writeFile } = require('./tools');
-const { fetchWithRetry, netErrorDetail } = require('./net');
+const { fetchWithRetry, fetchRetryTimeout, netErrorDetail } = require('./net');
 
 // Fire-and-forget gateway warm-up after a resolver rewrite is only wanted
 // in production; the test suite sets SACHET_NO_WARMUP=1 to stay hermetic.
@@ -73,14 +73,18 @@ function gatewayProviderId(req) {
   return h.trim().toLowerCase();
 }
 
-/** GET {provider.baseUrl}/models with the caller's key. */
-async function fetchModels(apiKey, provider) {
-  const res = await fetchWithRetry(provider.baseUrl + '/models', {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    // Keep this comfortably below the app-side read timeout (35 s) so the
-    // app always receives our error JSON instead of its own "timeout".
-    signal: AbortSignal.timeout(20000),
-  }).catch((e) => { throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`); });
+/** GET {provider.baseUrl}/models with the caller's key.
+ *
+ * A short fresh-timeout retry absorbs the cold VPN path (first DNS + TLS
+ * through the tunnel can be slow once, then runs fast). Worst case
+ * 15 s + 0.5 s + 15 s stays under the app-side 35 s read timeout, so the
+ * app always receives our error JSON instead of its own "timeout". */
+async function fetchModels(apiKey, provider, retryOpts) {
+  const res = await fetchRetryTimeout(
+    provider.baseUrl + '/models',
+    { headers: { Authorization: `Bearer ${apiKey}` } },
+    retryOpts || { timeoutMs: 15000, retries: 1, delays: [500] }
+  ).catch((e) => { throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`); });
 
   const text = await res.text().catch(() => '');
   if (!res.ok) {
@@ -235,13 +239,29 @@ function currentResolvServers() {
     .filter(Boolean);
 }
 
-/** Fire-and-forget DNS + TLS warm-up for every provider. */
+// ---------- gateway warm-up ----------
+
+// The app pushes the system DNS right after the server answers /health,
+// which used to fire a second warm-up round in the same second — every
+// log line appeared twice. A minimum spacing between rounds keeps the log
+// readable while still re-warming after real network changes. Tests can
+// zero it via config (SACHET_WARMUP_MIN_INTERVAL_MS).
+let lastWarmupAt = 0;
+
+/** Fire-and-forget DNS + TLS warm-up for every provider. A cold VPN path
+ * (first TLS handshake through the tunnel) can outrun a short timeout —
+ * each attempt gets a fresh budget, so a transient timeout heals instead
+ * of logging a scary "gagal" line. Returns false when throttled out. */
 function warmUpGateways() {
+  const now = Date.now();
+  if (now - lastWarmupAt < config.warmupMinIntervalMs) return false;
+  lastWarmupAt = now;
   for (const p of Object.values(config.providers)) {
-    fetch(p.baseUrl + '/models', { signal: AbortSignal.timeout(10000) })
+    fetchRetryTimeout(p.baseUrl + '/models', {}, { timeoutMs: 20000, retries: 2, delays: [500, 1500] })
       .then((r) => log(`warm-up ${p.baseUrl}: HTTP ${r.status}`))
       .catch((e) => log(`warm-up ${p.baseUrl} gagal:`, e.message));
   }
+  return true;
 }
 
 // ---------- routes ----------
@@ -497,4 +517,4 @@ function productionSetup() {
 
 if (require.main === module) main();
 
-module.exports = { main, start, route, fetchModels, fetchQuota, writeResolvConf, currentResolvServers, log };
+module.exports = { main, start, route, fetchModels, fetchQuota, writeResolvConf, currentResolvServers, warmUpGateways, log };
