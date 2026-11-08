@@ -110,7 +110,9 @@ object LogcatDump {
         val appDir = context.getExternalFilesDir("logs") ?: return null
         runCatching { appDir.mkdirs() }
         val f = File(appDir, name)
-        return runCatching { f.writeText(text) }.getOrNull()
+        // NB: File.writeText returns Unit (kotlin.io) — the lambda must end
+        // with the File itself so runCatching gives Result<File>.
+        return runCatching { f.writeText(text); f }.getOrNull()
     }
 
     /** Share the saved dump through the system sheet (any app). */
