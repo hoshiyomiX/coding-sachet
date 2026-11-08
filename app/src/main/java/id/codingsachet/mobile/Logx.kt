@@ -23,18 +23,28 @@ import android.util.Log
  *   * never log API keys, tokens or auth headers,
  *   * never log chat message content or file contents,
  *   * counts, ids, model names, paths and error texts are fine.
+ *
+ * NOTE: every function uses a BLOCK body on purpose — android.util.Log
+ * returns Int, and an expression body (`= Log.i(...)`) would leak that
+ * Int into the caller's inferred block type (the run#13 CI failure).
  */
 object Logx {
 
     private const val TAG = "CS"
 
-    fun d(mod: String, msg: String): Unit = Log.d(TAG, "[$mod] $msg")
+    fun d(mod: String, msg: String) {
+        Log.d(TAG, "[$mod] $msg")
+    }
 
-    fun i(mod: String, msg: String): Unit = Log.i(TAG, "[$mod] $msg")
+    fun i(mod: String, msg: String) {
+        Log.i(TAG, "[$mod] $msg")
+    }
 
-    fun w(mod: String, msg: String): Unit = Log.w(TAG, "[$mod] $msg")
+    fun w(mod: String, msg: String) {
+        Log.w(TAG, "[$mod] $msg")
+    }
 
-    fun e(mod: String, msg: String, tr: Throwable? = null): Unit {
+    fun e(mod: String, msg: String, tr: Throwable? = null) {
         if (tr != null) Log.e(TAG, "[$mod] $msg (${tr.javaClass.simpleName}: ${tr.message})")
         else Log.e(TAG, "[$mod] $msg")
     }
@@ -43,5 +53,7 @@ object Logx {
      *  server's stdout (`HH:MM:SS [LVL] [mod] msg`) is piped through the
      *  RuntimeController into logcat unchanged, so both worlds stay
      *  distinguishable and greppable under the same tag. */
-    fun raw(line: String): Unit = Log.i(TAG, line)
+    fun raw(line: String) {
+        Log.i(TAG, line)
+    }
 }
