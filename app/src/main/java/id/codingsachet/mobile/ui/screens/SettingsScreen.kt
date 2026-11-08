@@ -54,9 +54,12 @@ import id.codingsachet.mobile.BuildConfig
 import id.codingsachet.mobile.Graph
 import id.codingsachet.mobile.api.Provider
 import id.codingsachet.mobile.api.Providers
+import id.codingsachet.mobile.runtime.LogcatDump
 import id.codingsachet.mobile.runtime.RuntimeState
 import id.codingsachet.mobile.ui.LocalStrings
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -269,6 +272,46 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                     } else {
                         serverLog.takeLast(30).forEach {
                             Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall, maxLines = 2)
+                        }
+                    }
+                }
+            }
+
+            // ---- logcat dump (the app's debug log, owner-defined) ----
+            SectionTitle(s.logcatSection)
+            Text(s.logcatHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            var dumping by remember { mutableStateOf(false) }
+            var dump by remember { mutableStateOf<LogcatDump.Result?>(null) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = {
+                        dumping = true
+                        scope.launch {
+                            dump = withContext(Dispatchers.IO) { LogcatDump.dump(context) }
+                            dumping = false
+                        }
+                    },
+                    enabled = !dumping,
+                ) {
+                    if (dumping) CircularProgressIndicator(Modifier.width(16.dp), strokeWidth = 2.dp)
+                    else Text(s.logcatDump)
+                }
+                dump?.file?.let { f ->
+                    TextButton(onClick = { LogcatDump.share(context, f) }) { Text(s.logcatShare) }
+                }
+            }
+            dump?.let { r ->
+                when {
+                    r.error != null -> Text("${s.logcatFailed}: ${r.error}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    r.lines.isEmpty() -> Text(s.logcatEmpty, style = MaterialTheme.typography.bodySmall)
+                    else -> {
+                        Text("${r.lines.size} ${s.logcatLinesUnit} · ${r.file?.absolutePath ?: "—"}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                            Column(Modifier.padding(8.dp)) {
+                                r.lines.takeLast(15).forEach {
+                                    Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall, maxLines = 2)
+                                }
+                            }
                         }
                     }
                 }

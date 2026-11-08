@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider roots for sharing the logcat dump (Settings → Log debug).
+
+     external-path      → Environment.getExternalStorageDirectory()
+                          (the preferred /sdcard/coding-sachet/logs location,
+                           visible in the app's Files screen)
+     external-files-path→ Context.getExternalFilesDir(null)
+                          (the no-permission fallback: .../Android/data/
+                           id.codingsachet.mobile/files/logs/) -->
+<paths>
+    <external-path name="shared-project-logs" path="coding-sachet/logs/" />
+    <external-files-path name="app-external-logs" path="logs/" />
+</paths>

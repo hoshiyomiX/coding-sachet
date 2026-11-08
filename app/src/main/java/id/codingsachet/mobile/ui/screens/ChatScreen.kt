@@ -591,6 +591,10 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(s.selectModel, style = MaterialTheme.typography.titleMedium)
+            // NIM: badge + sort context for the verified-working models.
+            if (provider.verifiedModels.isNotEmpty()) {
+                Text(s.modelVerifiedNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -599,9 +603,10 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // The free/ filter only means something on APInex; NIM's whole
-                // catalogue is free to prototype.
-                if (provider.freeModelPrefix != null) {
+                // "Free" here = the free/ tier on APInex, and the
+                // verified-working (free to use) models on NVIDIA NIM — the
+                // rest of NIM's catalogue is listed below, unbadged.
+                if (provider.freeModelPrefix != null || provider.verifiedModels.isNotEmpty()) {
                     FilterChip(
                         selected = freeOnly,
                         onClick = { freeOnly = !freeOnly },
@@ -610,7 +615,7 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                 }
                 val loaded = models
                 if (loaded != null) {
-                    val n = loaded.count { provider.freeModelPrefix == null || !freeOnly || it.startsWith(provider.freeModelPrefix) }
+                    val n = loaded.count { !freeOnly || provider.isFreeModel(it) }
                     Text("$n / ${loaded.size} · ${provider.label}", style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -624,8 +629,11 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                     Text(s.modelFetching)
                 }
                 else -> LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
-                    val filtered = models!!.filter {
-                        (provider.freeModelPrefix == null || !freeOnly || it.startsWith(provider.freeModelPrefix)) &&
+                    // Free models list on top (owner order T-ML17 #1): the
+                    // stable sort keeps the gateway's order within each group.
+                    val sorted = models!!.sortedWith(compareByDescending { provider.isFreeModel(it) })
+                    val filtered = sorted.filter {
+                        (!freeOnly || provider.isFreeModel(it)) &&
                             it.contains(query, ignoreCase = true)
                     }
                     items(filtered) { m ->
@@ -634,7 +642,29 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                             color = if (m == current) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
                             modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp).clickable { onPick(m) },
                         ) {
-                            Text(m, Modifier.padding(12.dp), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium)
+                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    m,
+                                    Modifier.weight(1f),
+                                    fontFamily = FontFamily.Monospace,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                if (provider.isFreeModel(m)) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                                    ) {
+                                        Text(
+                                            s.modelFreeBadge,
+                                            Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }

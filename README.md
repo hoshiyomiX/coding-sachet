@@ -73,7 +73,12 @@ app (logcat, tag CS):                      [modul] pesan        ← level & wakt
 - **Modul server**: `cfg` config · `srv` HTTP/route · `agt` loop agent · `net` fetch/retry · `rlm` rate limiter · `tool` tool bash/file.
 - **Modul app**: `app` boot · `api` AgentApi · `chat` ChatEngine · `rt` runtime/proot · `svc` foreground service · `store` ChatStore.
 - Lihat semuanya dari PC: `adb logcat -s CS` (server ikut karena stdout-nya diteruskan ke logcat tag `CS`). Di dalam app: Pengaturan → *Log server* (30 baris terakhir).
+- **Dump log di dalam app** (tanpa PC): Pengaturan → *Log debug (logcat)* → *Dump logcat*. Menjalankan `logcat -d -v time -s CS AndroidRuntime libc` — Android membatasi pembacaan logcat tanpa izin khusus ke baris milik UID sendiri, jadi hasilnya memang **khusus Coding Sachet** (log app + server + crash). Dump lengkap disimpan ke `/sdcard/coding-sachet/logs/logcat-<waktu>.txt` (muncul di layar Berkas) dan bisa dibagikan langsung.
 - Aturan privasi: **tidak pernah** ada API key, isi pesan chat, atau isi file di log — hanya id sesi, nama model, hitungan, path, dan teks error.
+
+## Model NVIDIA NIM yang terverifikasi
+
+Katalog `/v1/models` NIM memuat ±84 entri, tetapi mayoritas bukan endpoint chat yang terdeploy untuk key biasa (404 "Function … not found", embedding/rerank, atau timeout). Daftar di `Providers.kt → NVIDIA.verifiedModels` berisi **19 model yang benar-benar menjawab panggilan chat dengan key nyata** (dicek 2026-11-08; termasuk `deepseek-ai/deepseek-v4.1-flash` yang lambat ±41 dtk serta `meta/llama-3.2-90b-vision-instruct` dan `nvidia/llama-3.1-nemoguard-8b-content-safety` yang hanya menjawab lewat jalur streaming SSE). Di pemilih model, model tersebut diberi **lencana `free`** dan **ditampilkan paling atas**; sisanya tetap bisa dipilih tanpa lencana. Uji ulang kapan saja: `NIM_KEY=nvapi-… node tools/nim-models-probe.js` (key hanya via env, tidak pernah disimpan).
 
 ## Pengembangan
 
