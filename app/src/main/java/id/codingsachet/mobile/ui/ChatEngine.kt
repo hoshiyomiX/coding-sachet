@@ -40,6 +40,9 @@ data class LiveTurn(
     /** Set while the agent server waits out the gateway rate limit
      *  (client-side 15 RPM cap or a 429 backoff) — seconds remaining. */
     val waiting: Int? = null,
+    /** Set while the agent server retries the gateway connect with a fresh
+     *  budget (cold VPN path) — the retry attempt number. */
+    val reconnect: Int? = null,
 )
 
 /**
@@ -62,6 +65,12 @@ class ChatEngine(val session: Session) {
     // after the first error — the send button then ate the input silently.)
     val busy: Boolean get() = live.value?.busy == true
 
+    // Set as soon as ANY streamed content or persisted message arrives this
+    // turn. A stream that closes without one (server restarted by its
+    // watchdog, connection dropped mid-connect) must surface an error —
+    // silently vanishing reads as "the model never replied".
+    private var receivedAnything = false
+
     private val json = Json { ignoreUnknownKeys = true }
 
     /** Returns false (caller keeps the input) when a turn cannot start.
@@ -74,6 +83,7 @@ class ChatEngine(val session: Session) {
         session.model = model
         Graph.chats.autoTitle(session)
         persist()
+        receivedAnything = false
         live.value = LiveTurn()
         startStream(model)
         return true
@@ -117,31 +127,40 @@ class ChatEngine(val session: Session) {
 
     private suspend fun handle(ev: JsonObject) {
         when (ev["type"]?.jsonPrimitive?.content) {
-            "think" -> live.value = live.value?.copy(thinking = live.value!!.thinking + ev.str("delta"), waiting = null)
-            "text" -> live.value = live.value?.copy(text = live.value!!.text + ev.str("delta"), waiting = null)
+            "think" -> { receivedAnything = true; live.value = live.value?.copy(thinking = live.value!!.thinking + ev.str("delta"), waiting = null, reconnect = null) }
+            "text" -> { receivedAnything = true; live.value = live.value?.copy(text = live.value!!.text + ev.str("delta"), waiting = null, reconnect = null) }
+            "netretry" -> {
+                // The agent server is retrying the gateway connect with a
+                // fresh budget (cold VPN path) — show it instead of silence.
+                val n = ev["attempt"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
+                live.value = live.value?.copy(reconnect = n, waiting = null)
+            }
             "ratelimit" -> {
                 // The agent server is waiting out the gateway RPM window
                 // (hardcoded 15 RPM client cap, or a 429 backoff).
                 val ms = ev["waitMs"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: 0.0
-                live.value = live.value?.copy(waiting = ((ms + 999.0) / 1000.0).toInt().coerceAtLeast(1))
+                live.value = live.value?.copy(waiting = ((ms + 999.0) / 1000.0).toInt().coerceAtLeast(1), reconnect = null)
             }
             "tool" -> {
+                receivedAnything = true
                 val card = ToolCardUi(
                     id = ev.str("id"),
                     name = ev.str("name"),
                     args = pretty(ev["args"]),
                 )
-                live.value = live.value?.copy(cards = live.value!!.cards + card, waiting = null)
+                live.value = live.value?.copy(cards = live.value!!.cards + card, waiting = null, reconnect = null)
             }
             "toolend" -> {
+                receivedAnything = true
                 live.value = live.value?.let { l ->
                     l.copy(cards = l.cards.map {
                         if (it.id == ev.str("id")) it.copy(output = ev.str("output"), ok = ev.boolean("ok")) else it
-                    }, waiting = null)
+                    }, waiting = null, reconnect = null)
                 }
             }
             "message" -> {
                 val m = ev["msg"]?.jsonObject ?: return
+                receivedAnything = true
                 session.messages += Msg(
                     role = m.str("role"),
                     content = m.str("content"),
@@ -158,6 +177,7 @@ class ChatEngine(val session: Session) {
             }
             "toolresult" -> {
                 val m = ev["msg"]?.jsonObject ?: return
+                receivedAnything = true
                 session.messages += Msg(
                     role = "tool",
                     content = m.str("content"),
@@ -174,6 +194,12 @@ class ChatEngine(val session: Session) {
         val l = live.value ?: return
         if (l.error != null) {
             live.value = l.copy(busy = false)
+        } else if (!receivedAnything) {
+            // The stream closed before a single event arrived (server
+            // restarted by its watchdog, connection dropped) — say so
+            // instead of silently vanishing (the "NIM tidak menjawab"
+            // field report was exactly this, with no visible cause).
+            live.value = l.copy(busy = false, error = "Koneksi ke server agent terputus sebelum jawaban diterima — coba kirim ulang pesanmu.")
         } else {
             live.value = null
         }

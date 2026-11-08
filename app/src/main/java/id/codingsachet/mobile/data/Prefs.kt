@@ -97,6 +97,12 @@ class Prefs(ctx: Context) {
         get() = sp.getString("requestOptionsExtra", "") ?: ""
         set(v) = sp.edit().putString("requestOptionsExtra", v).apply()
 
+    /** Id of the chat session the user had open last. Restored on launch so
+     *  closing the app (or a process death) never loses the current chat. */
+    var lastSessionId: String
+        get() = sp.getString("lastSessionId", "") ?: ""
+        set(v) = sp.edit().putString("lastSessionId", v).apply()
+
     companion object {
         const val DEFAULT_PORT = 8765
         const val DEFAULT_PROVIDER = "apinex"

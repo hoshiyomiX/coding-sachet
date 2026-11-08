@@ -62,6 +62,61 @@ async function fetchRetryTimeout(url, opts = {}, { timeoutMs = 20000, retries = 
 }
 
 /**
+ * fetch() for STREAMED responses: a fresh timeout budget per attempt that
+ * only guards the connect/headers phase.
+ *
+ * The chat path streams SSE for minutes, so a plain per-attempt timeout
+ * (fetchRetryTimeout) would abort a healthy long stream. Here the attempt
+ * timer is cleared the moment headers arrive — after that only the CALLER's
+ * signal can stop the body. A cold VPN path whose first connect hangs or a
+ * connect-level `fetch failed` is retried with a fresh budget, so the user
+ * sees a reconnect hint instead of a silent spinner up to the global
+ * request timeout (the NIM "no response" field report).
+ */
+async function fetchWithHeaderBudget(url, opts = {}, { timeoutMs = 30000, retries = 2, delays = [500, 1500] } = {}, onRetry) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const wire = (callerSignal, ctl) => {
+    // Caller abort must still kill an in-flight attempt (and, after headers,
+    // the body stream): keep the listener attached for the response's life.
+    const onAbort = () => ctl.abort();
+    callerSignal.addEventListener('abort', onAbort, { once: true });
+    return onAbort;
+  };
+  for (let attempt = 0; ; attempt++) {
+    const callerSignal = opts.signal || null;
+    if (callerSignal && callerSignal.aborted) {
+      const e = new Error('dibatalkan');
+      e.name = 'AbortError';
+      throw e;
+    }
+    const ctl = new AbortController();
+    const detach = callerSignal ? wire(callerSignal, ctl) : null;
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    let res;
+    try {
+      res = await fetch(url, { ...opts, signal: ctl.signal });
+      clearTimeout(timer); // headers in — the stream may legitimately run long
+      return res;
+    } catch (e) {
+      clearTimeout(timer);
+      if (detach) callerSignal.removeEventListener('abort', detach);
+      const callerAborted = !!(callerSignal && callerSignal.aborted);
+      if (callerAborted) throw e; // stop button / caller timeout: final
+      if (attempt >= retries) {
+        if (e.name === 'AbortError') {
+          // Our header-phase timeout, exhausted: mark it so the caller can
+          // say "connect timeout" instead of the global request timeout.
+          e.connectTimeoutMs = timeoutMs;
+        }
+        throw e;
+      }
+      if (onRetry) onRetry(attempt + 1, e);
+      await sleep(delays[Math.min(attempt, delays.length - 1)]);
+    }
+  }
+}
+
+/**
  * Human detail for a connect-level failure. undici collapses every socket
  * problem into "fetch failed"; the useful fact (ENOTFOUND, ECONNREFUSED,
  * UNABLE_TO_VERIFY_LEAF_SIGNATURE, …) hides in e.cause — surface it so a
@@ -75,4 +130,4 @@ function netErrorDetail(e) {
   return `${msg}${detail}`;
 }
 
-module.exports = { fetchWithRetry, fetchRetryTimeout, netErrorDetail };
+module.exports = { fetchWithRetry, fetchRetryTimeout, fetchWithHeaderBudget, netErrorDetail };

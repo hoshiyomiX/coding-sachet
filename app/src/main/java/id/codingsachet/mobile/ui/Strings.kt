@@ -110,6 +110,7 @@ data class SachetStrings(
     val jsonSaved: String,
     val jsonInvalid: String,
     val rateLimitWaiting: String,
+    val reconnecting: String,
 )
 
 val IdStrings = SachetStrings(
@@ -219,6 +220,7 @@ val IdStrings = SachetStrings(
     jsonSaved = "Tersimpan",
     jsonInvalid = "Input tidak valid",
     rateLimitWaiting = "Menunggu batas laju gateway",
+    reconnecting = "Menyambung ulang ke gateway",
 )
 
 val EnStrings = SachetStrings(
@@ -328,6 +330,7 @@ val EnStrings = SachetStrings(
     jsonSaved = "Saved",
     jsonInvalid = "Invalid input",
     rateLimitWaiting = "Waiting for the gateway rate limit",
+    reconnecting = "Reconnecting to the gateway",
 )
 
 val LocalStrings = staticCompositionLocalOf { IdStrings }

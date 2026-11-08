@@ -77,7 +77,9 @@ const config = {
 
   // Upstream request limits.
   requestTimeoutMs: Number(process.env.SACHET_TIMEOUT_MS || 300000),
-  connectTimeoutMs: 30000,
+  // Connect/headers-phase budget per chat attempt (fresh per attempt, see
+  // net.js fetchWithHeaderBudget). Env override is for the test suite only.
+  connectTimeoutMs: Number(process.env.SACHET_CONNECT_TIMEOUT_MS || 30000),
 
   // Minimum spacing between fire-and-forget warm-up rounds. The app pushes
   // the system DNS right after the server answers /health — without a

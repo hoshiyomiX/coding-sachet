@@ -5,7 +5,7 @@
 
 const { config, providerById } = require('./config');
 const { toolByName } = require('./tools');
-const { fetchWithRetry, netErrorDetail } = require('./net');
+const { fetchWithHeaderBudget, netErrorDetail } = require('./net');
 const { acquire, peekWaitMs, pauseFor, abortableSleep } = require('./ratelimit');
 
 // Strict gateways (NIM, OpenAI) require every tool_call to carry an id,
@@ -121,15 +121,27 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
         const hint = peekWaitMs(providerId);
         if (hint > 500 && onDelta) onDelta({ type: 'ratelimit', waitMs: hint });
         await acquire(providerId, controller.signal);
-        res = await fetchWithRetry(provider.baseUrl + '/chat/completions', {
-          method: 'POST',
-          signal: controller.signal,
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
+        res = await fetchWithHeaderBudget(
+          provider.baseUrl + '/chat/completions',
+          {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body,
           },
-          body,
-        });
+          // Fresh per-attempt budget for the connect/headers phase only:
+          // a cold VPN path (first DNS + TLS through the tunnel — the NIM
+          // "no response" field report) heals with a retry instead of a
+          // silent spinner up to the 5-minute request timeout. Once headers
+          // arrive the stream runs under the global timer alone.
+          { timeoutMs: config.connectTimeoutMs, retries: 2, delays: [500, 1500] },
+          (attemptNo, err) => {
+            if (onDelta) onDelta({ type: 'netretry', attempt: attemptNo, detail: netErrorDetail(err).slice(0, 120) });
+          }
+        );
         if (res.ok || res.status !== 429 || attempt >= MAX_429_RETRIES) break;
         await res.text().catch(() => {}); // drain the error body
         const waitMs = retryAfterMs(res);
@@ -138,7 +150,15 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
         await abortableSleep(waitMs, controller.signal);
       }
     } catch (e) {
-      if (e.name === 'AbortError') throw new Error(signal && signal.aborted ? 'dibatalkan' : `gateway timeout (${config.requestTimeoutMs / 1000}s)`);
+      if (e.name === 'AbortError') {
+        if (signal && signal.aborted) throw new Error('dibatalkan');
+        if (e.connectTimeoutMs) {
+          throw new Error(
+            `gateway timeout (koneksi ${Math.round(e.connectTimeoutMs / 1000)}s × 3 percobaan — cek jaringan/VPN)`
+          );
+        }
+        throw new Error(`gateway timeout (${config.requestTimeoutMs / 1000}s)`);
+      }
       throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`);
     }
 

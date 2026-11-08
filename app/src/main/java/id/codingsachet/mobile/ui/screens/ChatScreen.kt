@@ -1,6 +1,7 @@
 package id.codingsachet.mobile.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -91,7 +92,14 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     val runtimeState by Graph.runtime.state.collectAsState()
 
-    var current by remember { mutableStateOf<Session?>(session) }
+    // Back closes the session drawer first (the AppRoot back handlers are
+    // composed before this one, so this wins whenever the drawer is open).
+    BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
+
+    // Re-initialize only when the RESTORED session id changes (activity
+    // recreation after process death); switching chats from the drawer goes
+    // through onSessionChange with the same live object.
+    var current by remember(session?.id) { mutableStateOf<Session?>(session) }
     var model by remember(Graph.prefs.provider) { mutableStateOf(Graph.prefs.model) }
     var showModels by remember { mutableStateOf(false) }
     var input by remember { mutableStateOf("") }
@@ -501,6 +509,15 @@ private fun LiveBubble(l: LiveTurn) {
         l.waiting?.let {
             Text(
                 "${s.rateLimitWaiting} (${it}s)",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+        }
+        // Gateway connect retry hint (cold VPN path, fresh-budget retry).
+        l.reconnect?.let {
+            Text(
+                "${s.reconnecting} ($it/3)…",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.tertiary,
                 modifier = Modifier.padding(horizontal = 4.dp),

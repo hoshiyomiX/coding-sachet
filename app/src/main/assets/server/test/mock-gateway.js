@@ -16,6 +16,9 @@ const http = require('http');
  * opts.models: model ids served by /v1/models
  * opts.flakyChat:  destroy the socket of the first N chat requests before
  *                  replying (simulates a VPN bring-up connect failure)
+ * opts.hangChat:   never answer the first N chat requests — not even
+ *                  headers (simulates a black-holed connect under VPN;
+ *                  exercises the client's header-phase timeout + retry)
  * opts.flakyModels: same for /v1/models
  * opts.slowModels:  delay the first N /v1/models replies by slowModelsMs
  *                  (default 1200) — simulates a cold VPN path whose first
@@ -139,6 +142,10 @@ function startMockGateway(script, opts = {}) {
 
       if (req.url === '/v1/chat/completions' && req.method === 'POST') {
         chatAttempts++;
+        if (opts.hangChat && chatAttempts <= opts.hangChat) {
+          // Swallow the request silently: no response, connection kept open.
+          return;
+        }
         if (opts.flakyChat && chatAttempts <= opts.flakyChat) {
           res.socket.destroy();
           return;

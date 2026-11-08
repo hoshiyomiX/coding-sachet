@@ -777,3 +777,55 @@ test('warm-up: a dropped first connection is retried, then logged OK', async (t)
   assert.strictEqual(clean.modelAttempts, 1);
   config.warmupMinIntervalMs = orig;
 });
+
+// ---------- chat connect-phase resilience (NIM "no response" field fix) ----------
+
+test('chat: black-holed gateway connect → netretry hints, then a fast connect-timeout error', async (t) => {
+  // The gateway never answers — not even headers (a black-holed connect
+  // through a cold VPN tunnel). The chat path must retry with a fresh
+  // budget (surfacing 'netretry' events) and fail with a connect-timeout
+  // error in seconds, NOT hang silently up to the 5-minute request timer.
+  const gw = await startMockGateway([{ kind: 'text', text: 'ok' }], { key: 'nvapi-test-123', hangChat: 99 });
+  t.after(() => gw.close());
+  const config = useGateways({ nvidia: gw });
+  const orig = config.connectTimeoutMs;
+  config.connectTimeoutMs = 200;
+  t.after(() => { config.connectTimeoutMs = orig; });
+
+  const { runAgent } = require('../agent');
+  const events = [];
+  const t0 = Date.now();
+  await assert.rejects(
+    runAgent({
+      apiKey: 'nvapi-test-123', providerId: 'nvidia', model: 'nv-x',
+      messages: [{ role: 'user', content: 'hai' }],
+      emit: (e) => events.push(e),
+    }),
+    (e) => e.message.includes('koneksi') && e.message.includes('percobaan')
+  );
+  const retries = events.filter((e) => e.type === 'netretry');
+  assert.strictEqual(retries.length, 2, 'two fresh-budget retries before giving up');
+  assert.strictEqual(retries[0].attempt, 1);
+  assert.ok(Date.now() - t0 < 8000, 'fails fast instead of the 300s global timeout');
+});
+
+test('chat: hung first connect heals on retry (cold VPN path) and streams normally', async (t) => {
+  const gw = await startMockGateway([{ kind: 'text', text: 'pulih' }], { key: 'nvapi-test-123', hangChat: 1 });
+  t.after(() => gw.close());
+  const config = useGateways({ nvidia: gw });
+  const orig = config.connectTimeoutMs;
+  config.connectTimeoutMs = 200;
+  t.after(() => { config.connectTimeoutMs = orig; });
+
+  const { runAgent } = require('../agent');
+  const events = [];
+  const added = await runAgent({
+    apiKey: 'nvapi-test-123', providerId: 'nvidia', model: 'nv-x',
+    messages: [{ role: 'user', content: 'hai' }],
+    emit: (e) => events.push(e),
+  });
+  assert.strictEqual(added.at(-1).content, 'pulih');
+  const retries = events.filter((e) => e.type === 'netretry');
+  assert.strictEqual(retries.length, 1, 'exactly one reconnect hint');
+  assert.strictEqual(gw.chatAttempts, 2, 'first attempt hung, second answered');
+});
