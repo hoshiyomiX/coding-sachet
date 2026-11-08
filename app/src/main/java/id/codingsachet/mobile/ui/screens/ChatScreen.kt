@@ -331,6 +331,7 @@ fun ChatScreen(
 
 @Composable
 private fun SessionRow(sess: Session, active: Boolean, onClick: () -> Unit, onDelete: () -> Unit) {
+    val s = LocalStrings.current
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
