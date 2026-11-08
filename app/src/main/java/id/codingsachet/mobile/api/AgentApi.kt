@@ -1,6 +1,7 @@
 package id.codingsachet.mobile.api
 
 import id.codingsachet.mobile.BuildConfig
+import id.codingsachet.mobile.Logx
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -55,11 +56,15 @@ class AgentApi(private val port: () -> Int) {
     suspend fun health(): String? = withContext(Dispatchers.IO) {
         try {
             client.newCall(Request.Builder().url(baseUrl() + "/health").build()).execute().use { r ->
-                if (!r.isSuccessful) return@withContext null
+                if (!r.isSuccessful) {
+                    Logx.d("api", "health HTTP ${r.code}")
+                    return@withContext null
+                }
                 val o = json.parseToJsonElement(r.body.string()).jsonObject
                 o["version"]?.jsonPrimitive?.content
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Logx.d("api", "health tidak menjawab: ${e.javaClass.simpleName} ${e.message?.take(80)}")
             null
         }
     }
@@ -90,7 +95,9 @@ class AgentApi(private val port: () -> Int) {
         runCatching {
             val viaServer = runCatching { fetchModelsViaServer(apiKey, provider) }
             viaServer.getOrElse {
+                Logx.w("api", "models via server gagal (${it.message?.take(100)}) — coba langsung ke ${provider.label}")
                 fetchModelsDirect(apiKey, provider).getOrElse { direct ->
+                    Logx.e("api", "models gagal dua jalur (${provider.label})")
                     throw IOException("${direct.message} · via server: ${it.message?.take(140)}")
                 }
             }
@@ -146,10 +153,16 @@ class AgentApi(private val port: () -> Int) {
         runCatching {
             try {
                 validateKeyOnce(apiKey, provider)
+                Logx.i("api", "validasi key ${provider.label}: OK")
             } catch (e: IOException) {
-                if (e is HttpUpstreamError) throw e
+                if (e is HttpUpstreamError) {
+                    Logx.w("api", "validasi key ${provider.label}: ditolak — ${e.message?.take(120)}")
+                    throw e
+                }
+                Logx.w("api", "validasi key ${provider.label}: kegagalan jaringan (${e.message?.take(100)}) — satu kali retry")
                 Thread.sleep(600)
                 validateKeyOnce(apiKey, provider)
+                Logx.i("api", "validasi key ${provider.label}: OK (setelah retry)")
             }
         }
     }
@@ -187,7 +200,9 @@ class AgentApi(private val port: () -> Int) {
                 .build()
             slowClient.newCall(req).execute().use { r ->
                 // 2xx or 429 (rate-limited but authenticated) = the key is real.
-                if (r.code == 401 || r.code == 403 || !r.isSuccessful) {
+                // 429 proves the bearer token passed auth — only the rate
+                // limit tripped — so it must NOT be reported as an invalid key.
+                if (r.code == 401 || r.code == 403 || (r.code != 429 && !r.isSuccessful)) {
                     throw HttpUpstreamError(errorOf(r.body.string(), r.code))
                 }
             }
@@ -302,7 +317,10 @@ class AgentApi(private val port: () -> Int) {
         val call = sseClient.newCall(req)
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                if (!call.isCanceled()) onError(e.message ?: "network error")
+                if (!call.isCanceled()) {
+                    Logx.e("api", "chat stream gagal (${e.javaClass.simpleName}: ${e.message?.take(120)})")
+                    onError(e.message ?: "network error")
+                }
                 onClosed()
             }
 
@@ -310,7 +328,10 @@ class AgentApi(private val port: () -> Int) {
                 response.use {
                     if (!it.isSuccessful) {
                         val body = runCatching { it.body.string() }.getOrDefault("")
-                        if (!call.isCanceled()) onError(errorOf(body, it.code))
+                        if (!call.isCanceled()) {
+                            Logx.w("api", "chat stream HTTP ${it.code}: ${errorOf(body, it.code).take(140)}")
+                            onError(errorOf(body, it.code))
+                        }
                         onClosed()
                         return
                     }
@@ -326,7 +347,10 @@ class AgentApi(private val port: () -> Int) {
                                 .onSuccess { ev -> onEvent(ev) }
                         }
                     } catch (e: Exception) {
-                        if (!call.isCanceled()) onError(e.message ?: "stream error")
+                        if (!call.isCanceled()) {
+                            Logx.e("api", "chat stream putus saat membaca (${e.javaClass.simpleName}: ${e.message?.take(120)})")
+                            onError(e.message ?: "stream error")
+                        }
                     }
                     onClosed()
                 }

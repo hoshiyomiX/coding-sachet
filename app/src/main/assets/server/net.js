@@ -9,6 +9,8 @@
 // the response exists, so a short bounded retry heals them without ever
 // duplicating streamed content.
 
+const log = require('./log');
+
 /**
  * fetch() with bounded retries for connection-level failures.
  * AbortError (caller cancel / timeout signal) is never retried.
@@ -25,6 +27,7 @@ async function fetchWithRetry(url, opts = {}, { retries = 2, delays = [400, 900]
     } catch (e) {
       lastErr = e;
       if (e && e.name === 'AbortError') throw e;
+      log.wrn('net', `percobaan ${attempt + 1}/${retries + 1} gagal ${hostOf(url)}:`, netErrorDetail(e));
     }
   }
   throw lastErr;
@@ -56,6 +59,7 @@ async function fetchRetryTimeout(url, opts = {}, { timeoutMs = 20000, retries = 
       // A caller cancel is final; never retried.
       if (opts.signal && opts.signal.aborted) throw e;
       // Anything else (our timeout, a connect-level failure) is retryable.
+      log.wrn('net', `retry ${attempt + 1}/${retries + 1} ${hostOf(url)} (${Math.round(timeoutMs / 1000)}s budget):`, netErrorDetail(e));
     }
   }
   throw lastErr;
@@ -111,6 +115,7 @@ async function fetchWithHeaderBudget(url, opts = {}, { timeoutMs = 30000, retrie
         throw e;
       }
       if (onRetry) onRetry(attempt + 1, e);
+      log.wrn('net', `connect retry ${attempt + 1}/${retries} ${hostOf(url)}:`, netErrorDetail(e));
       await sleep(delays[Math.min(attempt, delays.length - 1)]);
     }
   }
@@ -128,6 +133,11 @@ function netErrorDetail(e) {
   const detail = typeof code === 'string' && code ? ` (${code})` : '';
   const msg = (e && e.message) || 'fetch failed';
   return `${msg}${detail}`;
+}
+
+/** Hostname only — URLs can carry keys as query params, never log them. */
+function hostOf(url) {
+  try { return new URL(url).host; } catch { return 'gateway'; }
 }
 
 module.exports = { fetchWithRetry, fetchRetryTimeout, fetchWithHeaderBudget, netErrorDetail };

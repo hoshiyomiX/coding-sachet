@@ -1,6 +1,7 @@
 package id.codingsachet.mobile.ui
 
 import id.codingsachet.mobile.Graph
+import id.codingsachet.mobile.Logx
 import id.codingsachet.mobile.api.AgentApi
 import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
@@ -88,14 +89,19 @@ class ChatEngine(val session: Session) {
         Graph.chats.autoTitle(session)
         persist()
         receivedAnything = false
+        turnStartedAt = System.currentTimeMillis()
         live.value = LiveTurn()
+        Logx.i("chat", "kirim session=${session.id} model=$model msgs=${session.messages.size}")
         startStream(model)
         return true
     }
 
+    private var turnStartedAt = 0L
+
     private fun startStream(model: String) {
         val key = Graph.prefs.apiKey
         if (key.isBlank()) {
+            Logx.w("chat", "kirim diblokir: API key belum diatur")
             live.value = LiveTurn(busy = false, error = "API key belum diatur (Pengaturan)")
             return
         }
@@ -191,21 +197,28 @@ class ChatEngine(val session: Session) {
                 )
                 persist()
             }
-            "error" -> live.value = live.value?.copy(error = ev.str("message"))
+            "error" -> {
+                Logx.e("chat", "event error dari server: ${ev.str("message").take(160)}")
+                live.value = live.value?.copy(error = ev.str("message"))
+            }
         }
     }
 
     private fun finish() {
         val l = live.value ?: return
+        val durMs = if (turnStartedAt > 0) System.currentTimeMillis() - turnStartedAt else 0
         if (l.error != null) {
+            Logx.w("chat", "giliran selesai DGN ERROR setelah ${durMs}ms: ${l.error?.take(140)}")
             live.value = l.copy(busy = false)
         } else if (!receivedAnything) {
             // The stream closed before a single event arrived (server
             // restarted by its watchdog, connection dropped) — say so
             // instead of silently vanishing (the "NIM tidak menjawab"
             // field report was exactly this, with no visible cause).
+            Logx.e("chat", "stream tertutup tanpa satu pun event setelah ${durMs}ms")
             live.value = l.copy(busy = false, error = "Koneksi ke server agent terputus sebelum jawaban diterima — coba kirim ulang pesanmu.")
         } else {
+            Logx.i("chat", "giliran selesai bersih ${durMs}ms (${session.messages.size} pesan tersimpan)")
             live.value = null
         }
         persist()
@@ -213,6 +226,7 @@ class ChatEngine(val session: Session) {
     }
 
     fun stop() {
+        Logx.i("chat", "stop ditekan — batalkan stream session=${session.id}")
         call?.cancel()
     }
 

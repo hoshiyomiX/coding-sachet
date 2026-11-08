@@ -39,6 +39,7 @@ class SachetApp : Application() {
             it.prefs = Graph.prefs
             it.runtime = Graph.runtime
         }
+        Logx.i("app", "boot Coding Sachet ${BuildConfig.VERSION_NAME} (vCode ${BuildConfig.VERSION_CODE})")
         // VPN-aware DNS: keep the guest's resolver in sync with the active
         // network (VPN on/off, wifi↔cellular) for as long as the app lives.
         Graph.runtime.startNetworkWatch()

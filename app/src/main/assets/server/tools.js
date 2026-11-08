@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { config } = require('./config');
+const log = require('./log');
 
 // ---------- path sandbox ----------
 
@@ -122,6 +123,7 @@ function runBash(command, onOutput) {
       return;
     }
     fs.mkdirSync(config.workdir, { recursive: true });
+    log.dbg('tool', `bash: ${command.slice(0, 100).replace(/\s+/g, ' ')}${command.length > 100 ? '…' : ''}`);
     const child = spawn('/bin/bash', ['-c', command], {
       cwd: config.workdir,
       env: {
@@ -150,10 +152,12 @@ function runBash(command, onOutput) {
     child.stderr.on('data', push);
     child.on('error', (e) => {
       clearTimeout(timer);
+      log.err('tool', 'bash spawn gagal:', e.message);
       resolve({ ok: false, error: `spawn: ${e.message}` });
     });
     child.on('close', (code, signal) => {
       clearTimeout(timer);
+      if (killed) log.wrn('tool', `bash timeout ${config.bashTimeoutMs / 1000}s — proses dibunuh`);
       resolve({
         ok: code === 0,
         code,
@@ -198,7 +202,7 @@ const tools = [
     run: async (args) => {
       const r = readFile(args.path);
       if (!r.ok) return r;
-      return { ok: true, output: r.binary || r.truncated ? r.content : r.content, path: r.path, size: r.size, truncated: r.truncated, binary: r.binary };
+      return { ok: true, output: r.content, path: r.path, size: r.size, truncated: r.truncated, binary: r.binary };
     },
   },
   {

@@ -17,7 +17,7 @@ Lingkungan (rootfs Ubuntu + Node.js) **dibundel di dalam APK** dengan kompresi u
 - **Chip sisa token APInex**: indikator sisa kuota di kanan atas kolom chat (`/v1/subscription` + `/v1/balance`, fallback pasangan billing OpenAI-style), diperbarui tiap akhir giliran dan bisa diketuk untuk menyegarkan
 - **Kartu tool yang bisa dibentangkan**: `bash`, `read_file`, `write_file`, `list_dir` — argumen + output lengkap
 - **Mode root (HP rooted)**: aktifkan "Akses root perangkat" di Pengaturan — server berjalan via `su`, seluruh penyimpanan perangkat muncul sebagai folder `/device` dan bisa dijelajahi dari tab File (termasuk `/data/data`, `/system`)
-- **File browser & editor** untuk workdir `/root/work` di dalam guest (plus folder baru, dan navigasi ke atas)
+- **File browser & editor** untuk workdir `/sdcard/coding-sachet` di penyimpanan bersama (fallback otomatis `/root/work` bila penyimpanan tidak tersedia) — plus folder baru, dan navigasi ke atas
 - **Model otomatis** ditarik dari penyedia aktif (`/v1/models`), bisa dicari; filter *gratis saja* untuk APInex (`free/`)
 - **API key milik sendiri**: diinput pengguna, disimpan di perangkat, divalidasi langsung ke penyedia (NIM: POST `/chat/completions` mini — `/v1/models`-nya publik, tidak bisa memvalidasi key)
 - **Alat developer lengkap** (opsional, via apt): git, ripgrep, curl, wget, jq, tree, htop, zip/xz, python3 + pip + venv, build-essential (gcc/g++/make), sqlite3, pkg-config — dipasang sekali dari Pengaturan agar agent siap kerja
@@ -59,6 +59,21 @@ SERVER ↔ GATEWAY: api.apinex.bond/v1  atau  integrate.api.nvidia.com/v1 (OpenA
 - Daftar model: utamanya via server lokal (cache 5 menit per penyedia+key); bila jalur jaringan guest lambat/gangguan, app **fallback langsung ke penyedia** — jalur yang sama dengan validasi key. Chat selalu via guest (butuh eksekusi tool).
 - Semua path tool dipenjara di *allowed roots* (`/root`, `/tmp`, `/sdcard`).
 - Keamanan unduhan env: sha256 rootfs & node **diverifikasi di CI** sebelum masuk APK; integritas berikutnya dijamin oleh tanda tangan APK itu sendiri.
+
+## Format log (standar debug)
+
+Semua baris log — sisi server (`assets/server/log.js`) maupun sisi app (`Logx.kt`) — memakai **satu format** agar mudah difilter dan dibaca saat menelusuri bug:
+
+```
+server (stdout → log aplikasi + logcat):   HH:MM:SS [LVL] [modul] pesan
+app (logcat, tag CS):                      [modul] pesan        ← level & waktu dari logcat
+```
+
+- **LVL**: `DBG` (lifecycle verbos), `INF` (event kunci), `WRN` (masalah yang pulih sendiri), `ERR` (kegagalan yang terlihat user). `SACHET_QUIET=1` mematikan baris `DBG` server.
+- **Modul server**: `cfg` config · `srv` HTTP/route · `agt` loop agent · `net` fetch/retry · `rlm` rate limiter · `tool` tool bash/file.
+- **Modul app**: `app` boot · `api` AgentApi · `chat` ChatEngine · `rt` runtime/proot · `svc` foreground service · `store` ChatStore.
+- Lihat semuanya dari PC: `adb logcat -s CS` (server ikut karena stdout-nya diteruskan ke logcat tag `CS`). Di dalam app: Pengaturan → *Log server* (30 baris terakhir).
+- Aturan privasi: **tidak pernah** ada API key, isi pesan chat, atau isi file di log — hanya id sesi, nama model, hitungan, path, dan teks error.
 
 ## Pengembangan
 

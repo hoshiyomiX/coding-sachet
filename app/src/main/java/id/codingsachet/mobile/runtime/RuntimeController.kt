@@ -7,9 +7,9 @@ import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkRequest
-import android.util.Log
 import androidx.core.content.ContextCompat
 import id.codingsachet.mobile.BuildConfig
+import id.codingsachet.mobile.Logx
 import id.codingsachet.mobile.api.AgentApi
 import id.codingsachet.mobile.data.Prefs
 import kotlinx.coroutines.CoroutineScope
@@ -60,7 +60,7 @@ class RuntimeController(
         // updater only copies these into the rootfs. T-ML11 incident: net.js
         // shipped inside the APK but was missing from this list, so the
         // 1.0.6 update crashed the server with MODULE_NOT_FOUND.
-        val SERVER_FILES = listOf("config.js", "agent.js", "tools.js", "server.js", "net.js", "ratelimit.js")
+        val SERVER_FILES = listOf("config.js", "agent.js", "tools.js", "server.js", "net.js", "ratelimit.js", "log.js")
 
         // The pinned Node builds need libatomic.so.1, which the minimal
         // ubuntu-base rootfs does not ship (verified per-arch via readelf
@@ -69,8 +69,6 @@ class RuntimeController(
         // into the rootfs under its guest multiarch directory.
         private val GUEST_LIB_DIR = "/usr/lib/${BuildConfig.GUEST_TRIPLET}"
         private val RUNTIME_LIBS = listOf("libatomic.so.1")
-
-        const val TAG = "Sachet"
 
         // Common su binary locations (file-existence only — never exec su
         // just to probe: that would pop the superuser grant dialog).
@@ -100,7 +98,7 @@ class RuntimeController(
     @Volatile private var lastDnsPush = 0L
 
     fun logLine(s: String) {
-        Log.i(TAG, s)
+        Logx.raw(s)
         log.update { (it + s).takeLast(500) }
     }
 
@@ -140,8 +138,10 @@ class RuntimeController(
 
             prefs.runtimeReady = true
             state.value = RuntimeState.Stopped
+            Logx.i("rt", "instalasi runtime selesai (rootfs + node ${BuildConfig.NODE_VERSION} + ${SERVER_FILES.size} file server)")
         } catch (e: Throwable) {
             logLine("Instalasi gagal: ${e.message}")
+            Logx.e("rt", "instalasi runtime gagal", e)
             state.value = RuntimeState.InstallFailed(e.message ?: e.javaClass.simpleName)
         } finally {
             installing = false
@@ -332,6 +332,9 @@ class RuntimeController(
                     state.value = RuntimeState.Running(version)
                     failures = 0
                     pushSystemDns()
+                    Logx.i("rt", "server aktif (v$version, node di atas proot)")
+                } else {
+                    Logx.w("rt", "health check gagal — proses ${if (p.isAlive) "hidup tapi tidak menjawab" else "sudah mati"}")
                 }
                 // Watchdog: process alive but not answering → restart it.
                 val dog = launch {
@@ -454,11 +457,13 @@ class RuntimeController(
     fun startServer() {
         val s = state.value
         if (s is RuntimeState.NotInstalled || s is RuntimeState.Installing || s is RuntimeState.InstallFailed) return
+        Logx.i("rt", "start server (diminta UI)")
         userStopped = false
         ContextCompat.startForegroundService(app, Intent(app, ServerService::class.java).setAction(ServerService.ACTION_START))
     }
 
     fun stopServer() {
+        Logx.i("rt", "stop server (diminta UI)")
         userStopped = true
         requestStop()
         app.stopService(Intent(app, ServerService::class.java))
@@ -466,6 +471,7 @@ class RuntimeController(
     }
 
     fun restartServer() {
+        Logx.i("rt", "restart server (diminta UI)")
         stopServer()
         Thread {
             var waited = 0

@@ -14,6 +14,7 @@
 // production never sets them.
 
 const { providerById } = require('./config');
+const log = require('./log');
 
 // Owner-ordered hard limit: max requests per 60s sliding window.
 const DEFAULT_RPM = 15;
@@ -109,6 +110,7 @@ async function acquire(providerId, signal) {
       b.starts.push(Date.now());
       return;
     }
+    if (wait > 2000) log.dbg('rlm', `menunggu slot ${providerId} ${Math.round(wait / 1000)}s (${b.starts.length}/${limitFor(providerId)} terpakai)`);
     await abortableSleep(Math.ceil(wait), signal);
   }
 }
@@ -120,7 +122,10 @@ async function acquire(providerId, signal) {
 function pauseFor(providerId, ms) {
   const b = bucketFor(providerId);
   const until = Date.now() + Math.max(0, ms);
-  if (until > b.pausedUntil) b.pausedUntil = until;
+  if (until > b.pausedUntil) {
+    b.pausedUntil = until;
+    log.wrn('rlm', `429 backoff ${providerId} ${Math.round(ms / 1000)}s`);
+  }
 }
 
 /** Test hook: forget all windows and pauses. */

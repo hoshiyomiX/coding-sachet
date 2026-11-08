@@ -21,12 +21,16 @@ const { config, providerById, HOME } = require('./config');
 const { runAgent } = require('./agent');
 const { safePath, listDir, readFile, writeFile } = require('./tools');
 const { fetchWithRetry, fetchRetryTimeout, netErrorDetail } = require('./net');
+const log = require('./log');
 
 // Fire-and-forget gateway warm-up after a resolver rewrite is only wanted
 // in production; the test suite sets SACHET_NO_WARMUP=1 to stay hermetic.
 const WARMUP_ENABLED = process.env.SACHET_NO_WARMUP !== '1';
 
-const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
+// Back-compat shim: the old single-argument log() stays exported so any
+// caller (tests, ad-hoc scripts) keeps working; it now lands in the
+// standardized format as an INF line from the server module.
+const logLine = (...a) => log.inf('srv', ...a);
 
 function sendJson(res, code, obj) {
   const body = JSON.stringify(obj);
@@ -259,8 +263,8 @@ function warmUpGateways() {
   lastWarmupAt = now;
   for (const p of Object.values(config.providers)) {
     fetchRetryTimeout(p.baseUrl + '/models', {}, { timeoutMs: 20000, retries: 2, delays: [500, 1500] })
-      .then((r) => log(`warm-up ${p.baseUrl}: HTTP ${r.status}`))
-      .catch((e) => log(`warm-up ${p.baseUrl} gagal:`, e.message));
+      .then((r) => log.dbg('net', `warm-up ${p.baseUrl}: HTTP ${r.status}`))
+      .catch((e) => log.wrn('net', `warm-up ${p.baseUrl} gagal:`, e.message));
   }
   return true;
 }
@@ -286,18 +290,23 @@ async function route(req, res) {
     const providerId = gatewayProviderId(req);
     const provider = providerById(providerId);
     if (!provider) {
+      log.wrn('srv', 'models: provider tidak dikenal', providerId);
       return sendJson(res, 400, { error: `Provider tidak dikenal: ${providerId}` });
     }
     const cacheKey = `${providerId}|${provider.baseUrl}|${key}`;
     const hit = modelsCache.get(cacheKey);
     if (hit && Date.now() - hit.at < MODELS_CACHE_TTL) {
+      log.dbg('srv', `models ${providerId} cache ${hit.ids.length} model`);
       return sendJson(res, 200, { models: hit.ids, cached: true });
     }
+    const t0 = Date.now();
     try {
       const ids = await fetchModels(key, provider);
       modelsCache.set(cacheKey, { at: Date.now(), ids });
+      log.inf('srv', `models ${providerId} OK ${ids.length} model ${Date.now() - t0}ms`);
       return sendJson(res, 200, { models: ids });
     } catch (e) {
+      log.err('srv', `models ${providerId} gagal ${Date.now() - t0}ms:`, e.message);
       return sendJson(res, 502, { error: e.message });
     }
   }
@@ -315,8 +324,13 @@ async function route(req, res) {
       return sendJson(res, 400, { error: `body: ${e.message}` });
     }
     if (!body.model || !Array.isArray(body.messages)) {
+      log.wrn('srv', 'chat: body tanpa model/messages');
       return sendJson(res, 400, { error: 'model dan messages wajib' });
     }
+
+    log.inf('srv', `chat mulai ${providerId} ${body.model} msgs=${body.messages.length}`);
+    const chatT0 = Date.now();
+    let chatTurns = 0;
 
     // SSE response headers
     res.writeHead(200, {
@@ -334,7 +348,7 @@ async function route(req, res) {
     req.on('close', () => abort.abort());
 
     try {
-      await runAgent({
+      const added = await runAgent({
         apiKey: key,
         providerId,
         model: body.model,
@@ -346,7 +360,13 @@ async function route(req, res) {
         signal: abort.signal,
         emit,
       });
+      chatTurns = added.filter((m) => m.role === 'assistant').length;
+      log.inf('srv', `chat selesai ${providerId} ${body.model} turns=${chatTurns} msgs+${added.length} ${Date.now() - chatT0}ms`);
     } catch (e) {
+      // A user stop (stop button / screen close) aborts the run — that is a
+      // normal exit, not a failure; keep the error channel for real faults.
+      if (e.message === 'dibatalkan') log.dbg('srv', `chat dibatalkan user ${providerId} ${body.model} ${Date.now() - chatT0}ms`);
+      else log.err('srv', `chat gagal ${providerId} ${body.model} ${Date.now() - chatT0}ms:`, e.message);
       emit({ type: 'error', message: e.message || String(e) });
       emit({ type: 'done' });
     } finally {
@@ -373,14 +393,18 @@ async function route(req, res) {
     if (!fresh) {
       const hit = quotaCache.get(cacheKey);
       if (hit && Date.now() - hit.at < QUOTA_CACHE_TTL) {
+        log.dbg('srv', `quota ${providerId} cache`);
         return sendJson(res, 200, { ...hit.payload, cached: true });
       }
     }
+    const qT0 = Date.now();
     try {
       const payload = await fetchQuota(key, provider);
       quotaCache.set(cacheKey, { at: Date.now(), payload });
+      log.inf('srv', `quota ${providerId} ${payload.source} ${Date.now() - qT0}ms`);
       return sendJson(res, 200, payload);
     } catch (e) {
+      log.wrn('srv', `quota ${providerId} gagal ${Date.now() - qT0}ms:`, e.message);
       return sendJson(res, 502, { error: e.message });
     }
   }
@@ -397,9 +421,10 @@ async function route(req, res) {
     const servers = Array.isArray(body.servers) ? body.servers : [];
     let nameservers;
     try { nameservers = writeResolvConf(servers); } catch (e) {
+      log.err('srv', 'resolv.conf gagal ditulis:', e.message);
       return sendJson(res, 500, { error: e.message });
     }
-    log(`resolv.conf diperbarui: ${nameservers.join(', ')}`);
+    logLine(`resolv.conf diperbarui: ${nameservers.join(', ')}`);
     if (WARMUP_ENABLED) warmUpGateways();
     return sendJson(res, 200, { ok: true, nameservers });
   }
@@ -436,25 +461,32 @@ async function route(req, res) {
       return sendJson(res, 400, { error: `body: ${e.message}` });
     }
     const p = safePath(body.path || '');
-    if (p === null) return sendJson(res, 400, { error: 'Path di luar sandbox' });
+    if (p === null) {
+      log.wrn('srv', `fs ${body.action || '?'}: path di luar sandbox`);
+      return sendJson(res, 400, { error: 'Path di luar sandbox' });
+    }
     try {
       if (body.action === 'mkdir') {
         fs.mkdirSync(p, { recursive: true });
+        log.inf('srv', `fs mkdir ${p}`);
         return sendJson(res, 200, { ok: true });
       }
       if (body.action === 'rm') {
         fs.rmSync(p, { recursive: true, force: true });
+        log.inf('srv', `fs rm ${p}`);
         return sendJson(res, 200, { ok: true });
       }
       if (body.action === 'mv') {
         const to = safePath(body.to || '');
         if (to === null) return sendJson(res, 400, { error: 'Tujuan di luar sandbox' });
-        fs.mkdirSync(require('path').dirname(to), { recursive: true });
+        fs.mkdirSync(path.dirname(to), { recursive: true });
         fs.renameSync(p, to);
+        log.inf('srv', `fs mv ${p} -> ${to}`);
         return sendJson(res, 200, { ok: true });
       }
       return sendJson(res, 400, { error: 'action tidak dikenal' });
     } catch (e) {
+      log.err('srv', `fs ${body.action} gagal:`, e.message);
       return sendJson(res, 500, { error: e.message });
     }
   }
@@ -471,24 +503,24 @@ function start() {
     // (unmounted / permission revoked) — fall back to the private rootfs.
     config.workdir = path.join(HOME, 'work');
     fs.mkdirSync(config.workdir, { recursive: true });
-    log(`workdir fallback /root/work (${e.message})`);
+    log.wrn('srv', `workdir fallback /root/work (${e.message})`);
   }
   const srv = http.createServer((req, res) => {
     route(req, res).catch((e) => {
-      log('route error:', e.message);
+      log.err('srv', 'route error:', e.message);
       try { sendJson(res, 500, { error: e.message }); } catch { /* headers sent */ }
     });
   });
   srv.listen(config.port, config.host, () => {
-    log(`sachet-agent ${config.version} di ${config.host}:${config.port}`);
+    log.inf('srv', `sachet-agent ${config.version} di ${config.host}:${config.port}`);
     for (const [id, p] of Object.entries(config.providers)) {
-      log(`provider ${id}: ${p.baseUrl}`);
+      log.inf('srv', `provider ${id}: ${p.baseUrl}`);
     }
-    log(`workdir: ${config.workdir}`);
+    log.inf('srv', `workdir: ${config.workdir}`);
   });
   // Die loudly if the event loop breaks: the app's supervisor restarts us.
-  process.on('uncaughtException', (e) => { log('uncaught:', e.stack || e.message); process.exit(1); });
-  process.on('unhandledRejection', (e) => { log('unhandled:', e); process.exit(1); });
+  process.on('uncaughtException', (e) => { log.err('srv', 'uncaught:', e.stack || e.message); process.exit(1); });
+  process.on('unhandledRejection', (e) => { log.err('srv', 'unhandled:', e); process.exit(1); });
   return srv;
 }
 
@@ -513,10 +545,10 @@ function productionSetup() {
     try { current = fs.readFileSync(config.resolvConfPath, 'utf8'); } catch { /* missing */ }
     if (!current || !current.includes('# managed by coding-sachet')) {
       const nameservers = writeResolvConf([]);
-      log(`resolv.conf fallback: ${nameservers.join(', ')}`);
+      log.inf('srv', `resolv.conf fallback: ${nameservers.join(', ')}`);
     }
   } catch (e) {
-    log('resolv.conf tidak bisa diubah:', e.message);
+    log.wrn('srv', 'resolv.conf tidak bisa diubah:', e.message);
   }
 
   try { require('node:dns').setDefaultResultOrder('ipv4first'); } catch { /* older node */ }
@@ -526,4 +558,4 @@ function productionSetup() {
 
 if (require.main === module) main();
 
-module.exports = { main, start, route, fetchModels, fetchQuota, writeResolvConf, currentResolvServers, warmUpGateways, log };
+module.exports = { main, start, route, fetchModels, fetchQuota, writeResolvConf, currentResolvServers, warmUpGateways, log: logLine };

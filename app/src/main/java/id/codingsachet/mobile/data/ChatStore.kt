@@ -1,6 +1,7 @@
 package id.codingsachet.mobile.data
 
 import android.content.Context
+import id.codingsachet.mobile.Logx
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -51,6 +52,7 @@ class ChatStore(ctx: Context) {
         dir.listFiles { f -> f.extension == "json" }?.forEach { f ->
             runCatching { json.decodeFromString<Session>(f.readText()) }
                 .onSuccess { index[it.id] = it }
+                .onFailure { Logx.w("store", "sesi ${f.name} tidak terbaca: ${it.message?.take(100)}") }
         }
     }
 
@@ -71,6 +73,7 @@ class ChatStore(ctx: Context) {
     fun save(s: Session) {
         // Best effort synchronous write; files are small. Call from a background thread.
         runCatching { File(dir, s.id + ".json").writeText(json.encodeToString(s)) }
+            .onFailure { Logx.e("store", "gagal menyimpan sesi ${s.id}", it) }
     }
 
     fun delete(s: Session) {

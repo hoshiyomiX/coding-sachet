@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import android.os.PowerManager
+import id.codingsachet.mobile.Logx
 import id.codingsachet.mobile.MainActivity
 import id.codingsachet.mobile.R
 import kotlinx.coroutines.CoroutineScope
@@ -38,10 +39,12 @@ class ServerService : Service() {
         createChannel()
         startForeground(NOTIF_ID, notification("Menyiapkan server…"))
         if (intent?.action == ACTION_STOP) {
+            Logx.i("svc", "service: perintah STOP dari notifikasi")
             GraphHolder.runtime.stopServer()
             stopSelf()
             return START_NOT_STICKY
         }
+        Logx.d("svc", "service start (action=${intent?.action ?: "null"})")
         if (GraphHolder.prefs.keepAwake && wake == null) {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sachet:server").apply {
@@ -71,6 +74,7 @@ class ServerService : Service() {
     }
 
     override fun onDestroy() {
+        Logx.i("svc", "service destroy — requestStop runtime")
         GraphHolder.runtime.requestStop()
         scope.cancel()
         wake?.let { if (it.isHeld) it.release() }

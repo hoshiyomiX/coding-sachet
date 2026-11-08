@@ -7,6 +7,7 @@ const { config, providerById } = require('./config');
 const { toolByName } = require('./tools');
 const { fetchWithHeaderBudget, netErrorDetail } = require('./net');
 const { acquire, peekWaitMs, pauseFor, abortableSleep } = require('./ratelimit');
+const log = require('./log');
 
 // Strict gateways (NIM, OpenAI) require every tool_call to carry an id,
 // but some models stream tool calls without one. Ids are synthesized
@@ -115,6 +116,7 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
   let res;
   try {
     const body = JSON.stringify(buildBody({ model, messages, tools, provider, options: opts }));
+    log.dbg('agt', `gateway ${provider.label} ${model} msgs=${messages.length}${tools && tools.length ? ` tools=${tools.length}` : ''}`);
     try {
       for (let attempt = 0; ; attempt++) {
         // Surface a hint before a long limiter wait so the UI never looks dead.
@@ -145,6 +147,7 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
         if (res.ok || res.status !== 429 || attempt >= MAX_429_RETRIES) break;
         await res.text().catch(() => {}); // drain the error body
         const waitMs = retryAfterMs(res);
+        log.wrn('agt', `HTTP 429 dari ${provider.label} — tunggu ${Math.round(waitMs / 1000)}s (percobaan ${attempt + 1}/${MAX_429_RETRIES})`);
         pauseFor(providerId, waitMs); // later requests wait the pause out too
         if (onDelta) onDelta({ type: 'ratelimit', waitMs, retry: attempt + 1 });
         await abortableSleep(waitMs, controller.signal);
@@ -169,6 +172,7 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
       const text = await res.text().catch(() => '');
       let msg = text.slice(0, 500);
       try { msg = JSON.parse(text).error?.message || msg; } catch { /* not JSON */ }
+      log.err('agt', `HTTP ${res.status} dari ${provider.label}:`, String(msg).slice(0, 160));
       // 429 carries a provider-specific free-tier hint instead of a bare status line.
       const err = new Error(
         res.status === 429 ? `HTTP ${res.status}: ${msg} — ${provider.rateLimitHint}` : `HTTP ${res.status}: ${msg}`
@@ -206,15 +210,15 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
           const d = ch.delta || {};
           if (typeof d.reasoning_content === 'string' && d.reasoning_content) {
             turn.reasoning += d.reasoning_content;
-            onDelta({ type: 'think', delta: d.reasoning_content });
+            if (onDelta) onDelta({ type: 'think', delta: d.reasoning_content });
           }
           if (typeof d.reasoning === 'string' && d.reasoning) {
             turn.reasoning += d.reasoning;
-            onDelta({ type: 'think', delta: d.reasoning });
+            if (onDelta) onDelta({ type: 'think', delta: d.reasoning });
           }
           if (typeof d.content === 'string' && d.content) {
             turn.content += d.content;
-            onDelta({ type: 'text', delta: d.content });
+            if (onDelta) onDelta({ type: 'text', delta: d.content });
           }
           if (Array.isArray(d.tool_calls)) {
             for (const tc of d.tool_calls) {
@@ -331,11 +335,14 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
   while (turn < config.maxTurns) {
     turn++;
     emit({ type: 'turn', n: turn });
+    log.dbg('agt', `putaran ${turn}/${config.maxTurns}`);
 
+    const gwT0 = Date.now();
     const t = await callGateway({
       apiKey, providerId, model, messages: openai, tools: openaiTools, options, signal,
       onDelta: (e) => emit(e),
     });
+    log.dbg('agt', `gateway selesai ${Date.now() - gwT0}ms content=${t.content.length}ch toolCalls=${t.toolCalls.length} finish=${t.finishReason || '?'}`);
 
     // Gateways that omit tool_call ids get synthesized ones here, before
     // the round is persisted or echoed — the ids then survive in history.
@@ -382,18 +389,23 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
 
       let result;
       const tool = toolByName[call.name];
+      const toolT0 = Date.now();
       if (!tool) {
+        log.wrn('agt', `tool tidak dikenal: ${call.name}`);
         result = { ok: false, output: `Tool tidak dikenal: ${call.name}` };
       } else {
         try {
           result = await tool.run(args);
         } catch (e) {
+          log.err('agt', `tool ${call.name} error:`, e.message);
           result = { ok: false, output: `tool error: ${e.message}` };
         }
       }
       const output = typeof result?.output === 'string'
         ? result.output
         : JSON.stringify(result ?? {}).slice(0, config.bashMaxOutput);
+
+      log.inf('agt', `tool ${call.name} ${result?.ok ? 'OK' : 'GAGAL'} ${Date.now() - toolT0}ms out=${output.length}ch`);
 
       emit({ type: 'toolend', id: call.id, ok: !!result?.ok, output: output.slice(0, 4000) });
 
@@ -404,6 +416,7 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
     }
   }
 
+  log.wrn('agt', `batas ${config.maxTurns} putaran agent tercapai`);
   emit({ type: 'error', message: `Batas ${config.maxTurns} putaran agent tercapai.` });
   emit({ type: 'done', turns: turn });
   return added;

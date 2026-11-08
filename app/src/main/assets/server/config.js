@@ -9,6 +9,7 @@
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const log = require('./log');
 
 const HOME = '/root';
 
@@ -21,7 +22,8 @@ function defaultWorkdir() {
   try {
     fs.mkdirSync('/sdcard/coding-sachet', { recursive: true });
     return '/sdcard/coding-sachet';
-  } catch {
+  } catch (e) {
+    log.wrn('cfg', `/sdcard/coding-sachet tidak tersedia (${e.code || e.message}) — workdir default /root/work`);
     return path.join(HOME, 'work');
   }
 }
