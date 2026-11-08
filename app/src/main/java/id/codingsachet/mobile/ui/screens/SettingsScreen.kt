@@ -68,6 +68,7 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
     var checking by remember { mutableStateOf(false) }
     var keepAwake by remember { mutableStateOf(Graph.prefs.keepAwake) }
     var noSeccomp by remember { mutableStateOf(Graph.prefs.noSeccomp) }
+    var rootAccess by remember { mutableStateOf(Graph.prefs.rootAccess) }
     var showReset by remember { mutableStateOf(false) }
     var installingTools by remember { mutableStateOf(false) }
     val toolLog = remember { mutableStateListOf<String>() }
@@ -76,7 +77,7 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
         TopAppBar(
             title = { Text(s.settingsTitle) },
             navigationIcon = {
-                IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = null) }
+                IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = s.settingsTitle) }
             },
         )
 
@@ -195,11 +196,24 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                     Graph.prefs.noSeccomp = it
                 },
             )
+            // Only offered when a su binary is present — toggling it on a
+            // non-rooted phone would be a dead switch.
+            if (Graph.runtime.hasSu()) {
+                SwitchRow(
+                    label = s.rootAccess,
+                    hint = s.rootAccessHint,
+                    checked = rootAccess,
+                    onChange = {
+                        rootAccess = it
+                        Graph.prefs.rootAccess = it
+                    },
+                )
+            }
             TextButton(onClick = {
                 runCatching {
                     context.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")))
                 }
-            }) { Text(s.storagePermission + " (battery)") }
+            }) { Text(s.batteryOptimization) }
 
             // ---- dev tools ----
             SectionTitle(s.devTools)

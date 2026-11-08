@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -53,6 +54,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -63,7 +66,7 @@ import id.codingsachet.mobile.runtime.RuntimeState
 import id.codingsachet.mobile.ui.ChatEngine
 import id.codingsachet.mobile.ui.LiveTurn
 import id.codingsachet.mobile.ui.LocalStrings
-import id.codingsachet.mobile.ui.SachetSky
+import id.codingsachet.mobile.ui.StopIcon
 import id.codingsachet.mobile.ui.TextFileIcon
 import id.codingsachet.mobile.ui.ToolCardUi
 import id.codingsachet.mobile.ui.components.Markdownish
@@ -156,12 +159,12 @@ fun ChatScreen(
         drawerContent = {
             ModalDrawerSheet {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(s.sessionsTitle, style = MaterialTheme.typography.titleMedium, color = SachetSky)
+                    Text(s.sessionsTitle, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
                     TextButton(onClick = {
                         scope.launch { drawer.close() }
                         newChat()
                     }) {
-                        Icon(Icons.Filled.Add, contentDescription = null)
+                        Icon(Icons.Filled.Add, contentDescription = s.chatNew)
                         Spacer(Modifier.width(6.dp))
                         Text(s.chatNew)
                     }
@@ -200,7 +203,7 @@ fun ChatScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IconButton(onClick = { scope.launch { drawer.open() } }) {
-                        Icon(Icons.Filled.Menu, contentDescription = null)
+                        Icon(Icons.Filled.Menu, contentDescription = s.sessionsTitle)
                     }
                     Column(Modifier.weight(1f)) {
                         Text(
@@ -227,7 +230,7 @@ fun ChatScreen(
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Text(s.chatEmpty, style = MaterialTheme.typography.titleMedium, color = SachetSky)
+                        Text(s.chatEmpty, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
                         Text(
                             s.chatEmptyHint,
                             style = MaterialTheme.typography.bodyMedium,
@@ -282,7 +285,11 @@ fun ChatScreen(
                     }
                     if (live != null && live!!.busy) {
                         IconButton(onClick = { engine?.stop() }) {
-                            Text("■", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.titleLarge)
+                            Icon(
+                                StopIcon,
+                                contentDescription = s.stop,
+                                tint = MaterialTheme.colorScheme.error,
+                            )
                         }
                     } else {
                         IconButton(
@@ -299,7 +306,7 @@ fun ChatScreen(
                             Icon(
                                 Icons.Filled.Send,
                                 contentDescription = s.send,
-                                tint = if (input.isNotBlank() && model.isNotBlank()) SachetSky else MaterialTheme.colorScheme.onSurfaceVariant,
+                                tint = if (input.isNotBlank() && model.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
@@ -347,7 +354,7 @@ private fun SessionRow(sess: Session, active: Boolean, onClick: () -> Unit, onDe
                 )
             }
             IconButton(onClick = onDelete) {
-                Icon(Icons.Filled.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Icon(Icons.Filled.Delete, contentDescription = s.deleteSession, tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -357,7 +364,7 @@ private fun SessionRow(sess: Session, active: Boolean, onClick: () -> Unit, onDe
 private fun RuntimeChip(state: RuntimeState) {
     val s = LocalStrings.current
     val (label, color) = when (state) {
-        is RuntimeState.Running -> s.runtimeRunning to SachetSky
+        is RuntimeState.Running -> s.runtimeRunning to MaterialTheme.colorScheme.primary
         is RuntimeState.Starting -> s.runtimeStarting to MaterialTheme.colorScheme.onSurfaceVariant
         is RuntimeState.Crashed -> s.runtimeCrashed to MaterialTheme.colorScheme.error
         else -> s.runtimeStopped to MaterialTheme.colorScheme.onSurfaceVariant
@@ -406,16 +413,26 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
         is QuotaState.Failed -> "—"
     }
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
         horizontalArrangement = Arrangement.End,
     ) {
-        Text(
-            "${s.quotaLabel}: $value",
-            style = MaterialTheme.typography.labelSmall,
-            color = if (state is QuotaState.Failed) MaterialTheme.colorScheme.error
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.clickable(onClick = onRefresh).padding(vertical = 2.dp),
-        )
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier
+                .heightIn(min = 32.dp)
+                .clickable(onClick = onRefresh)
+                .semantics { contentDescription = "${s.quotaLabel}: $value" }
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+        ) {
+            Text(
+                "${s.quotaLabel}: $value",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (state is QuotaState.Failed) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
     }
 }
 

@@ -31,15 +31,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import id.codingsachet.mobile.ui.LocalStrings
 import id.codingsachet.mobile.ui.ToolCardUi
+import id.codingsachet.mobile.ui.sachetSuccess
 
-/** Small monogram chip identifying a tool. */
+/** Small monogram chip identifying a tool. Colors follow the theme so
+ *  both light and dark modes keep readable contrast. */
 @Composable
 private fun ToolBadge(name: String) {
     val (letter, color) = when {
         name == "bash" -> "$" to MaterialTheme.colorScheme.primary
-        name == "read_file" -> "R" to Color(0xFF7E9CFF)
-        name == "write_file" -> "W" to Color(0xFF8BC48A)
-        name == "list_dir" -> "L" to Color(0xFFE0A55E)
+        name == "read_file" -> "R" to MaterialTheme.colorScheme.secondary
+        name == "write_file" -> "W" to sachetSuccess()
+        name == "list_dir" -> "L" to MaterialTheme.colorScheme.tertiary
         else -> "T" to MaterialTheme.colorScheme.secondary
     }
     Box(
@@ -104,7 +106,7 @@ fun ToolCard(card: ToolCardUi) {
                 }
                 when (card.ok) {
                     null -> Text(s.toolRunning, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                    true -> Text(s.toolDone, style = MaterialTheme.typography.labelSmall, color = Color(0xFF8BC48A))
+                    true -> Text(s.toolDone, style = MaterialTheme.typography.labelSmall, color = sachetSuccess())
                     false -> Text(s.toolFailed, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                 }
                 Icon(

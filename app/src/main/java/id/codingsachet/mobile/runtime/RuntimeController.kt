@@ -56,7 +56,11 @@ class RuntimeController(
 
         const val NODE_GUEST = "/usr/local/bin/node"
         const val SERVER_JS_GUEST = "/opt/sachet/server.js"
-        val SERVER_FILES = listOf("config.js", "agent.js", "tools.js", "server.js")
+        // EVERY file the server requires at boot must be listed here: the
+        // updater only copies these into the rootfs. T-ML11 incident: net.js
+        // shipped inside the APK but was missing from this list, so the
+        // 1.0.6 update crashed the server with MODULE_NOT_FOUND.
+        val SERVER_FILES = listOf("config.js", "agent.js", "tools.js", "server.js", "net.js")
 
         // The pinned Node builds need libatomic.so.1, which the minimal
         // ubuntu-base rootfs does not ship (verified per-arch via readelf
@@ -67,6 +71,13 @@ class RuntimeController(
         private val RUNTIME_LIBS = listOf("libatomic.so.1")
 
         const val TAG = "Sachet"
+
+        // Common su binary locations (file-existence only — never exec su
+        // just to probe: that would pop the superuser grant dialog).
+        private val SU_PATHS = listOf(
+            "/system/bin/su", "/system/xbin/su", "/sbin/su", "/system/sbin/su",
+            "/vendor/bin/su", "/su/bin/su", "/system/app/Superuser.apk",
+        )
     }
 
     val state = MutableStateFlow<RuntimeState>(
@@ -92,6 +103,14 @@ class RuntimeController(
         Log.i(TAG, s)
         log.update { (it + s).takeLast(500) }
     }
+
+    // ---------------------------------------------------------------- root
+
+    /** A su binary is present (rooted phone or Magisk). */
+    fun hasSu(): Boolean = SU_PATHS.any { File(it).exists() }
+
+    /** Root mode is requested AND possible. */
+    fun rootMode(): Boolean = prefs.rootAccess && hasSu()
 
     // ---------------------------------------------------------------- install
 
@@ -171,12 +190,19 @@ class RuntimeController(
             val text = app.assets.open("server/$name").bufferedReader().readText()
             File(paths.serverDir, name).writeText(text)
         }
+        // The MODULE_NOT_FOUND class of failure must never ship silently
+        // again: verify what the boot will actually require on disk.
+        val missing = SERVER_FILES.filterNot { File(paths.serverDir, it).length() > 0L }
+        if (missing.isNotEmpty()) logLine("PERINGATAN file server kosong: ${missing.joinToString()}")
         prefs.serverFilesVersion = BuildConfig.VERSION_CODE
     }
 
-    /** Rewrite the JS files when the app was updated. */
+    /** Rewrite the JS files when the app was updated. Heals missing files
+     *  even when the version matches (a file deleted or never written). */
     private fun ensureServerFilesCurrent() {
-        if (prefs.serverFilesVersion != BuildConfig.VERSION_CODE) {
+        val missing = SERVER_FILES.filterNot { File(paths.serverDir, it).exists() }
+        if (prefs.serverFilesVersion != BuildConfig.VERSION_CODE || missing.isNotEmpty()) {
+            if (missing.isNotEmpty()) logLine("File server hilang, menulis ulang: ${missing.joinToString()}")
             runCatching { writeServerFiles() }
                 .onFailure { logLine("Gagal memperbarui file server: ${it.message}") }
             // Heal rootfses created by older app versions (e.g. 1.0.6 without libatomic).
@@ -277,10 +303,15 @@ class RuntimeController(
 
             ensureServerFilesCurrent()
 
+            val rootMode = rootMode()
+            if (rootMode) logLine("Mode root aktif: server berjalan sebagai root, /device terpasang")
             val pb = launcher().processBuilder(
                 listOf(NODE_GUEST, SERVER_JS_GUEST),
                 cwd = "/root",
-                extraEnv = mapOf("SACHET_PORT" to prefs.serverPort.toString()),
+                extraEnv = buildMap {
+                    put("SACHET_PORT", prefs.serverPort.toString())
+                    if (rootMode) put("SACHET_EXTRA_ROOTS", "/,/device")
+                },
             )
             val p = try {
                 pb.start()
@@ -344,7 +375,7 @@ class RuntimeController(
         state.value = RuntimeState.Stopped
     }
 
-    private fun launcher() = ProotLauncher(paths, prefs.noSeccomp)
+    private fun launcher() = ProotLauncher(paths, prefs.noSeccomp, rootMode())
 
     // ---------------------------------------------------------------- dns
 
@@ -470,14 +501,33 @@ class RuntimeController(
         p.exitValue()
     }
 
-    /** Optional developer tools for the agent's bash tool. */
+    /** Optional developer tools for the agent's bash tool: a complete
+     *  toolbox for real coding work (VCS, search, JSON, archives, Python
+     *  with pip + venv, C/C++ toolchain, sqlite). */
     suspend fun installDevTools(onLine: (String) -> Unit): Int {
-        val script = "apt-get update && apt-get install -y --no-install-recommends git ripgrep curl ca-certificates unzip less nano python3"
+        val script = (
+            "apt-get update && " +
+                "apt-get install -y --no-install-recommends " +
+                "git ripgrep curl wget ca-certificates unzip zip xz-utils " +
+                "less nano jq tree htop " +
+                "python3 python3-pip python3-venv " +
+                "build-essential sqlite3 pkg-config"
+        )
         return runGuest(listOf("/bin/bash", "-lc", script), onLine = onLine)
     }
 
     fun resetRuntime() {
         stopServer()
+        // Under root mode the guest's files are owned by real root — the
+        // app uid cannot delete them, so clean up through su first.
+        if (rootMode()) {
+            runCatching {
+                val dirs = listOf(paths.rootfs, paths.tmp, paths.fake)
+                    .joinToString(" ") { ProotLauncher.shellQuote(it.path) }
+                val p = ProcessBuilder("su", "-c", "rm -rf $dirs").start()
+                p.waitFor(20, TimeUnit.SECONDS)
+            }.onFailure { logLine("Pembersihan via su gagal: ${it.message}") }
+        }
         paths.rootfs.deleteRecursively()
         paths.tmp.deleteRecursively()
         paths.fake.deleteRecursively()

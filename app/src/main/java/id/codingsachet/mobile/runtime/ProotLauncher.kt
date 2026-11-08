@@ -6,8 +6,17 @@ import java.io.File
  * Builds the proot command line that runs a program inside the Ubuntu
  * guest: fake root identity, a believable /proc, and binds for /dev,
  * /sys and (when reachable) the shared storage.
+ *
+ * [rootMode] (rooted phones, opt-in): the whole Android filesystem is
+ * bound at /device inside the guest, and the command is launched through
+ * `su -c` so the guest really runs as uid 0 — protected directories
+ * (/data/data/…, /system/…) become readable in the file explorer.
  */
-class ProotLauncher(private val paths: RuntimePaths, private val noSeccomp: Boolean) {
+class ProotLauncher(
+    private val paths: RuntimePaths,
+    private val noSeccomp: Boolean,
+    private val rootMode: Boolean = false,
+) {
 
     companion object {
         private const val SHARED_STORAGE = "/storage/emulated/0"
@@ -15,6 +24,9 @@ class ProotLauncher(private val paths: RuntimePaths, private val noSeccomp: Bool
         private const val PROC_UPTIME = "512.16 2048.00"
         private const val PROC_VERSION =
             "Linux version 6.2.1-sachet (proot@android) (gcc 12.2.0) #1 SMP PREEMPT_DYNAMIC"
+
+        /** POSIX single-quoting for `su -c` command strings. */
+        fun shellQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
     }
 
     /** Environment for the proot process itself (loader + tmp dir). */
@@ -58,6 +70,11 @@ class ProotLauncher(private val paths: RuntimePaths, private val noSeccomp: Bool
             argv += "--bind=$SHARED_STORAGE"
             argv += "--bind=$SHARED_STORAGE:/sdcard"
         }
+        // Rooted devices: expose the whole Android filesystem at /device.
+        if (rootMode) {
+            File(paths.rootfs, "device").mkdirs()
+            argv += "--bind=/:/device"
+        }
         val guestEnv = linkedMapOf(
             "HOME" to "/root",
             "USER" to "root",
@@ -78,10 +95,20 @@ class ProotLauncher(private val paths: RuntimePaths, private val noSeccomp: Bool
         return argv
     }
 
-    fun processBuilder(guestArgv: List<String>, cwd: String = "/root", extraEnv: Map<String, String> = emptyMap()): ProcessBuilder =
-        ProcessBuilder(command(guestArgv, cwd, extraEnv))
-            .also { it.environment().putAll(prootEnv()) }
-            .redirectErrorStream(true)
+    fun processBuilder(guestArgv: List<String>, cwd: String = "/root", extraEnv: Map<String, String> = emptyMap()): ProcessBuilder {
+        val argv = command(guestArgv, cwd, extraEnv)
+        return if (rootMode) {
+            // `su -c` takes ONE shell string; the proot environment must be
+            // set inside it, so prefix the whole command with `env`.
+            val envPrefix = prootEnv().entries.joinToString(" ") { (k, v) -> shellQuote("$k=$v") }
+            val cmdLine = "env $envPrefix " + argv.joinToString(" ") { shellQuote(it) }
+            ProcessBuilder("su", "-c", cmdLine).redirectErrorStream(true)
+        } else {
+            ProcessBuilder(argv)
+                .also { it.environment().putAll(prootEnv()) }
+                .redirectErrorStream(true)
+        }
+    }
 
     /**
      * Android hides parts of /proc from apps while Node reads them:

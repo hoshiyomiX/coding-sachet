@@ -524,3 +524,64 @@ test('HTTP server: /api/models survives a dropped first connection', async (t) =
   assert.deepStrictEqual(r.body.models, ['test-mini', 'test-pro']);
   assert.strictEqual(gw.modelAttempts, 2);
 });
+
+test('HTTP server: extra allowed roots (root mode) are browsable via /api/fs', async (t) => {
+  const gw = await startMockGateway([]);
+  t.after(() => gw.close());
+  const config = useGateways({ apinex: gw });
+
+  // What SACHET_EXTRA_ROOTS="/,/device" does at boot: extra roots joined
+  // onto the sandbox list (the app sends this env only in root mode).
+  const deviceDir = path.join(ROOT, 'device');
+  fs.mkdirSync(path.join(deviceDir, 'system'), { recursive: true });
+  fs.writeFileSync(path.join(deviceDir, 'system', 'build.prop'), 'ro.build.id=test');
+  const origRoots = config.allowedRoots.slice();
+  config.allowedRoots.push('/', deviceDir);
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  try {
+    // The extra root itself lists fine…
+    const ls = await getJson(port, '/api/fs?path=' + encodeURIComponent(deviceDir));
+    assert.strictEqual(ls.status, 200);
+    assert.ok(ls.body.entries.some((e) => e.name === 'system'));
+
+    // …files under it are readable through the file API…
+    const read = await getJson(port, '/api/fs/file?path=' + encodeURIComponent(path.join(deviceDir, 'system', 'build.prop')));
+    assert.strictEqual(read.status, 200);
+    assert.strictEqual(read.body.content, 'ro.build.id=test');
+
+    // …and with "/" allowed, any guest path resolves (up-navigation works).
+    const guestEtc = await getJson(port, '/api/fs?path=' + encodeURIComponent(path.join(ROOT, 'guest-etc-missing')));
+    assert.strictEqual(guestEtc.status, 404); // allowed root, missing dir → stat error, not 400
+  } finally {
+    config.allowedRoots.length = 0;
+    for (const r of origRoots) config.allowedRoots.push(r);
+  }
+
+  // Without the extra roots the sandbox stays sealed.
+  const outside = await getJson(port, '/api/fs?path=' + encodeURIComponent('/etc'));
+  assert.strictEqual(outside.status, 400);
+});
+
+test('agent loop: huge read_file results are truncated without slurping the file', async (t) => {
+  const gw = await startMockGateway([]);
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+  const { config } = require('../config');
+
+  const big = path.join(config.workdir, 'big.log');
+  const chunk = 'x'.repeat(64 * 1024) + '\n';
+  fs.writeFileSync(big, chunk.repeat(32)); // 2 MB, well above readMaxBytes
+
+  const { readFile } = require('../tools');
+  const r = readFile(big);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.truncated, true);
+  assert.strictEqual(r.size, 32 * chunk.length);
+  assert.strictEqual(Buffer.byteLength(r.content, 'utf8'), config.readMaxBytes);
+});

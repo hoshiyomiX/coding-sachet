@@ -11,8 +11,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -21,7 +23,7 @@ import androidx.compose.ui.unit.dp
 
 /**
  * Lightweight message renderer: fenced code blocks in monospace cards,
- * inline `code`, **bold** and headings; anything fancier stays as plain text.
+ * inline `code`, **bold** and # headings; anything fancier stays as plain text.
  */
 @Composable
 fun Markdownish(text: String) {
@@ -50,7 +52,25 @@ fun Markdownish(text: String) {
                     }
                 }
             } else if (b.first.isNotBlank()) {
-                Text(inline(b.first, codeColor), style = textStyle)
+                HeadingOrText(b.first, textStyle, codeColor)
+            }
+        }
+    }
+}
+
+/** One text block: lines starting with 1–4 # render as bold small titles,
+ *  everything else keeps the body style with inline markup. */
+@Composable
+private fun HeadingOrText(block: String, textStyle: TextStyle, codeColor: Color) {
+    val heading = Regex("^(#{1,4})\\s+(.+)$")
+    val lines = block.split('\n')
+    Column {
+        for ((i, line) in lines.withIndex()) {
+            val h = heading.find(line)
+            when {
+                h != null -> Text(h.groupValues[2], style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                line.isBlank() && i == lines.lastIndex -> Unit // no trailing spacer
+                else -> Text(inline(line, codeColor), style = textStyle)
             }
         }
     }

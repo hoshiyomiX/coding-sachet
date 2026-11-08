@@ -11,6 +11,10 @@ import androidx.compose.ui.graphics.Color
 val SachetSky = Color(0xFF38BDF8)
 val SachetSkyDark = Color(0xFF0369A1)
 
+/** Success color per theme (tool "done" chips): readable on both modes. */
+val SachetSuccessDark = Color(0xFF9CD67D)
+val SachetSuccessLight = Color(0xFF2E7D32)
+
 private val DarkScheme = darkColorScheme(
     primary = SachetSky,
     onPrimary = Color(0xFF00344F),
@@ -49,3 +53,7 @@ fun SachetTheme(content: @Composable () -> Unit) {
         content = content,
     )
 }
+
+/** Theme-aware success tint (tool cards' "done" state). */
+@Composable
+fun sachetSuccess(): Color = if (isSystemInDarkTheme()) SachetSuccessDark else SachetSuccessLight

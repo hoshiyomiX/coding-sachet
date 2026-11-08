@@ -42,7 +42,6 @@ import id.codingsachet.mobile.api.Provider
 import id.codingsachet.mobile.api.Providers
 import id.codingsachet.mobile.runtime.RuntimeState
 import id.codingsachet.mobile.ui.LocalStrings
-import id.codingsachet.mobile.ui.SachetSky
 import kotlinx.coroutines.launch
 
 /** Welcome → provider → API key → environment install (bundled in the APK). */
@@ -88,7 +87,7 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("Coding Sachet", style = MaterialTheme.typography.displaySmall, color = SachetSky)
+            Text("Coding Sachet", style = MaterialTheme.typography.displaySmall, color = MaterialTheme.colorScheme.primary)
             Text(s.appTagline, style = MaterialTheme.typography.bodyLarge)
 
             // language chips

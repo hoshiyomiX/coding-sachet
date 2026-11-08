@@ -11,6 +11,14 @@ const path = require('path');
 
 const HOME = '/root';
 
+// Extra sandbox roots, pushed by the app for rooted devices (SACHET_EXTRA_ROOTS="/,/device"):
+// "/" lets the file explorer navigate the whole guest, "/device" is the
+// Android filesystem root bound in by proot (see ProotLauncher).
+const extraRoots = (process.env.SACHET_EXTRA_ROOTS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 const providers = {
   apinex: {
     label: 'APInex',
@@ -70,7 +78,7 @@ const config = {
   writeMaxBytes: 2 * 1024 * 1024,   // largest accepted file write
 
   // File API sandbox: paths must resolve under one of these roots.
-  allowedRoots: [HOME, '/tmp', '/sdcard', '/storage/emulated/0'],
+  allowedRoots: [HOME, '/tmp', '/sdcard', '/storage/emulated/0', ...extraRoots],
 
   jsonBodyLimit: 5 * 1024 * 1024,
 

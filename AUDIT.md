@@ -46,9 +46,34 @@ Audit teknis kondisi terkini (2026-11-07, pasca-rename penuh ke Coding Sachet). 
 - **Riwayat lintas model (T-ML10)**: `toOpenAiMessages` melakukan healing — id tool-call kosong disintesis dan dipasangkan posisional dengan tool result; putaran terhenti (stop sebelum tool menjawab) dilipat jadi pesan assistant polos; tool result orphan di-drop — gateway ketat (NIM/OpenAI) tidak lagi menolak 400 saat ganti model di tengah sesi.
 - **Kuota (T-ML10)**: `GET /api/quota` (X-Sachet-Key/Provider, cache 60 s, `?fresh=1`) — primer endpoint natif APInex `/v1/subscription` (tokens_remaining/unlimited) + `/v1/balance` (balance_usd, best-effort); fallback pasangan `/v1/dashboard/billing/*` gaya new-api hanya saat 404/405 (hard_limit_usd − total_usage/100, konversi 500.000 unit/USD). NIM: `{supported:false}` — chip disembunyikan. UI: chip "Sisa token" kanan-atas kolom chat, refresh saat layar dibuka + server Running + tiap akhir giliran + ketuk (fresh).
 - Path tool dipenjara allowed roots `/root`, `/tmp`, `/sdcard`.
+- **Mode root (T-ML11)**: opt-in via Pengaturan (hanya tampil bila biner `su` terdeteksi; deteksi file-only, tak pernah mengeksekusi `su` untuk probe). Saat aktif: proot dijalankan lewat `su -c` (env proot dikutip POSIX di dalam string perintah), bind `/:/device`, `SACHET_EXTRA_ROOTS=";,/device"` — file explorer bisa merambah perangkat; **implikasi**: agent bash yang berjalan sebagai root punya akses tulis ke seluruh perangkat (risiko disadari pemilik, alat developer).
 - proot: `--root-id --kill-on-exit --link2symlink`, bind /dev /proc /sys + fake loadavg/stat/uptime/version, /dev/shm dari tmp rootfs, mode kompatibilitas `PROOT_NO_SECCOMP` otomatis bila smoke-test gagal.
 
 ## §5 Hal yang belum terverifikasi
 
 - Chat nyata kedua gateway dengan key resmi: APInex terblokir dari sandbox (Cloudflare), NIM tidak ada key `nvapi-` yang diunggah saat sesi ini. Suite mock 25/25 tetap hijau; validasi nyata (termasuk endpoint kuota natif APInex dan perilaku VPN nyata) menunggu first-run di perangkat.
 - Perilaku armv7/x86_64 di perangkat nyata (biner sudah diverifikasi ELF-arch + NEEDED, tapi belum ada uji hardware).
+- Mode root (`su -c` + bind `/:/device`) belum teruji di perangkat rooted sungguhan — jalur su dikutip POSIX-shape, tapi setiap implementasi su (Magisk/KernelSU/phh) punya keunikan sendiri.
+
+## §6 Audit UI/theme (T-ML11)
+
+Temuan → perbaikan yang diterapkan:
+
+- **Kontras WCAG**: `SachetSky` (#38BDF8) dipakai langsung sebagai warna teks/ikon di atas background terang (≈2.0:1 — di bawah ambang 4.5:1). Semua pemakaian untuk teks/ikon diganti `MaterialTheme.colorScheme.primary` (light = sky-700 #0369A1, dark = sky-400) di: judul drawer, empty-state chat, chip runtime, ikon kirim, judul Onboarding.
+- **Aksesibilitas**: ikon interaktif dengan `contentDescription = null` (menu, back ×2, hapus sesi, tambah chat/folder/file) kini berlabel; tombol stop memakai `Icons.Filled.Stop` + label (sebelumnya `Text("■")` tanpa semantics); QuotaChip mendapat pill Surface + `heightIn(min=32.dp)` + `semantics{contentDescription}` (sebelumnya teks kecil tanpa latar).
+- **Warna hardcode di ToolCard** (0xFF7E9CFF/8BC48A/E0A55E) diganti warna tema (primary/secondary/tertiary + `sachetSuccess()` baru: hijau per-tema, kontras terjaga di light & dark).
+- **FilesScreen**: tombol "Naik ⌃" (teks + karakter unicode) → IconButton panah; path bar kini `weight(1f)` + ellipsis (sebelumnya path panjang meluber); empty state "Folder kosong"; tombol folder baru (dialog mkdir sudah ada sejak awal tapi tak pernah terjangkau UI — dead code dihidupkan); nama file ellipsis.
+- **SettingsScreen**: label "Akses penyimpanan (battery)" yang membingungkan → string sendiri "Abaikan optimasi baterai".
+- **Markdownish**: docstring menjanjikan `headings` tapi tak diimplementasikan → kini baris `#`–`####` dirender titleSmall bold per baris.
+- Tidak berubah (diterima): top bar model TextButton (cukup), lebar bubble 320dp (wajar di ponsel), tanpa animasi list (kinerja di perangkat low-end).
+
+## §7 Audit kode + toolbox (T-ML11)
+
+Insiden & perbaikan:
+
+- **Insiden 1.0.6 (kritis)**: `net.js` terkirim di APK tapi tidak ada di `SERVER_FILES` → tak pernah disalin ke `/opt/sachet` → `MODULE_NOT_FOUND` crash loop. Fix: `SERVER_FILES` kini memuat semua file yang di-require saat boot + dua pengaman — `writeServerFiles` memverifikasi hasil salin non-kosong, `ensureServerFilesCurrent` menyembuhkan file hilang walau versi sama.
+- **Race double-send**: `ChatEngine.send` menyetel `live` di dalam `scope.launch` → flag busy belum terlihat saat tap kedua. Fix: `send` kini sinkron di thread pemanggil (semua operasi main-safe; IO tetap di `persist()`).
+- **readFile slurp penuh**: file 2 GB dibaca seluruhnya ke memori sebelum dipotong. Fix: baca maksimal `readMaxBytes` via `fs.readSync` dari fd (test: file 2 MB → konten terpotong tepat 256 KB).
+- **safePath root "/"**: prefix `startsWith('/'+sep)` tak pernah cocok untuk sub-path dari "/" → mode root tak akan bisa menjelajah. Fix: cabang khusus `r === '/'` (test: root ekstra bisa diramban, sandbox default tetap tersegel 400).
+- **Toolbox dev diperluas** (instalasi opsional via apt): git, ripgrep, curl, wget, ca-certificates, unzip, zip, xz-utils, less, nano, jq, tree, htop, python3, python3-pip, python3-venv, build-essential (gcc/g++/make), sqlite3, pkg-config — kover VCS, search, JSON, arsip, Python terisolasi (venv), toolchain C/C++, DB.
+- Diketahui & diterima: abort klien tidak memotong tool bash yang sedang berjalan (selesai via timeout 120 s); file buatan mode root dimiliki uid 0 → `resetRuntime` membersihkan via `su rm -rf` (dengan fallback normal); watchdog `p.destroy()` di mode root membunuh `su` induk — node yatim ditangani `killLeftoverServer` (pkill via su) di iterasi supervise berikutnya.

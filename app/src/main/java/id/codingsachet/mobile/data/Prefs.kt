@@ -61,6 +61,12 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("noSeccomp", false)
         set(v) = sp.edit().putBoolean("noSeccomp", v).apply()
 
+    /** Rooted phones: run the server via su and expose /device in the
+     *  file explorer. Only honored when a su binary is actually present. */
+    var rootAccess: Boolean
+        get() = sp.getBoolean("rootAccess", false)
+        set(v) = sp.edit().putBoolean("rootAccess", v).apply()
+
     var keepAwake: Boolean
         get() = sp.getBoolean("keepAwake", true)
         set(v) = sp.edit().putBoolean("keepAwake", v).apply()

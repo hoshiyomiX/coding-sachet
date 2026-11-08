@@ -60,17 +60,18 @@ class ChatEngine(val session: Session) {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Returns false (caller keeps the input) when a turn cannot start. */
+    /** Returns false (caller keeps the input) when a turn cannot start.
+     *  Runs synchronously on the caller's (main) thread so the busy flag is
+     *  visible before the next tap — a coroutine here once allowed a fast
+     *  double-tap to start two streams. */
     fun send(text: String, model: String): Boolean {
         if (busy || text.isBlank() || model.isBlank()) return false
-        scope.launch {
-            session.messages += Msg(role = "user", content = text.trim())
-            session.model = model
-            Graph.chats.autoTitle(session)
-            persist()
-            live.value = LiveTurn()
-            startStream(model)
-        }
+        session.messages += Msg(role = "user", content = text.trim())
+        session.model = model
+        Graph.chats.autoTitle(session)
+        persist()
+        live.value = LiveTurn()
+        startStream(model)
         return true
     }
 

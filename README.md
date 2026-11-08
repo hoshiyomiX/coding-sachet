@@ -16,9 +16,11 @@ Lingkungan (rootfs Ubuntu + Node.js) **dibundel di dalam APK** dengan kompresi u
 - **Ramah VPN**: daftar DNS sistem Android (ikut jaringan/VPN aktif) didorong ke guest lewat `POST /api/dns` + retry koneksi singkat — perbaiki "Koneksi ke gateway gagal: fetch failed" saat VPN menyala
 - **Chip sisa token APInex**: indikator sisa kuota di kanan atas kolom chat (`/v1/subscription` + `/v1/balance`, fallback pasangan billing OpenAI-style), diperbarui tiap akhir giliran dan bisa diketuk untuk menyegarkan
 - **Kartu tool yang bisa dibentangkan**: `bash`, `read_file`, `write_file`, `list_dir` — argumen + output lengkap
-- **File browser & editor** untuk workdir `/root/work` di dalam guest
+- **Mode root (HP rooted)**: aktifkan "Akses root perangkat" di Pengaturan — server berjalan via `su`, seluruh penyimpanan perangkat muncul sebagai folder `/device` dan bisa dijelajahi dari tab File (termasuk `/data/data`, `/system`)
+- **File browser & editor** untuk workdir `/root/work` di dalam guest (plus folder baru, dan navigasi ke atas)
 - **Model otomatis** ditarik dari penyedia aktif (`/v1/models`), bisa dicari; filter *gratis saja* untuk APInex (`free/`)
 - **API key milik sendiri**: diinput pengguna, disimpan di perangkat, divalidasi langsung ke penyedia (NIM: POST `/chat/completions` mini — `/v1/models`-nya publik, tidak bisa memvalidasi key)
+- **Alat developer lengkap** (opsional, via apt): git, ripgrep, curl, wget, jq, tree, htop, zip/xz, python3 + pip + venv, build-essential (gcc/g++/make), sqlite3, pkg-config — dipasang sekali dari Pengaturan agar agent siap kerja
 - **UI dwibahasa**: Indonesia (default) / English
 - Nol dependensi npm di sisi server
 

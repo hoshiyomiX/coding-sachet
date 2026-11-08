@@ -10,12 +10,17 @@ const { config } = require('./config');
 
 // ---------- path sandbox ----------
 
-/** Resolve `p` and make sure it stays inside one of the allowed roots. */
+/** Resolve `p` and make sure it stays inside one of the allowed roots.
+ *  The root "/" itself is a valid allowed root (root mode): every absolute
+ *  path lives under it — the naive `startsWith('/' + sep)` would never
+ *  match, so it needs its own branch. */
 function safePath(p) {
   if (typeof p !== 'string' || p.length === 0 || p.includes('\0')) return null;
   const abs = path.resolve(p);
-  if (!config.allowedRoots.some((r) => abs === r || abs.startsWith(r + path.sep))) return null;
-  return abs;
+  if (!path.isAbsolute(abs)) return null;
+  const ok = config.allowedRoots.some((r) =>
+    r === '/' ? true : (abs === r || abs.startsWith(r + path.sep)));
+  return ok ? abs : null;
 }
 
 /** Same, but for a path that is allowed not to exist yet (parents must). */
@@ -61,7 +66,9 @@ function listDir(dirPath, depth = 2) {
   return { ok: true, path: abs, entries: walk(abs, depth, { count: 2000 }) };
 }
 
-/** Read a file as text (best effort for binary files). */
+/** Read a file as text (best effort for binary files). Only the first
+ *  readMaxBytes are ever read from disk, so a huge file cannot blow up
+ *  the server's memory (the old code slurped the whole file first). */
 function readFile(filePath) {
   const abs = safePath(filePath);
   if (abs === null) return { ok: false, error: 'Path is outside the sandbox' };
@@ -69,9 +76,19 @@ function readFile(filePath) {
   try { st = fs.statSync(abs); } catch (e) { return { ok: false, error: `stat: ${e.message}` }; }
   if (!st.isFile()) return { ok: false, error: 'Not a file' };
   const truncated = st.size > config.readMaxBytes;
-  const buf = fs.readFileSync(abs);
-  const slice = buf.subarray(0, config.readMaxBytes);
-  const text = slice.toString('utf8');
+  let buf;
+  if (truncated) {
+    const fd = fs.openSync(abs, 'r');
+    try {
+      buf = Buffer.alloc(config.readMaxBytes);
+      fs.readSync(fd, buf, 0, config.readMaxBytes, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } else {
+    buf = fs.readFileSync(abs);
+  }
+  const text = buf.toString('utf8');
   // A NUL byte early in the file almost always means binary content.
   const binary = text.slice(0, 8000).includes('\u0000');
   return {
