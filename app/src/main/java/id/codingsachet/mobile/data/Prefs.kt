@@ -80,6 +80,23 @@ class Prefs(ctx: Context) {
         get() = sp.getInt("serverFilesVersion", 0)
         set(v) = sp.edit().putInt("serverFilesVersion", v).apply()
 
+    /**
+     * Raw JSON object merged into every gateway chat request (Settings →
+     * Konfigurasi JSON: temperature, top_p, max_tokens, …). Blank = the
+     * gateway's own defaults. The agent server strips reserved keys, so a
+     * hand-edited value can never break the agent loop.
+     */
+    var requestOptions: String
+        get() = sp.getString("requestOptions", "") ?: ""
+        set(v) = sp.edit().putString("requestOptions", v).apply()
+
+    /** Extra raw JSON object (Settings → Konfigurasi JSON → JSON tambahan),
+     *  merged AFTER [requestOptions] so it can override the structured
+     *  fields. Same reserved-key protection applies server-side. */
+    var requestOptionsExtra: String
+        get() = sp.getString("requestOptionsExtra", "") ?: ""
+        set(v) = sp.edit().putString("requestOptionsExtra", v).apply()
+
     companion object {
         const val DEFAULT_PORT = 8765
         const val DEFAULT_PROVIDER = "apinex"

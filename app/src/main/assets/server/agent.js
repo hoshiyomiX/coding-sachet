@@ -6,6 +6,7 @@
 const { config, providerById } = require('./config');
 const { toolByName } = require('./tools');
 const { fetchWithRetry, netErrorDetail } = require('./net');
+const { acquire, peekWaitMs, pauseFor, abortableSleep } = require('./ratelimit');
 
 // Strict gateways (NIM, OpenAI) require every tool_call to carry an id,
 // but some models stream tool calls without one. Ids are synthesized
@@ -17,9 +18,92 @@ function synthToolCallId() {
   return `call_s${Date.now().toString(36)}_${synthCounter}`;
 }
 
+// ---------- per-request JSON options (Settings → Konfigurasi JSON) ----------
+// The app lets the owner configure the OpenAI-compatible request body
+// (apinex.bond/developers/models/chat: "Extra OpenAI fields are generally
+// forwarded"). These keys belong to the agent itself and can never be
+// overridden from user config.
+const RESERVED_OPTION_KEYS = ['model', 'messages', 'stream', 'tools', 'tool_choice', 'n'];
+const REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high'];
+const OPTIONS_MAX_JSON = 4096;
+
+/** Validate + clean the user's request options. Invalid values are
+ *  dropped (the request proceeds on gateway defaults) rather than
+ *  failing the whole turn. Reserved keys are always stripped. */
+function sanitizeOptions(options) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(options)) {
+    if (RESERVED_OPTION_KEYS.includes(k)) continue;
+    if (v === undefined || v === null) continue;
+    out[k] = v;
+  }
+  const num = (k, min, max) => {
+    if (out[k] === undefined) return;
+    if (typeof out[k] !== 'number' || !Number.isFinite(out[k]) || out[k] < min || out[k] > max) delete out[k];
+  };
+  num('temperature', 0, 2);
+  num('top_p', 0, 1);
+  num('presence_penalty', -2, 2);
+  num('frequency_penalty', -2, 2);
+  if (out.max_tokens !== undefined && (!Number.isInteger(out.max_tokens) || out.max_tokens < 1)) delete out.max_tokens;
+  if (out.seed !== undefined && !Number.isInteger(out.seed)) delete out.seed;
+  if (out.stop !== undefined) {
+    const arr = Array.isArray(out.stop) ? out.stop : [out.stop];
+    const strs = arr.filter((s) => typeof s === 'string' && s).slice(0, 4);
+    if (strs.length) out.stop = strs; else delete out.stop;
+  }
+  if (out.reasoning_effort !== undefined && !REASONING_EFFORTS.includes(out.reasoning_effort)) delete out.reasoning_effort;
+  if (JSON.stringify(out).length > OPTIONS_MAX_JSON) return {};
+  return out;
+}
+
+/** The chat/completions request body: agent-owned fields first, then the
+ *  sanitized user options last (they may override max_tokens etc.). */
+function buildBody({ model, messages, tools, provider, options }) {
+  const body = { model, messages, stream: true };
+  // NIM asks integrations to set max_tokens explicitly; APInex uses its own
+  // default, so the field is only sent when configured — and a user-set
+  // max_tokens always wins over the provider default.
+  if (provider.maxTokens && options.max_tokens === undefined) body.max_tokens = provider.maxTokens;
+  if (tools && tools.length) {
+    body.tools = tools;
+    body.tool_choice = 'auto';
+  }
+  Object.assign(body, options);
+  return body;
+}
+
+/** Wait the gateway asked for after a 429: `retry-after` (seconds or
+ *  HTTP-date) first, then x-ratelimit-reset (unix seconds); clamped to a
+ *  sane range so a hostile/broken header can never stall the agent. */
+function retryAfterMs(res) {
+  const ra = res.headers.get('retry-after');
+  if (ra != null) {
+    const s = Number(ra);
+    if (Number.isFinite(s) && s >= 0) return clampWait(s * 1000);
+    const date = Date.parse(ra);
+    if (!Number.isNaN(date)) return clampWait(date - Date.now());
+  }
+  const reset = Number(res.headers.get('x-ratelimit-reset'));
+  if (Number.isFinite(reset) && reset > 1e9) return clampWait(reset * 1000 - Date.now());
+  return 5000;
+}
+
+function clampWait(ms) {
+  return Math.min(65000, Math.max(500, ms));
+}
+
+// Bounded 429 retries: the client-side 15 RPM limiter keeps a solo device
+// compliant, but the APInex bucket is per ACCOUNT (every key and IP of the
+// account shares it) — a second device can still burn it. No streamed
+// content exists before headers, so retrying a 429 is always safe.
+const MAX_429_RETRIES = 2;
+
 /** One streamed call to the provider. Returns the assembled assistant turn. */
-async function callGateway({ apiKey, providerId, model, messages, tools, signal, onDelta }) {
+async function callGateway({ apiKey, providerId, model, messages, tools, options, signal, onDelta }) {
   const provider = providerById(providerId) || config.providers.apinex;
+  const opts = sanitizeOptions(options);
   const controller = new AbortController();
   const onAbort = () => controller.abort();
   if (signal) {
@@ -30,108 +114,109 @@ async function callGateway({ apiKey, providerId, model, messages, tools, signal,
 
   let res;
   try {
-    // Connect-level retries only: the fetch either resolves with headers
-    // (never retried afterwards — streamed content must not duplicate) or
-    // rejects before a byte exists. VPN bring-up races fail exactly here.
-    res = await fetchWithRetry(provider.baseUrl + '/chat/completions', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        stream: true,
-        // NIM asks integrations to set max_tokens explicitly; APInex uses
-        // its own default, so the field is only sent when configured.
-        ...(provider.maxTokens ? { max_tokens: provider.maxTokens } : {}),
-        ...(tools && tools.length ? { tools, tool_choice: 'auto' } : {}),
-      }),
-    });
-  } catch (e) {
-    clearTimeout(timer);
-    if (signal) signal.removeEventListener('abort', onAbort);
-    if (e.name === 'AbortError') throw new Error(signal && signal.aborted ? 'dibatalkan' : `gateway timeout (${config.requestTimeoutMs / 1000}s)`);
-    throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`);
-  }
+    const body = JSON.stringify(buildBody({ model, messages, tools, provider, options: opts }));
+    try {
+      for (let attempt = 0; ; attempt++) {
+        // Surface a hint before a long limiter wait so the UI never looks dead.
+        const hint = peekWaitMs(providerId);
+        if (hint > 500 && onDelta) onDelta({ type: 'ratelimit', waitMs: hint });
+        await acquire(providerId, controller.signal);
+        res = await fetchWithRetry(provider.baseUrl + '/chat/completions', {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body,
+        });
+        if (res.ok || res.status !== 429 || attempt >= MAX_429_RETRIES) break;
+        await res.text().catch(() => {}); // drain the error body
+        const waitMs = retryAfterMs(res);
+        pauseFor(providerId, waitMs); // later requests wait the pause out too
+        if (onDelta) onDelta({ type: 'ratelimit', waitMs, retry: attempt + 1 });
+        await abortableSleep(waitMs, controller.signal);
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') throw new Error(signal && signal.aborted ? 'dibatalkan' : `gateway timeout (${config.requestTimeoutMs / 1000}s)`);
+      throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`);
+    }
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    clearTimeout(timer);
-    if (signal) signal.removeEventListener('abort', onAbort);
-    let msg = text.slice(0, 500);
-    try { msg = JSON.parse(text).error?.message || msg; } catch { /* not JSON */ }
-    // 429 carries a provider-specific free-tier hint instead of a bare status line.
-    const err = new Error(
-      res.status === 429 ? `HTTP ${res.status}: ${msg} — ${provider.rateLimitHint}` : `HTTP ${res.status}: ${msg}`
-    );
-    err.status = res.status;
-    throw err;
-  }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      let msg = text.slice(0, 500);
+      try { msg = JSON.parse(text).error?.message || msg; } catch { /* not JSON */ }
+      // 429 carries a provider-specific free-tier hint instead of a bare status line.
+      const err = new Error(
+        res.status === 429 ? `HTTP ${res.status}: ${msg} — ${provider.rateLimitHint}` : `HTTP ${res.status}: ${msg}`
+      );
+      err.status = res.status;
+      throw err;
+    }
 
-  // ---- parse the SSE stream ----
-  const turn = { content: '', reasoning: '', toolCalls: [], finishReason: null };
+    // ---- parse the SSE stream ----
+    const turn = { content: '', reasoning: '', toolCalls: [], finishReason: null };
 
-  try {
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let done = false;
+    try {
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let done = false;
 
-    for await (const chunk of res.body) {
-      buffer += decoder.decode(chunk, { stream: true });
-      let nl;
-      while ((nl = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, nl).replace(/\r$/, '');
-        buffer = buffer.slice(nl + 1);
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (!payload) continue;
-        if (payload === '[DONE]') { done = true; break; }
+      for await (const chunk of res.body) {
+        buffer += decoder.decode(chunk, { stream: true });
+        let nl;
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, nl).replace(/\r$/, '');
+          buffer = buffer.slice(nl + 1);
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (!payload) continue;
+          if (payload === '[DONE]') { done = true; break; }
 
-        let j;
-        try { j = JSON.parse(payload); } catch { continue; }
-        if (j.error) throw new Error(j.error.message || 'gateway error');
-        const ch = j.choices && j.choices[0];
-        if (!ch) continue;
-        if (ch.finish_reason) turn.finishReason = ch.finish_reason;
+          let j;
+          try { j = JSON.parse(payload); } catch { continue; }
+          if (j.error) throw new Error(j.error.message || 'gateway error');
+          const ch = j.choices && j.choices[0];
+          if (!ch) continue;
+          if (ch.finish_reason) turn.finishReason = ch.finish_reason;
 
-        const d = ch.delta || {};
-        if (typeof d.reasoning_content === 'string' && d.reasoning_content) {
-          turn.reasoning += d.reasoning_content;
-          onDelta({ type: 'think', delta: d.reasoning_content });
-        }
-        if (typeof d.reasoning === 'string' && d.reasoning) {
-          turn.reasoning += d.reasoning;
-          onDelta({ type: 'think', delta: d.reasoning });
-        }
-        if (typeof d.content === 'string' && d.content) {
-          turn.content += d.content;
-          onDelta({ type: 'text', delta: d.content });
-        }
-        if (Array.isArray(d.tool_calls)) {
-          for (const tc of d.tool_calls) {
-            const i = tc.index ?? 0;
-            if (!turn.toolCalls[i]) turn.toolCalls[i] = { id: '', name: '', args: '' };
-            if (tc.id) turn.toolCalls[i].id = tc.id;
-            if (tc.function) {
-              if (tc.function.name) turn.toolCalls[i].name += tc.function.name;
-              if (typeof tc.function.arguments === 'string') turn.toolCalls[i].args += tc.function.arguments;
+          const d = ch.delta || {};
+          if (typeof d.reasoning_content === 'string' && d.reasoning_content) {
+            turn.reasoning += d.reasoning_content;
+            onDelta({ type: 'think', delta: d.reasoning_content });
+          }
+          if (typeof d.reasoning === 'string' && d.reasoning) {
+            turn.reasoning += d.reasoning;
+            onDelta({ type: 'think', delta: d.reasoning });
+          }
+          if (typeof d.content === 'string' && d.content) {
+            turn.content += d.content;
+            onDelta({ type: 'text', delta: d.content });
+          }
+          if (Array.isArray(d.tool_calls)) {
+            for (const tc of d.tool_calls) {
+              const i = tc.index ?? 0;
+              if (!turn.toolCalls[i]) turn.toolCalls[i] = { id: '', name: '', args: '' };
+              if (tc.id) turn.toolCalls[i].id = tc.id;
+              if (tc.function) {
+                if (tc.function.name) turn.toolCalls[i].name += tc.function.name;
+                if (typeof tc.function.arguments === 'string') turn.toolCalls[i].args += tc.function.arguments;
+              }
             }
           }
         }
+        if (done) break;
       }
-      if (done) break;
+    } finally {
+      try { res.body.cancel(); } catch { /* already closed */ }
     }
+
+    turn.toolCalls = turn.toolCalls.filter((t) => t.name || t.id);
+    return turn;
   } finally {
     clearTimeout(timer);
     if (signal) signal.removeEventListener('abort', onAbort);
-    try { res.body.cancel(); } catch { /* already closed */ }
   }
-
-  turn.toolCalls = turn.toolCalls.filter((t) => t.name || t.id);
-  return turn;
 }
 
 /**
@@ -207,7 +292,7 @@ function toOpenAiMessages(messages) {
  * `messages` is the app-owned history in our wire format; the returned
  * list of new messages lets the app extend its persisted history.
  */
-async function runAgent({ apiKey, providerId, model, messages, signal, emit, systemPrompt }) {
+async function runAgent({ apiKey, providerId, model, messages, options, signal, emit, systemPrompt }) {
   const openai = toOpenAiMessages(messages);
   if (systemPrompt) openai.unshift({ role: 'system', content: systemPrompt });
 
@@ -225,7 +310,7 @@ async function runAgent({ apiKey, providerId, model, messages, signal, emit, sys
     emit({ type: 'turn', n: turn });
 
     const t = await callGateway({
-      apiKey, providerId, model, messages: openai, tools: openaiTools, signal,
+      apiKey, providerId, model, messages: openai, tools: openaiTools, options, signal,
       onDelta: (e) => emit(e),
     });
 
@@ -306,4 +391,4 @@ function safeJson(s) {
   try { return JSON.parse(s); } catch { return { _raw: s }; }
 }
 
-module.exports = { runAgent, callGateway, toOpenAiMessages, safeJson };
+module.exports = { runAgent, callGateway, toOpenAiMessages, sanitizeOptions, buildBody, safeJson };

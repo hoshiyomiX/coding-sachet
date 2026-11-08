@@ -60,7 +60,7 @@ class RuntimeController(
         // updater only copies these into the rootfs. T-ML11 incident: net.js
         // shipped inside the APK but was missing from this list, so the
         // 1.0.6 update crashed the server with MODULE_NOT_FOUND.
-        val SERVER_FILES = listOf("config.js", "agent.js", "tools.js", "server.js", "net.js")
+        val SERVER_FILES = listOf("config.js", "agent.js", "tools.js", "server.js", "net.js", "ratelimit.js")
 
         // The pinned Node builds need libatomic.so.1, which the minimal
         // ubuntu-base rootfs does not ship (verified per-arch via readelf

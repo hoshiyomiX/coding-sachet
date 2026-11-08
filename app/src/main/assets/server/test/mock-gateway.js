@@ -141,7 +141,10 @@ function startMockGateway(script, opts = {}) {
           return;
         }
         if (reply.kind === 'error') {
-          res.writeHead(reply.status, { 'Content-Type': 'application/json' });
+          res.writeHead(reply.status, {
+            'Content-Type': 'application/json',
+            ...(reply.headers || {}), // e.g. { 'retry-after': '1' } on 429s
+          });
           res.end(JSON.stringify({ error: { message: reply.message } }));
           return;
         }

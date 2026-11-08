@@ -23,6 +23,11 @@ const providers = {
   apinex: {
     label: 'APInex',
     baseUrl: process.env.SACHET_APINEX_BASE_URL || 'https://api.apinex.bond/v1',
+    // Client-side RPM cap (owner order, hardcoded): the APInex free tier
+    // allows 15 chat requests per minute per account (fixed 60s window —
+    // apinex.bond/developers/errors). ratelimit.js spaces requests so the
+    // agent loop can never trip a 429 on its own.
+    rpmLimit: 15,
     rateLimitHint:
       'Batas laju APInex tercapai. ' +
       'Tunggu sebentar lalu kirim ulang pesanmu.',
@@ -44,6 +49,9 @@ const providers = {
   nvidia: {
     label: 'NVIDIA NIM',
     baseUrl: process.env.SACHET_NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1',
+    // Same hardcoded 15 RPM client cap as APInex (owner order): safely
+    // under NIM's per-key limits too.
+    rpmLimit: 15,
     rateLimitHint:
       'Batas laju NVIDIA NIM tercapai. ' +
       'Tunggu sebentar lalu kirim ulang pesanmu.',

@@ -3,6 +3,7 @@ package id.codingsachet.mobile.ui.screens
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
@@ -43,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import id.codingsachet.mobile.BuildConfig
@@ -52,6 +55,12 @@ import id.codingsachet.mobile.api.Providers
 import id.codingsachet.mobile.runtime.RuntimeState
 import id.codingsachet.mobile.ui.LocalStrings
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -161,6 +170,9 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                 }
                 keyNote?.let { Text(it, Modifier.align(Alignment.CenterVertically), style = MaterialTheme.typography.labelMedium) }
             }
+
+            // ---- json config (request body options) ----
+            JsonConfigSection()
 
             // ---- server ----
             SectionTitle(s.serverSection)
@@ -291,6 +303,175 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
 @Composable
 private fun SectionTitle(t: String) {
     Text(t, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+}
+
+/**
+ * Konfigurasi JSON: OpenAI-compatible request-body options merged into
+ * every gateway chat call (apinex.bond/developers/models/chat). Structured
+ * fields + a free-form "JSON tambahan" object; the agent server strips
+ * agent-owned keys (model, messages, stream, tools, …) either way.
+ */
+@Composable
+private fun JsonConfigSection() {
+    val s = LocalStrings.current
+    val json = remember { Json { ignoreUnknownKeys = true } }
+
+    fun storedField(pref: String, name: String): String {
+        val raw = pref
+        if (raw.isBlank()) return ""
+        val o = runCatching { json.parseToJsonElement(raw) }.getOrNull() as? JsonObject ?: return ""
+        return when (val v = o[name]) {
+            null -> ""
+            is JsonPrimitive -> v.content
+            is JsonArray -> v.joinToString("\n") { (it as? JsonPrimitive)?.content ?: "" }
+            else -> v.toString()
+        }
+    }
+
+    var optTemp by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "temperature")) }
+    var optTopP by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "top_p")) }
+    var optMaxTok by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "max_tokens")) }
+    var optPresence by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "presence_penalty")) }
+    var optFrequency by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "frequency_penalty")) }
+    var optSeed by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "seed")) }
+    var optStop by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "stop")) }
+    var optReasoning by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "reasoning_effort")) }
+    var optExtra by remember { mutableStateOf(Graph.prefs.requestOptionsExtra) }
+    var savedNote by remember { mutableStateOf<String?>(null) }
+
+    /** Validate the structured fields; null + the first offending label. */
+    fun validateStructured(): String? {
+        fun chk(value: String, label: String, min: Double, max: Double, int: Boolean): Boolean {
+            if (value.isBlank()) return true
+            val d = if (int) value.toLongOrNull()?.toDouble() else value.toDoubleOrNull()
+            return d != null && d in min..max
+        }
+        if (!chk(optTemp, s.optTemperature, 0.0, 2.0, false)) return s.optTemperature
+        if (!chk(optTopP, s.optTopP, 0.0, 1.0, false)) return s.optTopP
+        if (!chk(optMaxTok, s.optMaxTokens, 1.0, Double.MAX_VALUE, true)) return s.optMaxTokens
+        if (!chk(optPresence, s.optPresencePenalty, -2.0, 2.0, false)) return s.optPresencePenalty
+        if (!chk(optFrequency, s.optFrequencyPenalty, -2.0, 2.0, false)) return s.optFrequencyPenalty
+        if (!chk(optSeed, s.optSeed, -Double.MAX_VALUE, Double.MAX_VALUE, true)) return s.optSeed
+        val stops = optStop.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        if (stops.size > 4) return s.optStop
+        return null
+    }
+
+    fun buildStructured(): JsonObject {
+        val invalid = validateStructured()
+        if (invalid != null) return buildJsonObject { } // caller shows the error
+        return buildJsonObject {
+            optTemp.trim().toDoubleOrNull()?.let { put("temperature", JsonPrimitive(it)) }
+            optTopP.trim().toDoubleOrNull()?.let { put("top_p", JsonPrimitive(it)) }
+            optMaxTok.trim().toLongOrNull()?.let { put("max_tokens", JsonPrimitive(it)) }
+            optPresence.trim().toDoubleOrNull()?.let { put("presence_penalty", JsonPrimitive(it)) }
+            optFrequency.trim().toDoubleOrNull()?.let { put("frequency_penalty", JsonPrimitive(it)) }
+            optSeed.trim().toLongOrNull()?.let { put("seed", JsonPrimitive(it)) }
+            val stops = optStop.lines().map { it.trim() }.filter { it.isNotEmpty() }.take(4)
+            if (stops.isNotEmpty()) put("stop", buildJsonArray { stops.forEach { add(JsonPrimitive(it)) } })
+            if (optReasoning.isNotBlank()) put("reasoning_effort", JsonPrimitive(optReasoning))
+        }
+    }
+
+    /** The structured object + the extra object merged last (extra wins). */
+    fun buildMerged(): Pair<JsonObject?, String?> {
+        validateStructured()?.let { return null to it }
+        val structured = buildStructured()
+        val extra = optExtra.trim()
+        if (extra.isEmpty()) return structured to null
+        val ex = runCatching { json.parseToJsonElement(extra) }.getOrNull() as? JsonObject
+            ?: return null to s.jsonExtra
+        return buildJsonObject {
+            structured.forEach { (k, v) -> put(k, v) }
+            ex.forEach { (k, v) -> put(k, v) }
+        } to null
+    }
+
+    val (preview, error) = buildMerged()
+    val pretty = remember(preview) {
+        preview?.let { runCatching { Json { prettyPrint = true }.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), it) }.getOrDefault("{}") } ?: ""
+    }
+
+    SectionTitle(s.jsonConfigSection)
+    Text(s.jsonConfigHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+    val numKeyboard = KeyboardOptions(keyboardType = KeyboardType.Number)
+    OutlinedTextField(value = optTemp, onValueChange = { optTemp = it; savedNote = null },
+        label = { Text(s.optTemperature) }, singleLine = true, isError = validateStructured() == s.optTemperature,
+        keyboardOptions = numKeyboard, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(value = optTopP, onValueChange = { optTopP = it; savedNote = null },
+        label = { Text(s.optTopP) }, singleLine = true,
+        keyboardOptions = numKeyboard, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(value = optMaxTok, onValueChange = { optMaxTok = it; savedNote = null },
+        label = { Text(s.optMaxTokens) }, singleLine = true,
+        keyboardOptions = numKeyboard, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(value = optPresence, onValueChange = { optPresence = it; savedNote = null },
+        label = { Text(s.optPresencePenalty) }, singleLine = true,
+        keyboardOptions = numKeyboard, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(value = optFrequency, onValueChange = { optFrequency = it; savedNote = null },
+        label = { Text(s.optFrequencyPenalty) }, singleLine = true,
+        keyboardOptions = numKeyboard, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(value = optSeed, onValueChange = { optSeed = it; savedNote = null },
+        label = { Text(s.optSeed) }, singleLine = true,
+        keyboardOptions = numKeyboard, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(value = optStop, onValueChange = { optStop = it; savedNote = null },
+        label = { Text(s.optStop) },
+        modifier = Modifier.fillMaxWidth())
+
+    Text(s.optReasoningEffort, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+        listOf("" to s.optReasoningNone, "minimal" to "minimal", "low" to "low", "medium" to "medium", "high" to "high").forEach { (v, label) ->
+            FilterChip(selected = optReasoning == v, onClick = { optReasoning = v; savedNote = null }, label = { Text(label) })
+        }
+    }
+
+    OutlinedTextField(
+        value = optExtra,
+        onValueChange = { optExtra = it; savedNote = null },
+        label = { Text(s.jsonExtra) },
+        placeholder = { Text("{\"logprobs\":false}") },
+        isError = error == s.jsonExtra,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Text(s.jsonExtraHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+    // Live preview of the exact object that will be merged into the request.
+    Text(s.jsonPreview, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Text(
+            error?.let { "✗ $it — ${s.jsonInvalid}" } ?: (if (preview != null && preview.keys.isEmpty()) "—" else pretty),
+            Modifier.padding(8.dp).fillMaxWidth(),
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+        )
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Button(
+            onClick = {
+                val (merged, err) = buildMerged()
+                if (err == null && merged != null) {
+                    // Structured fields and the extra object are stored
+                    // separately; ChatEngine merges them on send.
+                    Graph.prefs.requestOptions = json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), buildStructured())
+                    Graph.prefs.requestOptionsExtra = optExtra.trim()
+                    savedNote = s.jsonSaved
+                }
+            },
+            enabled = error == null,
+        ) { Text(s.save) }
+        TextButton(onClick = {
+            optTemp = ""; optTopP = ""; optMaxTok = ""; optPresence = ""; optFrequency = ""
+            optSeed = ""; optStop = ""; optReasoning = ""; optExtra = ""
+            Graph.prefs.requestOptions = ""
+            Graph.prefs.requestOptionsExtra = ""
+            savedNote = s.jsonSaved
+        }) { Text(s.jsonReset) }
+        savedNote?.let { Text(it, Modifier.align(Alignment.CenterVertically), style = MaterialTheme.typography.labelMedium) }
+    }
 }
 
 @Composable

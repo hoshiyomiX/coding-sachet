@@ -495,7 +495,17 @@ private fun resultOk(m: Msg): Boolean {
 /** The in-flight turn rendered below the history. */
 @Composable
 private fun LiveBubble(l: LiveTurn) {
+    val s = LocalStrings.current
     Column(Modifier.fillMaxWidth().widthIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        // Rate-limit wait hint (client-side 15 RPM cap / 429 backoff).
+        l.waiting?.let {
+            Text(
+                "${s.rateLimitWaiting} (${it}s)",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+        }
         ThinkingBlock(l.thinking)
         if (l.text.isNotBlank()) {
             Surface(

@@ -240,6 +240,7 @@ class AgentApi(private val port: () -> Int) {
         model: String,
         messages: List<id.codingsachet.mobile.data.Msg>,
         systemPrompt: String?,
+        options: JsonObject? = null,
         onEvent: (JsonObject) -> Unit,
         onError: (String) -> Unit,
         onClosed: () -> Unit,
@@ -248,6 +249,9 @@ class AgentApi(private val port: () -> Int) {
             put("model", JsonPrimitive(model))
             put("messages", json.encodeToJsonElement(messages))
             if (!systemPrompt.isNullOrBlank()) put("systemPrompt", JsonPrimitive(systemPrompt))
+            // Konfigurasi JSON (Settings): OpenAI-compatible request options.
+            // The agent server sanitizes them (reserved keys stripped).
+            if (options != null && options.isNotEmpty()) put("options", options)
         }
         val wire = json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), body)
         val req = Request.Builder()

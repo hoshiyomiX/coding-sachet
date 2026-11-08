@@ -28,6 +28,9 @@ function useGateways({ apinex, nvidia }) {
   if (nvidia) config.providers.nvidia.baseUrl = `http://127.0.0.1:${nvidia.port}/v1`;
   config.allowedRoots = [path.join(ROOT, 'root'), path.join(ROOT, 'tmp')];
   fs.mkdirSync(config.workdir, { recursive: true });
+  // The client-side RPM limiter keeps state across tests otherwise (the
+  // suite's chat volume would eventually wait out a 60s window).
+  require('../ratelimit').reset();
   return config;
 }
 
@@ -105,7 +108,7 @@ test('agent loop: gateway error surfaces as an error event', async (t) => {
 });
 
 test('agent loop: APInex rate-limit (429) error carries a clear hint', async (t) => {
-  const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Too many requests' }]);
+  const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Too many requests', headers: { 'retry-after': '0' } }]);
   t.after(() => gw.close());
 
   useGateways({ apinex: gw });
@@ -120,10 +123,37 @@ test('agent loop: APInex rate-limit (429) error carries a clear hint', async (t)
     (e) => e.message.includes('429') && e.message.includes('Too many requests') &&
       e.message.includes('Batas laju APInex tercapai')
   );
+  // The bounded 429 retries happened before giving up (1 initial + 2 retries).
+  assert.strictEqual(gw.requests.length, 3);
+});
+
+test('agent loop: 429 is retried after retry-after, then succeeds', async (t) => {
+  const gw = await startMockGateway([
+    { kind: 'error', status: 429, message: 'Rate limit exceeded. Max 15 requests per minute', headers: { 'retry-after': '0' } },
+    { kind: 'text', text: 'Oke, lanjut lagi.' },
+  ]);
+  t.after(() => gw.close());
+
+  useGateways({ apinex: gw });
+  const { runAgent } = require('../agent');
+  const events = [];
+  const added = await runAgent({
+    apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',
+    messages: [{ role: 'user', content: 'hai' }],
+    emit: (e) => events.push(e),
+  });
+
+  assert.strictEqual(added.length, 1);
+  assert.ok(added[0].content.includes('lanjut lagi'));
+  assert.strictEqual(gw.requests.length, 2);
+  // A ratelimit wait hint was surfaced while backing off.
+  const waits = events.filter((e) => e.type === 'ratelimit');
+  assert.ok(waits.length >= 1);
+  assert.ok(waits[0].waitMs >= 500);
 });
 
 test('agent loop: NVIDIA NIM rate-limit (429) hint differs from APInex', async (t) => {
-  const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Too many requests' }]);
+  const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Too many requests', headers: { 'retry-after': '0' } }]);
   t.after(() => gw.close());
 
   useGateways({ nvidia: gw });
@@ -166,8 +196,73 @@ test('agent loop: NVIDIA requests carry max_tokens, APInex requests do not', asy
   assert.strictEqual('max_tokens' in ap.requests[0], false);
 });
 
+test('JSON options: sanitized fields reach the gateway body, reserved keys never do', async (t) => {
+  const ap = await startMockGateway([{ kind: 'text', text: 'ok' }]);
+  const nv = await startMockGateway([{ kind: 'text', text: 'ok' }], { key: 'nvapi-test-123' });
+  t.after(() => ap.close());
+  t.after(() => nv.close());
+
+  useGateways({ apinex: ap, nvidia: nv });
+  const { runAgent } = require('../agent');
+
+  await runAgent({
+    apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',
+    messages: [{ role: 'user', content: 'hai' }],
+    options: {
+      temperature: 0.4,
+      top_p: 0.9,
+      max_tokens: 512,
+      presence_penalty: -0.5,
+      frequency_penalty: 1.5,
+      seed: 42,
+      stop: ['\n\n', 'SELESAI'],
+      reasoning_effort: 'medium',
+      // reserved — must be stripped
+      model: 'gateway-hax', stream: false, n: 5, tool_choice: 'required',
+      // invalid values — must be dropped
+      temperature2: 'x', bogus: { deep: [1, 2] },
+    },
+    emit: () => {},
+  });
+  const b = ap.requests[0];
+  assert.strictEqual(b.temperature, 0.4);
+  assert.strictEqual(b.top_p, 0.9);
+  assert.strictEqual(b.max_tokens, 512);
+  assert.strictEqual(b.presence_penalty, -0.5);
+  assert.strictEqual(b.frequency_penalty, 1.5);
+  assert.strictEqual(b.seed, 42);
+  assert.deepStrictEqual(b.stop, ['\n\n', 'SELESAI']);
+  assert.strictEqual(b.reasoning_effort, 'medium');
+  assert.strictEqual(b.model, 'test-pro');
+  assert.strictEqual(b.stream, true);
+  assert.strictEqual('n' in b, false);
+  assert.strictEqual(b.tool_choice, 'auto'); // the agent's own value
+
+  // Out-of-range numbers are dropped, not fatal.
+  await runAgent({
+    apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',
+    messages: [{ role: 'user', content: 'hai' }],
+    options: { temperature: 9.9, top_p: 'nope', max_tokens: -5, reasoning_effort: 'ultra' },
+    emit: () => {},
+  });
+  const b2 = ap.requests[1];
+  assert.strictEqual('temperature' in b2, false);
+  assert.strictEqual('top_p' in b2, false);
+  assert.strictEqual('max_tokens' in b2, false);
+  assert.strictEqual('reasoning_effort' in b2, false);
+
+  // A user max_tokens overrides the NIM provider default (4096).
+  await runAgent({
+    apiKey: 'nvapi-test-123', providerId: 'nvidia', model: 'nv-x',
+    messages: [{ role: 'user', content: 'hai' }],
+    options: { max_tokens: 2048 },
+    emit: () => {},
+  });
+  assert.strictEqual(nv.requests[0].max_tokens, 2048);
+});
+
 test('HTTP chat route: gateway errors become error + done SSE events', async (t) => {
-  const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Quota habis' }]);
+  const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Quota habis', headers: { 'retry-after': '0' } }]);
   t.after(() => gw.close());
 
   useGateways({ apinex: gw });

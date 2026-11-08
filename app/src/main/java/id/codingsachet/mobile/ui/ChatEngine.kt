@@ -15,6 +15,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -36,6 +37,9 @@ data class LiveTurn(
     val cards: List<ToolCardUi> = emptyList(),
     val error: String? = null,
     val busy: Boolean = true,
+    /** Set while the agent server waits out the gateway rate limit
+     *  (client-side 15 RPM cap or a 429 backoff) — seconds remaining. */
+    val waiting: Int? = null,
 )
 
 /**
@@ -87,29 +91,53 @@ class ChatEngine(val session: Session) {
             model = model,
             messages = session.wireHistory(),
             systemPrompt = SYSTEM_PROMPT,
+            options = requestOptions(),
             onEvent = { ev -> scope.launch { handle(ev) } },
             onError = { msg -> scope.launch { live.value = live.value?.copy(error = msg) } },
             onClosed = { scope.launch { finish() } },
         )
     }
 
+    /** Konfigurasi JSON (Settings): structured options + the extra object
+     *  merged last. Blank/invalid values never block sending — the agent
+     *  server re-sanitizes everything anyway. */
+    private fun requestOptions(): JsonObject? {
+        val structured = parsePref(Graph.prefs.requestOptions) ?: return null
+        val extra = parsePref(Graph.prefs.requestOptionsExtra)
+        val merged = buildJsonObject {
+            structured.forEach { (k, v) -> put(k, v) }
+            extra?.forEach { (k, v) -> put(k, v) }
+        }
+        return merged.takeIf { it.isNotEmpty() }
+    }
+
+    private fun parsePref(raw: String): JsonObject? =
+        if (raw.isBlank()) null
+        else runCatching { json.parseToJsonElement(raw) }.getOrNull() as? JsonObject
+
     private suspend fun handle(ev: JsonObject) {
         when (ev["type"]?.jsonPrimitive?.content) {
-            "think" -> live.value = live.value?.copy(thinking = live.value!!.thinking + ev.str("delta"))
-            "text" -> live.value = live.value?.copy(text = live.value!!.text + ev.str("delta"))
+            "think" -> live.value = live.value?.copy(thinking = live.value!!.thinking + ev.str("delta"), waiting = null)
+            "text" -> live.value = live.value?.copy(text = live.value!!.text + ev.str("delta"), waiting = null)
+            "ratelimit" -> {
+                // The agent server is waiting out the gateway RPM window
+                // (hardcoded 15 RPM client cap, or a 429 backoff).
+                val ms = ev["waitMs"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: 0.0
+                live.value = live.value?.copy(waiting = ((ms + 999.0) / 1000.0).toInt().coerceAtLeast(1))
+            }
             "tool" -> {
                 val card = ToolCardUi(
                     id = ev.str("id"),
                     name = ev.str("name"),
                     args = pretty(ev["args"]),
                 )
-                live.value = live.value?.copy(cards = live.value!!.cards + card)
+                live.value = live.value?.copy(cards = live.value!!.cards + card, waiting = null)
             }
             "toolend" -> {
                 live.value = live.value?.let { l ->
                     l.copy(cards = l.cards.map {
                         if (it.id == ev.str("id")) it.copy(output = ev.str("output"), ok = ev.boolean("ok")) else it
-                    })
+                    }, waiting = null)
                 }
             }
             "message" -> {

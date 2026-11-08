@@ -319,6 +319,9 @@ async function route(req, res) {
         model: body.model,
         messages: body.messages,
         systemPrompt: body.systemPrompt,
+        // OpenAI-compatible request options (Settings → Konfigurasi JSON):
+        // sanitized inside the agent; reserved keys can never pass.
+        options: body.options,
         signal: abort.signal,
         emit,
       });
