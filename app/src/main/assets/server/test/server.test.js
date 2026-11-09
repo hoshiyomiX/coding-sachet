@@ -12,7 +12,7 @@ const path = require('path');
 const { startMockGateway, collectSse, getJson, postJson } = require('./mock-gateway');
 
 // Isolated env for the server under test.
-const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'pkt-srv-'));
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'sachet-srv-'));
 process.env.SACHET_WORKDIR = path.join(ROOT, 'root', 'work');
 process.env.SACHET_PORT = '0'; // will be replaced once we know a free port
 // The /api/dns route writes the guest resolver config — point it at a temp

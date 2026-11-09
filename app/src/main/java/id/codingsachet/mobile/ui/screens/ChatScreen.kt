@@ -188,6 +188,12 @@ fun ChatScreen(
                                     scope.launch { drawer.close() }
                                 },
                                 onDelete = {
+                                    // A running stream keeps persisting the
+                                    // session — without cancelling its engine
+                                    // the deleted chat file would be rewritten
+                                    // (resurrected) and the stream would keep
+                                    // burning tokens in the background.
+                                    engines.remove(sess.id)?.dispose()
                                     Graph.chats.delete(sess)
                                     Graph.chats.reload()
                                     sessionsVersion++

@@ -8,7 +8,7 @@ const os = require('os');
 const path = require('path');
 
 // Point the sandbox at a temp dir before requiring config/tools.
-const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'apx-tools-'));
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'sachet-tools-'));
 process.env.SACHET_WORKDIR = path.join(ROOT, 'root', 'work');
 const { config } = require('../config');
 config.allowedRoots = [path.join(ROOT, 'root'), path.join(ROOT, 'tmp')];
@@ -37,7 +37,7 @@ test('write + read a file round trip', () => {
 });
 
 test('write rejects paths outside the sandbox', () => {
-  const w = writeFile('/etc/apx-evil', 'nope');
+  const w = writeFile('/etc/sachet-evil', 'nope');
   assert.strictEqual(w.ok, false);
 });
 

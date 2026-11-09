@@ -14,7 +14,7 @@ import androidx.compose.ui.unit.dp
 private var folderIcon: ImageVector? = null
 val FolderIcon: ImageVector
     get() = folderIcon ?: ImageVector.Builder(
-        name = "ApxFolder",
+        name = "SachetFolder",
         defaultWidth = 24.dp,
         defaultHeight = 24.dp,
         viewportWidth = 24f,
@@ -39,7 +39,7 @@ val FolderIcon: ImageVector
 private var textFileIcon: ImageVector? = null
 val TextFileIcon: ImageVector
     get() = textFileIcon ?: ImageVector.Builder(
-        name = "ApxTextFile",
+        name = "SachetTextFile",
         defaultWidth = 24.dp,
         defaultHeight = 24.dp,
         viewportWidth = 24f,
