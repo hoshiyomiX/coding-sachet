@@ -66,6 +66,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Kotlin unit tests
+        # App-logic tests (providers, wire format, localization parity) run
+        # BEFORE any APK is assembled — a red test must fail the build early.
+        run: ./gradlew --no-daemon :app:testDebugUnitTest --stacktrace
+
       - name: Build one APK per ABI (split ABI)
         run: |
           set -e

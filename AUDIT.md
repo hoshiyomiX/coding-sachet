@@ -77,3 +77,27 @@ Insiden & perbaikan:
 - **safePath root "/"**: prefix `startsWith('/'+sep)` tak pernah cocok untuk sub-path dari "/" → mode root tak akan bisa menjelajah. Fix: cabang khusus `r === '/'` (test: root ekstra bisa diramban, sandbox default tetap tersegel 400).
 - **Toolbox dev diperluas** (instalasi opsional via apt): git, ripgrep, curl, wget, ca-certificates, unzip, zip, xz-utils, less, nano, jq, tree, htop, python3, python3-pip, python3-venv, build-essential (gcc/g++/make), sqlite3, pkg-config — kover VCS, search, JSON, arsip, Python terisolasi (venv), toolchain C/C++, DB.
 - Diketahui & diterima: abort klien tidak memotong tool bash yang sedang berjalan (selesai via timeout 120 s); file buatan mode root dimiliki uid 0 → `resetRuntime` membersihkan via `su rm -rf` (dengan fallback normal); watchdog `p.destroy()` di mode root membunuh `su` induk — node yatim ditangani `killLeftoverServer` (pkill via su) di iterasi supervise berikutnya.
+
+## §8 Audit r3 — kesesuaian vs referensi android-apk-compose.md (T-ML19, 2026-11-09)
+
+Tolok ukur: `skills/stellar-trail/references/android-apk-compose.md` (blueprint modul/version-catalog/CI untuk APK companion). Hasil per dimensi:
+
+**Sesuai penuh (tanpa tindakan):**
+- Version catalog `gradle/libs.versions.toml` = satu sumber kebenaran (AGP 9.4.1, Kotlin 2.4.20, Compose BOM 2026.09.00, semua ter-pin eksak).
+- Root `build.gradle.kts` hanya plugin aliases (`apply false`); `settings.gradle.kts` memakai `RepositoriesMode.FAIL_ON_PROJECT_REPOS` (lebih ketat dari referensi).
+- Gradle wrapper utuh (9.8.0, jar + properties); `gradle.properties` memuat flag AndroidX + parallel + caching.
+- CI `release.yml`: filter trigger berbentuk list (`branches: [main]` — bukan bare-string foot-gun), blok `permissions` eksplisit, `concurrency` + `timeout-minutes` di semua job, `checkout@v4` + `setup-java@v4` (temurin) + `setup-gradle@v4` + `upload-artifact@v4`, test server Node berjalan di job terpisah yang di-`needs` sebelum build (test-first), verifikasi tanda tangan apksigner + checksum sha256 (melampaui referensi), rilis via `gh` + `GH_TOKEN`.
+- UI single-activity Compose (`MainActivity` → `AppRoot`, navigasi `sealed class Screen` + backstack); layering bersih `api/ data/ runtime/ ui/`.
+- Release build: `isMinifyEnabled` + `isShrinkResources` + proguard keeps serialisasi (persis pola referensi).
+- Hygiene: sweep rahasia bersih (tanpa `nvapi-`/PAT di tree); `SERVER_FILES` 7/7 sinkron dengan file server; manifest rapi (komentar per permission, FileProvider + `file_paths.xml`); backup rules mengecualikan rootfs.
+
+**Deviasi terkunci/terjustifikasi (dokumentasi, bukan bug):**
+- `targetSdk 28` vs 35 referensi — keputusan owner (syarat exec proot; komentar in-code).
+- Keystore dikommit vs "never commit" — keputusan owner (repo privat; CI debug-key per-run akan merusak update in-place; alasan di `.gitignore`).
+- Modul tunggal `:app` vs `shared`+`composeApp` CMP — aplikasi Android-only tanpa target iOS/desktop; referensi memang blueprint companion stellar-trail ("reference only").
+- Tanpa Koin/Voyager/Coil/Kermit — DI manual (`rememberAppState`), navigasi backstack sendiri, tanpa gambar async, logging via `Logx` (filosofi nol-dependensi proyek).
+- JDK 21 vs 17 — disyaratkan AGP 9.x/Gradle 9.8; tag rilis tetap `beta` (keputusan owner); tanpa trigger `pull_request` (repo privat solo).
+- `usesCleartextTraffic` — hanya untuk loopback 127.0.0.1 (diaudit T-ML18).
+
+**Celah ditemukan & ditutup (fix r3):**
+- **Nol unit test Kotlin + CI tanpa langkah test Kotlin** — satu-satunya ketidaksesuaian nyata vs doktrin "unit tests first" referensi. Fix: `app/src/test/java/id/codingsachet/mobile/CodingSachetUnitTest.kt` (13 test murni-JVM, nol dependensi baru: gating model free NIM/APInex + fallback provider, round-trip JSON `Session`/`Msg`/`ToolCall` + `ignoreUnknownKeys`, snapshot `wireHistory`, paritas lokalasi ID/EN via refleksi data class, fallback `stringsFor`) + langkah CI `:app:testDebugUnitTest` sebelum loop build ABI. Gate saat audit: `node --test` 47/47, `node --check` 7/7.
