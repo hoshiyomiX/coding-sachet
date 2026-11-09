@@ -50,17 +50,14 @@ const providers = {
       'Tunggu sebentar lalu kirim ulang pesanmu.',
     // The gateway applies its own default output limit.
     maxTokens: null,
-    // Remaining-quota endpoints (apinex.bond/developers/balance):
-    //   GET /v1/subscription → token counters (tokens_remaining, unlimited)
-    //   GET /v1/balance      → spendable wallet USD
-    // If the native endpoints ever disappear (404/405), the OpenAI-style
-    // billing pair new-api deployments expose is used as a fallback.
+    // Remaining-quota endpoint — THE one officially documented API this app
+    // calls for quota (owner order T-ML20: single official API per feature;
+    // apinex.bond/developers documents GET /v1/subscription → token counters
+    // tokens_remaining/tokens_used/token_limit/unlimited). The former
+    // best-effort /v1/balance call and the new-api-style billing fallback
+    // pair were removed: non-official paths are gone by design.
     quota: {
       subscriptionPath: '/subscription',
-      balancePath: '/balance',
-      billingFallback: true,
-      // new-api internal quota units per USD (QuotaPerUnit default).
-      quotaPerUnit: 500000,
     },
   },
   nvidia: {

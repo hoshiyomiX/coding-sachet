@@ -60,6 +60,22 @@ class CodingSachetUnitTest {
         assertTrue(apx.isFreeModel("free/glm-5.3"))
         assertFalse(apx.isFreeModel("gpt-4o"))
         assertTrue("APInex harus mengandalkan prefiks free/, bukan verifiedModels", apx.verifiedModels.isEmpty())
+        // Free tier broader than the prefix (allowFree catalogue, probed
+        // 2026-11-09): premium models on the free daily allowance.
+        assertTrue("model allowFree seharusnya free", apx.isFreeModel("claude-opus-5.5"))
+        assertTrue(apx.isFreeModel("gpt-6.1-terra"))
+    }
+
+    @Test
+    fun workingModelDots() {
+        // GREEN dot = verified working; RED = unverified (owner order).
+        val nim = Providers.NVIDIA
+        assertTrue(nim.isWorkingModel(nim.defaultModel))
+        assertFalse("model tak terverifikasi NIM harus dot merah", nim.isWorkingModel("nv-embedqa-e5-v5"))
+        // APInex: whole catalogue was healthy at audit time → all green.
+        val apx = Providers.APINEX
+        assertTrue(apx.isWorkingModel("free/glm-5.3"))
+        assertTrue(apx.isWorkingModel("model-baru-belum-terdaftar"))
     }
 
     @Test

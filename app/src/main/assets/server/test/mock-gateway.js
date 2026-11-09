@@ -24,10 +24,10 @@ const http = require('http');
  *                  (default 1200) — simulates a cold VPN path whose first
  *                  TLS/DNS roundtrip outruns a short client timeout
  * opts.slowModelsMs: the delay above, in milliseconds
- * opts.quota:  serve the APInex-native quota endpoints:
- *              { mode, unlimited, tokenLimit, tokensUsed, tokensRemaining, balanceUsd }
- * opts.billing: serve the OpenAI-style billing pair instead of the native
- *              endpoints (which answer 404): { hardLimitUsd, totalUsage }
+ * opts.quota:  serve the APInex-native quota endpoint
+ *              GET /v1/subscription (the ONE documented quota API):
+ *              { mode, unlimited, tokenLimit, tokensUsed, tokensRemaining }
+ *              Without it the endpoint answers 404 (quota unsupported).
  *
  * Returns { server, port, requests, chatAuths, modelRequests, chatAttempts,
  *           modelAttempts, quotaRequests, close() };
@@ -77,8 +77,9 @@ function startMockGateway(script, opts = {}) {
         return;
       }
 
-      // APInex-native quota endpoints (apinex.bond/developers/balance).
-      if (req.method === 'GET' && (req.url === '/v1/subscription' || req.url === '/v1/balance')) {
+      // APInex-native quota endpoint (apinex.bond/developers) — the single
+      // documented quota API the server is allowed to call.
+      if (req.method === 'GET' && req.url === '/v1/subscription') {
         quotaRequests++;
         if (!opts.quota) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -86,57 +87,20 @@ function startMockGateway(script, opts = {}) {
           return;
         }
         if (req.headers.authorization !== `Bearer ${key}`) return unauthorized();
-        if (req.url === '/v1/subscription') {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            object: 'subscription',
-            mode: opts.quota.mode || 'free',
-            plan: null,
-            plan_label: 'Free',
-            unlimited: opts.quota.unlimited === true,
-            token_limit: opts.quota.tokenLimit ?? null,
-            tokens_used: opts.quota.tokensUsed ?? 0,
-            tokens_remaining: opts.quota.unlimited === true ? null : opts.quota.tokensRemaining,
-            expires_at_utc: null,
-            resets_at_utc: null,
-            allowed: true,
-          }));
-        } else {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            object: 'balance',
-            balance_usd: opts.quota.balanceUsd ?? 0,
-            reserved_usd: 0,
-            rpm: 40,
-            rpm_plan: 'free',
-            api_key: { id: 'k_1', spent_usd: 1.4, reserved_usd: 0 },
-          }));
-        }
-        return;
-      }
-
-      // OpenAI-style billing pair (the new-api fallback).
-      if (req.method === 'GET' && req.url.startsWith('/v1/dashboard/billing/')) {
-        quotaRequests++;
-        if (!opts.billing) {
-          res.writeHead(404);
-          res.end('not found');
-          return;
-        }
-        if (req.headers.authorization !== `Bearer ${key}`) return unauthorized();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        if (req.url.startsWith('/v1/dashboard/billing/subscription')) {
-          res.end(JSON.stringify({
-            object: 'billing_subscription',
-            has_payment_method: true,
-            soft_limit_usd: opts.billing.hardLimitUsd,
-            hard_limit_usd: opts.billing.hardLimitUsd,
-            system_hard_limit_usd: opts.billing.hardLimitUsd,
-            access_until: 0,
-          }));
-        } else {
-          res.end(JSON.stringify({ object: 'list', total_usage: opts.billing.totalUsage }));
-        }
+        res.end(JSON.stringify({
+          object: 'subscription',
+          mode: opts.quota.mode || 'free',
+          plan: null,
+          plan_label: 'Free',
+          unlimited: opts.quota.unlimited === true,
+          token_limit: opts.quota.tokenLimit ?? null,
+          tokens_used: opts.quota.tokensUsed ?? 0,
+          tokens_remaining: opts.quota.unlimited === true ? null : opts.quota.tokensRemaining,
+          expires_at_utc: null,
+          resets_at_utc: null,
+          allowed: true,
+        }));
         return;
       }
 

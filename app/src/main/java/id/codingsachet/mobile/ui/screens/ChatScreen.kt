@@ -11,18 +11,23 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Send
@@ -30,18 +35,26 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -72,6 +85,7 @@ import id.codingsachet.mobile.ui.TextFileIcon
 import id.codingsachet.mobile.ui.ToolCardUi
 import id.codingsachet.mobile.ui.components.Markdownish
 import id.codingsachet.mobile.ui.components.ToolCard
+import id.codingsachet.mobile.ui.sachetSuccess
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -128,7 +142,7 @@ fun ChatScreen(
             Graph.api.quota(key, provider, fresh).fold(
                 onSuccess = { q ->
                     quotaState = if (q == null) QuotaState.Failed("tidak tersedia")
-                    else QuotaState.Ok(q.unlimited, q.tokensRemaining, q.balanceUsd)
+                    else QuotaState.Ok(q.unlimited, q.tokensRemaining)
                 },
                 onFailure = { quotaState = QuotaState.Failed(it.message ?: "gagal") },
             )
@@ -166,42 +180,87 @@ fun ChatScreen(
         drawerState = drawer,
         drawerContent = {
             ModalDrawerSheet {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(s.sessionsTitle, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                    TextButton(onClick = {
-                        scope.launch { drawer.close() }
-                        newChat()
-                    }) {
-                        Icon(Icons.Filled.Add, contentDescription = s.chatNew)
-                        Spacer(Modifier.width(6.dp))
-                        Text(s.chatNew)
+                Column(Modifier.padding(vertical = 12.dp)) {
+                    // Standard M3 drawer header: app identity.
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp),
+                    ) {
+                        Text("Coding Sachet", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            s.appTagline,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
+                    Spacer(Modifier.height(8.dp))
+                    NavigationDrawerItem(
+                        label = { Text(s.chatNew) },
+                        icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawer.close() }
+                            newChat()
+                        },
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    HorizontalDivider()
+                    Text(
+                        s.sessionsTitle,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 28.dp, top = 12.dp, bottom = 4.dp),
+                    )
                     val sessions = remember(sessionsVersion) { Graph.chats.sessions }
                     LazyColumn {
                         items(sessions, key = { it.id }) { sess ->
-                            SessionRow(
-                                sess = sess,
-                                active = sess.id == current?.id,
+                            NavigationDrawerItem(
+                                label = {
+                                    Column {
+                                        Text(
+                                            sess.title.ifBlank { "…" },
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                        )
+                                        Text(
+                                            java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.getDefault())
+                                                .format(java.util.Date(sess.created)),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                                selected = sess.id == current?.id,
                                 onClick = {
                                     current = sess
                                     onSessionChange(sess)
                                     scope.launch { drawer.close() }
                                 },
-                                onDelete = {
-                                    // A running stream keeps persisting the
-                                    // session — without cancelling its engine
-                                    // the deleted chat file would be rewritten
-                                    // (resurrected) and the stream would keep
-                                    // burning tokens in the background.
-                                    engines.remove(sess.id)?.dispose()
-                                    Graph.chats.delete(sess)
-                                    Graph.chats.reload()
-                                    sessionsVersion++
-                                    if (current?.id == sess.id) {
-                                        current = null
-                                        onSessionChange(null)
+                                badge = {
+                                    IconButton(onClick = {
+                                        // A running stream keeps persisting the
+                                        // session — without cancelling its engine
+                                        // the deleted chat file would be rewritten
+                                        // (resurrected) and the stream would keep
+                                        // burning tokens in the background.
+                                        engines.remove(sess.id)?.dispose()
+                                        Graph.chats.delete(sess)
+                                        Graph.chats.reload()
+                                        sessionsVersion++
+                                        if (current?.id == sess.id) {
+                                            current = null
+                                            onSessionChange(null)
+                                        }
+                                    }) {
+                                        Icon(
+                                            Icons.Filled.Delete,
+                                            contentDescription = s.deleteSession,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
                                     }
                                 },
+                                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                             )
                         }
                     }
@@ -209,35 +268,124 @@ fun ChatScreen(
             }
         },
     ) {
-        Column(Modifier.fillMaxSize()) {
-            // ---------- top bar ----------
-            Surface(tonalElevation = 2.dp) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(onClick = { scope.launch { drawer.open() } }) {
-                        Icon(Icons.Filled.Menu, contentDescription = s.sessionsTitle)
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawer.open() } }) {
+                            Icon(Icons.Filled.Menu, contentDescription = s.sessionsTitle)
+                        }
+                    },
+                    // The title block is the model selector: tapping it opens
+                    // the picker (standard chat-app top-center switcher).
+                    title = {
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { showModels = true }
+                                .padding(vertical = 2.dp),
+                        ) {
+                            Text(
+                                current?.title?.ifBlank { s.chatNew } ?: s.appTagline,
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    model.ifBlank { s.selectModel },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                Icon(
+                                    Icons.Filled.ArrowDropDown,
+                                    contentDescription = s.selectModel,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                RuntimeStatus(runtimeState)
+                            }
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = onOpenFiles) { Icon(TextFileIcon, contentDescription = s.filesTitle) }
+                        IconButton(onClick = onOpenSettings) { Icon(Icons.Filled.Settings, contentDescription = s.settingsTitle) }
+                    },
+                )
+            },
+            bottomBar = {
+                Column {
+                    // ---------- sisa token APInex (di atas kolom chat, kanan) ----------
+                    if (Graph.prefs.provider == "apinex" && Graph.prefs.apiKey.isNotBlank()) {
+                        QuotaChip(state = quotaState, onRefresh = { refreshQuota(fresh = true) })
                     }
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            current?.title?.ifBlank { s.chatNew } ?: s.appTagline,
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        RuntimeChip(runtimeState)
+                    // ---------- composer ----------
+                    Surface(tonalElevation = 3.dp) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).imePadding(),
+                            verticalAlignment = Alignment.Bottom,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(24.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Box(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                                    if (input.isEmpty()) {
+                                        Text(
+                                            s.inputPlaceholder,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                        )
+                                    }
+                                    BasicTextField(
+                                        value = input,
+                                        onValueChange = { input = it },
+                                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        maxLines = 6,
+                                    )
+                                }
+                            }
+                            if (live != null && live!!.busy) {
+                                FilledIconButton(
+                                    onClick = { engine?.stop() },
+                                    modifier = Modifier.size(48.dp),
+                                ) {
+                                    Icon(
+                                        StopIcon,
+                                        contentDescription = s.stop,
+                                        tint = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                            } else {
+                                FilledIconButton(
+                                    onClick = {
+                                        if (current == null) newChat()
+                                        val target = current ?: return@FilledIconButton
+                                        val e = engines.getOrPut(target.id) { ChatEngine(target) }
+                                        // Keep the typed text when the turn cannot
+                                        // start (e.g. still busy) — it is not lost.
+                                        if (e.send(input, model)) input = ""
+                                    },
+                                    enabled = input.isNotBlank() && model.isNotBlank(),
+                                    modifier = Modifier.size(48.dp),
+                                ) {
+                                    Icon(Icons.Filled.Send, contentDescription = s.send)
+                                }
+                            }
+                        }
                     }
-                    TextButton(onClick = { showModels = true }) {
-                        Text(model.ifBlank { s.selectModel }, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    IconButton(onClick = onOpenFiles) { Icon(TextFileIcon, contentDescription = s.filesTitle) }
-                    IconButton(onClick = onOpenSettings) { Icon(Icons.Filled.Settings, contentDescription = s.settingsTitle) }
                 }
-            }
-
+            },
+        ) { padding ->
             // ---------- messages ----------
-            Box(Modifier.weight(1f)) {
+            Box(Modifier.fillMaxSize().padding(padding)) {
                 if (msgs.isEmpty() && live == null) {
                     Column(
                         Modifier.fillMaxSize().padding(24.dp),
@@ -263,69 +411,6 @@ fun ChatScreen(
                     }
                 }
             }
-
-            // ---------- sisa token APInex (di atas kolom chat, kanan) ----------
-            if (Graph.prefs.provider == "apinex" && Graph.prefs.apiKey.isNotBlank()) {
-                QuotaChip(state = quotaState, onRefresh = { refreshQuota(fresh = true) })
-            }
-
-            // ---------- composer ----------
-            Surface(tonalElevation = 3.dp) {
-                Row(
-                    Modifier.fillMaxWidth().padding(8.dp).imePadding(),
-                    verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Box(
-                        Modifier
-                            .weight(1f)
-                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(22.dp))
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                    ) {
-                        if (input.isEmpty()) {
-                            Text(
-                                s.inputPlaceholder,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        }
-                        BasicTextField(
-                            value = input,
-                            onValueChange = { input = it },
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
-                            modifier = Modifier.fillMaxWidth(),
-                            maxLines = 6,
-                        )
-                    }
-                    if (live != null && live!!.busy) {
-                        IconButton(onClick = { engine?.stop() }) {
-                            Icon(
-                                StopIcon,
-                                contentDescription = s.stop,
-                                tint = MaterialTheme.colorScheme.error,
-                            )
-                        }
-                    } else {
-                        IconButton(
-                            onClick = {
-                                if (current == null) newChat()
-                                val target = current ?: return@IconButton
-                                val e = engines.getOrPut(target.id) { ChatEngine(target) }
-                                // Keep the typed text when the turn cannot
-                                // start (e.g. still busy) — it is not lost.
-                                if (e.send(input, model)) input = ""
-                            },
-                            enabled = input.isNotBlank() && model.isNotBlank(),
-                        ) {
-                            Icon(
-                                Icons.Filled.Send,
-                                contentDescription = s.send,
-                                tint = if (input.isNotBlank() && model.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -343,55 +428,33 @@ fun ChatScreen(
     }
 }
 
+/** Runtime status as a compact status dot + label (top bar supporting line). */
 @Composable
-private fun SessionRow(sess: Session, active: Boolean, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun RuntimeStatus(state: RuntimeState) {
     val s = LocalStrings.current
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            Modifier.clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    sess.title.ifBlank { "…" },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Text(
-                    java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.getDefault()).format(java.util.Date(sess.created)),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Filled.Delete, contentDescription = s.deleteSession, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
+    val label = when (state) {
+        is RuntimeState.Running -> s.runtimeRunning
+        is RuntimeState.Starting -> s.runtimeStarting
+        is RuntimeState.Crashed -> s.runtimeCrashed
+        else -> s.runtimeStopped
     }
-}
-
-@Composable
-private fun RuntimeChip(state: RuntimeState) {
-    val s = LocalStrings.current
-    val (label, color) = when (state) {
-        is RuntimeState.Running -> s.runtimeRunning to MaterialTheme.colorScheme.primary
-        is RuntimeState.Starting -> s.runtimeStarting to MaterialTheme.colorScheme.onSurfaceVariant
-        is RuntimeState.Crashed -> s.runtimeCrashed to MaterialTheme.colorScheme.error
-        else -> s.runtimeStopped to MaterialTheme.colorScheme.onSurfaceVariant
+    val color = when (state) {
+        is RuntimeState.Running -> sachetSuccess()
+        is RuntimeState.Crashed -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
-    Text(label, style = MaterialTheme.typography.labelSmall, color = color)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(8.dp).background(color, CircleShape))
+        Spacer(Modifier.width(4.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+    }
 }
 
 /** Remaining-quota chip state (APInex only; hidden for NIM). */
 private sealed class QuotaState {
     object Idle : QuotaState()
     object Loading : QuotaState()
-    data class Ok(val unlimited: Boolean, val tokens: Long?, val balanceUsd: Double?) : QuotaState()
+    data class Ok(val unlimited: Boolean, val tokens: Long?) : QuotaState()
     data class Failed(val message: String) : QuotaState()
 }
 
@@ -414,15 +477,7 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
         QuotaState.Loading -> "…"
         is QuotaState.Ok -> when {
             state.unlimited -> "∞"
-            state.tokens != null -> {
-                val usd = state.balanceUsd
-                if (usd != null) {
-                    "±${formatTokens(state.tokens)} · " + String.format(java.util.Locale("id", "ID"), "$%.2f", usd)
-                } else {
-                    "±${formatTokens(state.tokens)}"
-                }
-            }
-            state.balanceUsd != null -> String.format(java.util.Locale("id", "ID"), "$%.2f", state.balanceUsd)
+            state.tokens != null -> "±${formatTokens(state.tokens)}"
             else -> "?"
         }
         is QuotaState.Failed -> "—"
@@ -597,10 +652,8 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(s.selectModel, style = MaterialTheme.typography.titleMedium)
-            // NIM: badge + sort context for the verified-working models.
-            if (provider.verifiedModels.isNotEmpty()) {
-                Text(s.modelVerifiedNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            // Legend for the working dots (green = verified, red = not).
+            Text(s.modelVerifiedNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -609,9 +662,8 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // "Free" here = the free/ tier on APInex, and the
-                // verified-working (free to use) models on NVIDIA NIM — the
-                // rest of NIM's catalogue is listed below, unbadged.
+                // "Free" here = the free/ tier + allowFree catalogue on APInex,
+                // and the verified-working (free to use) models on NVIDIA NIM.
                 if (provider.freeModelPrefix != null || provider.verifiedModels.isNotEmpty()) {
                     FilterChip(
                         selected = freeOnly,
@@ -635,46 +687,82 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                     Text(s.modelFetching)
                 }
                 else -> LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
-                    // Free models list on top (owner order T-ML17 #1): the
+                    // Working models on top (owner order T-ML20 #2): the
                     // stable sort keeps the gateway's order within each group.
-                    val sorted = models!!.sortedWith(compareByDescending { provider.isFreeModel(it) })
+                    val sorted = models!!.sortedWith(compareByDescending { provider.isWorkingModel(it) })
                     val filtered = sorted.filter {
                         (!freeOnly || provider.isFreeModel(it)) &&
                             it.contains(query, ignoreCase = true)
                     }
                     items(filtered) { m ->
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (m == current) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp).clickable { onPick(m) },
-                        ) {
-                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    m,
-                                    Modifier.weight(1f),
-                                    fontFamily = FontFamily.Monospace,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                if (provider.isFreeModel(m)) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = MaterialTheme.colorScheme.tertiaryContainer,
-                                    ) {
-                                        Text(
-                                            s.modelFreeBadge,
-                                            Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                        ModelRow(
+                            model = m,
+                            provider = provider,
+                            current = current,
+                            onPick = { onPick(m) },
+                        )
                     }
                 }
             }
         }
     }
+}
+
+/** One model row: working dot (green/red), name, FREE badge, current check. */
+@Composable
+private fun ModelRow(model: String, provider: id.codingsachet.mobile.api.Provider, current: String, onPick: () -> Unit) {
+    val s = LocalStrings.current
+    val working = provider.isWorkingModel(model)
+    ListItem(
+        modifier = Modifier.clickable(onClick = onPick),
+        colors = if (model == current) {
+            ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+        } else {
+            ListItemDefaults.colors()
+        },
+        leadingContent = {
+            Box(
+                Modifier
+                    .size(10.dp)
+                    .background(
+                        if (working) sachetSuccess() else MaterialTheme.colorScheme.error,
+                        CircleShape,
+                    ),
+            )
+        },
+        headlineContent = {
+            Text(
+                model,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        trailingContent = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (provider.isFreeModel(model)) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                    ) {
+                        Text(
+                            s.modelFreeBadge,
+                            Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        )
+                    }
+                }
+                if (model == current) {
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        },
+    )
 }

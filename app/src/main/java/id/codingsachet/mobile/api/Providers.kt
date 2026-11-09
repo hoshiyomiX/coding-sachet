@@ -25,14 +25,34 @@ data class Provider(
      * more entries that are not deployed for normal keys (404 "Function …
      * not found"), are embeddings/rerank endpoints, or time out — those are
      * still pickable, but they sort BELOW the verified free ones and carry
-     * no badge. Empty for APInex (free/ prefix covers it).
+     * a RED dot. Empty for APInex (the free/ prefix + verifiedFreeModels
+     * cover it).
      */
     val verifiedModels: Set<String> = emptySet(),
+    /**
+     * APInex free tier per the public catalogue (allowFree=true, probed
+     * 2026-11-09): ids usable on the free daily allowance — broader than
+     * the free/ prefix (premium models like claude-opus-5.5 or gpt-6.1-terra
+     * are included). Baked at audit time; the runtime list stays /v1/models.
+     */
+    val verifiedFreeModels: Set<String> = emptySet(),
+    /**
+     * True when the provider's whole catalogue was healthy at audit time
+     * (APInex relay: 42/42 models health=live, probed 2026-11-09) — every
+     * runtime-fetched id gets a GREEN dot. NIM is false: only the
+     * [verifiedModels] set is green, the rest of the catalogue is RED.
+     */
+    val catalogHealthy: Boolean = false,
 ) {
     /** Free = worth showing on top with a badge: verified-working on NIM,
-     *  the free/ tier on APInex. */
+     *  the free/ tier + allowFree catalogue on APInex. */
     fun isFreeModel(id: String): Boolean =
-        (freeModelPrefix != null && id.startsWith(freeModelPrefix)) || id in verifiedModels
+        (freeModelPrefix != null && id.startsWith(freeModelPrefix)) ||
+            id in verifiedModels || id in verifiedFreeModels
+
+    /** Working = GREEN dot in the model picker (owner order T-ML20 #2);
+     *  not-working/unverified = RED dot. */
+    fun isWorkingModel(id: String): Boolean = catalogHealthy || id in verifiedModels
 }
 
 object Providers {
@@ -45,6 +65,49 @@ object Providers {
         defaultModel = "free/glm-5.3",
         freeModelPrefix = "free/",
         validateViaChat = false,
+        // Free tier per the public catalogue's allowFree flag (probed
+        // 2026-11-09, 35 of 42 models): premium models usable on the free
+        // daily allowance are listed too — beyond the free/ prefix.
+        verifiedFreeModels = setOf(
+            "free/deepseek-v4.1-flash",
+            "free/gemini-3.8-flash",
+            "free/qwen-3.8-max",
+            "free/glm-5.3-flash",
+            "free/kimi-k3",
+            "free/deepseek-v4-pro-0813",
+            "free/deepseek-v4-flash-0731",
+            "free/hy4",
+            "free/muse-spark-1.3",
+            "claude-opus-5.5",
+            "gemini-4-argon",
+            "free/mimo-v2.6-flash",
+            "free/glm-5.3",
+            "claude-sonnet-5.5",
+            "claude-fable-5.1",
+            "gpt-6.1-terra",
+            "gpt-6.1-sol",
+            "gpt-6-astra",
+            "deepseek-v4.1-flash",
+            "grok-4.7",
+            "gemini-3.8-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "gemini-3.1-pro",
+            "gpt-6-luna",
+            "free/minimax-m3.1-flash",
+            "free/gpt-6-luna",
+            "free/jev-1.13",
+            "glm-5.3-flash",
+            "glm-5.3",
+            "kimi-k3.1-pro",
+            "drex-v2.0",
+            "jev-1.13",
+            "muse-spark-1.3",
+            "hy4-preview",
+        ),
+        // Whole catalogue health=live on 2026-11-09 (42/42) — every model
+        // the relay lists gets a green working dot.
+        catalogHealthy = true,
     )
 
     val NVIDIA = Provider(
@@ -82,6 +145,7 @@ object Providers {
             "stepfun-ai/step-5-preview",
             "z-ai/glm-5.3-flash",
         ),
+        catalogHealthy = false,
     )
 
     val ALL = listOf(APINEX, NVIDIA)

@@ -245,7 +245,6 @@ class AgentApi(private val port: () -> Int) {
         val tokensRemaining: Long?,
         val tokensUsed: Long?,
         val tokenLimit: Long?,
-        val balanceUsd: Double?,
     )
 
     /**
@@ -269,7 +268,6 @@ class AgentApi(private val port: () -> Int) {
                     tokensRemaining = o.num("tokensRemaining")?.toLong(),
                     tokensUsed = o.num("tokensUsed")?.toLong(),
                     tokenLimit = o.num("tokenLimit")?.toLong(),
-                    balanceUsd = o.num("balanceUsd"),
                 )
             }
         }

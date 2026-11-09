@@ -475,10 +475,10 @@ test('HTTP server: /api/dns rewrites the guest resolver (VPN-aware DNS push)', a
   assert.ok(g.body.nameservers.includes('10.11.12.13'));
 });
 
-test('HTTP server: /api/quota serves APInex token counters (native + cache + fresh)', async (t) => {
+test('HTTP server: /api/quota serves APInex token counters via the single documented API (native + cache + fresh)', async (t) => {
   const gw = await startMockGateway([], {
     key: 'sk-quota-1',
-    quota: { unlimited: false, tokenLimit: 20000000, tokensUsed: 700000, tokensRemaining: 19300000, balanceUsd: 38.6 },
+    quota: { unlimited: false, tokenLimit: 20000000, tokensUsed: 700000, tokensRemaining: 19300000 },
   });
   t.after(() => gw.close());
   useGateways({ apinex: gw });
@@ -497,21 +497,21 @@ test('HTTP server: /api/quota serves APInex token counters (native + cache + fre
   assert.strictEqual(r.body.tokensRemaining, 19300000);
   assert.strictEqual(r.body.tokensUsed, 700000);
   assert.strictEqual(r.body.tokenLimit, 20000000);
-  assert.strictEqual(r.body.balanceUsd, 38.6);
-  assert.strictEqual(gw.quotaRequests, 2); // subscription + balance
+  // ONE documented API per feature: exactly one gateway hit per fetch.
+  assert.strictEqual(gw.quotaRequests, 1); // /v1/subscription only
 
   // second call within the TTL is cached — no extra gateway hits
   const r2 = await getJson(port, '/api/quota', { 'x-sachet-key': 'sk-quota-1' });
   assert.strictEqual(r2.status, 200);
   assert.strictEqual(r2.body.cached, true);
   assert.strictEqual(r2.body.tokensRemaining, 19300000);
-  assert.strictEqual(gw.quotaRequests, 2);
+  assert.strictEqual(gw.quotaRequests, 1);
 
   // ?fresh=1 skips the cache read (still refreshes it)
   const r3 = await getJson(port, '/api/quota?fresh=1', { 'x-sachet-key': 'sk-quota-1' });
   assert.strictEqual(r3.status, 200);
   assert.notStrictEqual(r3.body.cached, true);
-  assert.strictEqual(gw.quotaRequests, 4);
+  assert.strictEqual(gw.quotaRequests, 2);
 
   // NIM has no per-key balance API
   const nv = await getJson(port, '/api/quota', { 'x-sachet-key': 'nvapi-x', 'x-sachet-provider': 'nvidia' });
@@ -524,8 +524,11 @@ test('HTTP server: /api/quota serves APInex token counters (native + cache + fre
   assert.ok(bad.body.error.includes('Invalid token'));
 });
 
-test('HTTP server: /api/quota falls back to the OpenAI billing pair when native is absent', async (t) => {
-  const gw = await startMockGateway([], { key: 'sk-quota-2', billing: { hardLimitUsd: 40, totalUsage: 250 } });
+test('HTTP server: /api/quota errors cleanly when the documented quota API is absent (no fallback chain)', async (t) => {
+  // No opts.quota → /v1/subscription answers 404. The former new-api
+  // billing fallback is gone (single-official-API order): the 404 must
+  // surface as a quota failure, not as fabricated counters.
+  const gw = await startMockGateway([], { key: 'sk-quota-2' });
   t.after(() => gw.close());
   useGateways({ apinex: gw });
 
@@ -536,11 +539,9 @@ test('HTTP server: /api/quota falls back to the OpenAI billing pair when native 
   const port = srv.address().port;
 
   const r = await getJson(port, '/api/quota', { 'x-sachet-key': 'sk-quota-2' });
-  assert.strictEqual(r.status, 200);
-  assert.strictEqual(r.body.source, 'billing');
-  // (40 USD − 250 cents) × 500000 units/USD
-  assert.strictEqual(r.body.tokensRemaining, 18750000);
-  assert.strictEqual(r.body.balanceUsd, 37.5);
+  assert.strictEqual(r.status, 502);
+  assert.ok(r.body.error.includes('404'));
+  assert.strictEqual(gw.quotaRequests, 1);
 });
 
 test('agent loop: history from a mid-session model switch is healed on the wire', async (t) => {

@@ -6,7 +6,7 @@
 //   GET  /health              liveness + versions + providers
 //   GET  /api/models          provider model list (X-Sachet-Key + X-Sachet-Provider)
 //   POST /api/chat            agent loop, SSE events (X-Sachet-Key + X-Sachet-Provider)
-//   GET  /api/quota           remaining tokens/balance (?fresh=1 skips cache)
+//   GET  /api/quota           remaining tokens (?fresh=1 skips cache)
 //   GET  /api/dns             current guest resolver servers
 //   POST /api/dns             rewrite the guest resolver {servers:[...]} (VPN-aware)
 //   GET  /api/fs?path=        list directory           (file explorer)
@@ -132,81 +132,39 @@ function gatewayErrorText(text) {
 }
 
 /**
- * Remaining quota for the caller's key.
- * Primary: APInex-native /subscription + /balance (token counters).
- * Fallback: the OpenAI-style billing pair new-api deployments expose —
- * only when the native endpoints answer 404/405 (not deployed). A network
- * failure is surfaced directly: the billing endpoints live on the same
- * host, so retrying them would only burn the caller's timeout.
+ * Remaining quota for the caller's key — ONE officially documented API
+ * (owner order T-ML20): GET /v1/subscription (apinex.bond/developers)
+ * returns the token counters. No fallback chain: when the documented
+ * endpoint fails, the failure surfaces directly.
  */
 async function fetchQuota(apiKey, provider) {
   const q = provider.quota;
+  if (!q || !q.subscriptionPath) throw new Error('Gateway tidak menyediakan info kuota');
   const headers = { Authorization: `Bearer ${apiKey}` };
-  const t = () => ({ signal: AbortSignal.timeout(12000) });
 
-  if (q.subscriptionPath) {
-    let sub;
-    try {
-      sub = await fetchWithRetry(provider.baseUrl + q.subscriptionPath, { headers, ...t() });
-    } catch (e) {
-      throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`);
-    }
-
-    if (sub.ok) {
-      const j = (await getJsonBody(sub)) || {};
-      // Balance is best-effort: any failure just hides the USD hint.
-      let balanceUsd = null;
-      if (q.balancePath) {
-        try {
-          const bal = await fetchWithRetry(provider.baseUrl + q.balancePath, { headers, ...t() });
-          if (bal.ok) balanceUsd = num(((await getJsonBody(bal)) || {}).balance_usd);
-        } catch { /* best effort */ }
-      }
-      return {
-        supported: true,
-        source: 'native',
-        unlimited: j.unlimited === true,
-        tokensRemaining: num(j.tokens_remaining),
-        tokensUsed: num(j.tokens_used),
-        tokenLimit: num(j.token_limit),
-        balanceUsd,
-      };
-    }
-
-    if (sub.status !== 404 && sub.status !== 405) {
-      const text = await sub.text().catch(() => '');
-      throw new Error(`HTTP ${sub.status}: ${gatewayErrorText(text)}`);
-    }
+  let sub;
+  try {
+    sub = await fetchWithRetry(provider.baseUrl + q.subscriptionPath, {
+      headers,
+      signal: AbortSignal.timeout(12000),
+    });
+  } catch (e) {
+    throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`);
   }
 
-  if (!q.billingFallback) throw new Error('Gateway tidak menyediakan info kuota');
+  if (!sub.ok) {
+    const text = await sub.text().catch(() => '');
+    throw new Error(`HTTP ${sub.status}: ${gatewayErrorText(text)}`);
+  }
 
-  const [s2, u2] = await Promise.all([
-    fetchWithRetry(provider.baseUrl + '/dashboard/billing/subscription', { headers, ...t() }),
-    fetchWithRetry(provider.baseUrl + '/dashboard/billing/usage?start_date=1970-01-01&end_date=2038-01-01', { headers, ...t() }),
-  ]);
-  if (!s2.ok) {
-    const text = await s2.text().catch(() => '');
-    throw new Error(`HTTP ${s2.status}: ${gatewayErrorText(text)}`);
-  }
-  if (!u2.ok) {
-    const text = await u2.text().catch(() => '');
-    throw new Error(`HTTP ${u2.status}: ${gatewayErrorText(text)}`);
-  }
-  const sub2 = (await getJsonBody(s2)) || {};
-  const usage2 = (await getJsonBody(u2)) || {};
-  const hardLimit = num(sub2.hard_limit_usd) || 0;
-  const usedUsd = (num(usage2.total_usage) || 0) / 100;
-  const remainingUsd = Math.max(0, hardLimit - usedUsd);
-  const unlimited = hardLimit >= 99999999;
+  const j = (await getJsonBody(sub)) || {};
   return {
     supported: true,
-    source: 'billing',
-    unlimited,
-    tokensRemaining: unlimited ? null : Math.round(remainingUsd * q.quotaPerUnit),
-    tokensUsed: Math.round(usedUsd * q.quotaPerUnit),
-    tokenLimit: unlimited ? null : Math.round(hardLimit * q.quotaPerUnit),
-    balanceUsd: remainingUsd,
+    source: 'native',
+    unlimited: j.unlimited === true,
+    tokensRemaining: num(j.tokens_remaining),
+    tokensUsed: num(j.tokens_used),
+    tokenLimit: num(j.token_limit),
   };
 }
 
