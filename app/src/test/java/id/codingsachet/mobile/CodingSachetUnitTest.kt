@@ -150,9 +150,13 @@ class CodingSachetUnitTest {
 
     @Test
     fun localizationNoBlankFieldsEitherLanguage() {
+        // Compose compiler menambahkan field statis sintetis ($stable) pada
+        // class stabil — hanya field instance (semuanya String) yang diperiksa.
+        val fields = SachetStrings::class.java.declaredFields
+            .filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }
         for (inst in listOf(IdStrings, EnStrings)) {
             val label = if (inst === IdStrings) "ID" else "EN"
-            for (f in SachetStrings::class.java.declaredFields) {
+            for (f in fields) {
                 f.isAccessible = true
                 val v = f.get(inst) as String
                 assertTrue("string $label.${f.name} kosong/blank", v.isNotBlank())
@@ -163,8 +167,10 @@ class CodingSachetUnitTest {
     @Test
     fun localizationCoversLargeVocabulary() {
         // Guard regresi: layout lokalasi keduanya sama lebar (data class
-        // menjamin tipe sama; jumlah field dikunci di sini).
-        val n = SachetStrings::class.java.declaredFields.size
+        // menjamin tipe sama; jumlah field instance dikunci di sini —
+        // field statis sintetis compose dikecualikan).
+        val n = SachetStrings::class.java.declaredFields
+            .count { !java.lang.reflect.Modifier.isStatic(it.modifiers) }
         assertTrue("kolom strings $n terlalu sedikit — ada yang hilang?", n >= 100)
     }
 
