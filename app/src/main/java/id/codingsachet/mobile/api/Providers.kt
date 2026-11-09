@@ -119,20 +119,22 @@ object Providers {
         defaultModel = "nvidia/nemotron-3.5-bolt-e4b",
         freeModelPrefix = null,
         validateViaChat = true,
-        // 19 of the 84 catalogue entries answered a real chat call on
-        // 2026-11-08 (16 fast 2xx, deepseek-v4.1-flash at ~41 s, and
-        // llama-3.2-90b-vision / nemoguard-content-safety via their SSE
-        // first chunk — the app's actual streaming path). Everything else
-        // 404s for normal keys or is an embedding/rerank endpoint.
+        // Live-checked 2026-11-09 (T-ML24, owner order: "verifiedModels
+        // dicek live agar akurat"): 16 of the 84 catalogue entries answered
+        // a real chat call — 14 fast 2xx + 2 via their SSE first chunk
+        // (llama-3.2-90b-vision, mistral-large-4-1t-a52b — the app's actual
+        // streaming path). Confirmed dead on both paths across two probe
+        // rounds (TimeoutError): deepseek-v4.1-flash, minimax-m3.1-flash
+        // (was alive on 2026-11-08), and nemoguard-8b-content-safety;
+        // diffusiongemma-26b-a4b-it revived since the 2026-11-08 probe.
+        // Everything else 404s for normal keys or is an embedding/rerank
+        // endpoint.
         verifiedModels = setOf(
-            "deepseek-ai/deepseek-v4.1-flash",
             "google/diffusiongemma-26b-a4b-it",
             "meta/llama-3.2-90b-vision-instruct",
             "meta/llama-guard-4-12b",
             "meta/muse-glimmer-30b",
-            "minimaxai/minimax-m3.1-flash",
             "mistralai/mistral-large-4-1t-a52b",
-            "nvidia/llama-3.1-nemoguard-8b-content-safety",
             "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
             "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
             "nvidia/nemotron-3-ultra-550b-a55b",
