@@ -4,6 +4,7 @@ import id.codingsachet.mobile.api.Providers
 import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
 import id.codingsachet.mobile.data.ToolCall
+import id.codingsachet.mobile.runtime.DumpFormat
 import id.codingsachet.mobile.ui.EnStrings
 import id.codingsachet.mobile.ui.IdStrings
 import id.codingsachet.mobile.ui.SachetStrings
@@ -196,5 +197,34 @@ class CodingSachetUnitTest {
         assertSame(IdStrings, stringsFor("id"))
         assertSame(IdStrings, stringsFor("xyz"))
         assertSame(IdStrings, stringsFor(""))
+    }
+
+    // ---------- Logcat dump v2 (T-ML25: "selengkap logcat") ----------
+
+    @Test
+    fun logcatDumpCommandCapturesAllOwnUidTags() {
+        // No tag whitelist (-s ...) anymore — the dump keeps EVERY line the
+        // UID may read; threadtime adds PID+TID, year adds the full date.
+        assertTrue(DumpFormat.COMMAND.startsWith("logcat -d "))
+        assertTrue("harus pakai format threadtime", DumpFormat.COMMAND.contains("threadtime"))
+        assertTrue("harus menyertakan tahun", DumpFormat.COMMAND.contains("year"))
+        assertFalse("filter tag -s tidak boleh ada lagi", DumpFormat.COMMAND.contains("-s"))
+    }
+
+    @Test
+    fun logcatTailTrimSnapsToLineStart() {
+        val lines = (1..500).joinToString("") { "line-$it-0123456789abcdef\n" }
+        val bytes = lines.toByteArray()
+
+        // Fits -> no trim.
+        assertEquals(0, DumpFormat.tailStart(bytes, bytes.size + 10))
+
+        // Overflow -> keep the newest maxBytes, snapped to a line boundary.
+        val start = DumpFormat.tailStart(bytes, 100)
+        assertTrue(start > 0)
+        val kept = String(bytes, start, bytes.size - start, Charsets.UTF_8)
+        assertTrue("ekor harus <= batas", kept.toByteArray().size <= 100)
+        assertTrue("harus mulai di awal baris", kept.startsWith("line-"))
+        assertTrue(kept.endsWith("\n"))
     }
 }

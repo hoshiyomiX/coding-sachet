@@ -286,8 +286,19 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                 Button(
                     onClick = {
                         dumping = true
+                        // Server label embedded in the dump header (T-ML25) —
+                        // read once at click time, off the composition path.
+                        val serverLine = when (val st = Graph.runtime.state.value) {
+                            is RuntimeState.Running -> "berjalan (v${st.version})"
+                            is RuntimeState.Starting -> "menyala"
+                            is RuntimeState.Crashed -> "mati (crash)"
+                            is RuntimeState.Installing -> "memasang (${st.step})"
+                            is RuntimeState.InstallFailed -> "pemasangan gagal"
+                            RuntimeState.NotInstalled -> "belum terpasang"
+                            RuntimeState.Stopped -> "berhenti"
+                        }
                         scope.launch {
-                            dump = withContext(Dispatchers.IO) { LogcatDump.dump(context) }
+                            dump = withContext(Dispatchers.IO) { LogcatDump.dump(context, serverLine) }
                             dumping = false
                         }
                     },
@@ -306,6 +317,7 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                     r.lines.isEmpty() -> Text(s.logcatEmpty, style = MaterialTheme.typography.bodySmall)
                     else -> {
                         Text("${r.lines.size} ${s.logcatLinesUnit} · ${r.file?.absolutePath ?: "—"}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (r.trimmed) Text(s.logcatTrimmed, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                         Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                             Column(Modifier.padding(8.dp)) {
                                 r.lines.takeLast(15).forEach {
