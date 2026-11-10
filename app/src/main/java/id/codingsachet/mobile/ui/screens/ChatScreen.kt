@@ -458,7 +458,10 @@ fun ChatScreen(
                                             showNewProject = true
                                             return@FilledIconButton
                                         }
-                                        val target = current
+                                        // Delegated var: smart-cast does not survive
+                                        // the null branch above — the elvis keeps
+                                        // the compiler's null-safety satisfied.
+                                        val target = current ?: return@FilledIconButton
                                         val e = engines.getOrPut(target.id) { ChatEngine(target) }
                                         // Keep the typed text when the turn cannot
                                         // start (e.g. still busy) — it is not lost.
