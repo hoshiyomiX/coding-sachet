@@ -222,7 +222,10 @@ function warmUpGateways() {
   lastWarmupAt = now;
   for (const p of Object.values(config.providers)) {
     fetchRetryTimeout(p.baseUrl + '/models', {}, { timeoutMs: 20000, retries: 2, delays: [500, 1500] })
-      .then((r) => log.dbg('net', `warm-up ${p.baseUrl}: HTTP ${r.status}`))
+      // A 4xx here is FINE — the probe carries no auth header, so APInex's
+      // edge answering 403 still proves DNS + TLS + reachability (the field
+      // read it as an error and pointed debugging the wrong way, T-ML27 P4).
+      .then((r) => log.dbg('net', `warm-up ${p.baseUrl}: HTTP ${r.status}${r.status >= 400 ? ' (tersambung; 4xx wajar untuk probe tanpa auth)' : ''}`))
       .catch((e) => log.wrn('net', `warm-up ${p.baseUrl} gagal:`, e.message));
   }
   return true;

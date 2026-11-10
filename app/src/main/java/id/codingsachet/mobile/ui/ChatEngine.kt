@@ -6,10 +6,12 @@ import id.codingsachet.mobile.api.AgentApi
 import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
 import id.codingsachet.mobile.data.ToolCall
+import id.codingsachet.mobile.runtime.RuntimeState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -48,6 +50,10 @@ data class LiveTurn(
     /** Which gateway is being retried ("APInex" / "NVIDIA NIM"), when the
      *  agent server names it — null keeps the generic "gateway" wording. */
     val reconnectTo: String? = null,
+    /** Set while a server-death retry is pending (T-ML27 P3): the stream
+     *  broke because the agent server was killed (exit 137 in the field),
+     *  the runtime is restarting it and the turn will continue on its own. */
+    val restarting: Boolean = false,
 )
 
 /**
@@ -90,6 +96,8 @@ class ChatEngine(val session: Session) {
         persist()
         receivedAnything = false
         turnStartedAt = System.currentTimeMillis()
+        retryCount = 0
+        turnCancelled = false
         live.value = LiveTurn()
         Logx.i("chat", "kirim session=${session.id} model=$model msgs=${session.messages.size}")
         startStream(model)
@@ -97,6 +105,19 @@ class ChatEngine(val session: Session) {
     }
 
     private var turnStartedAt = 0L
+
+    // ---- server-death auto-retry (T-ML27 P3) ----
+    // Field evidence: the agent server gets SIGKILLed mid-turn (exit 137,
+    // kernel/OEM memory manager striking while apt-get runs in the guest).
+    // The runtime restarts it in seconds; the chat history up to the kill is
+    // already persisted (interrupted rounds heal server-side in
+    // toOpenAiMessages) — so the turn can simply continue instead of dying
+    // with a bare "stream error".
+    private var retryCount = 0
+    @Volatile private var retryPending = false
+    // Set by stop() so a pending auto-retry (suspended while waiting for the
+    // server) is abandoned instead of firing a new stream the user cancelled.
+    @Volatile private var turnCancelled = false
 
     private fun startStream(model: String) {
         val key = Graph.prefs.apiKey
@@ -113,7 +134,7 @@ class ChatEngine(val session: Session) {
             systemPrompt = SYSTEM_PROMPT,
             options = requestOptions(),
             onEvent = { ev -> scope.launch { handle(ev) } },
-            onError = { msg -> scope.launch { live.value = live.value?.copy(error = msg) } },
+            onError = { msg, kind -> scope.launch { onStreamError(msg, kind) } },
             onClosed = { scope.launch { finish() } },
         )
     }
@@ -204,17 +225,90 @@ class ChatEngine(val session: Session) {
         }
     }
 
+    /** A stream error arrived. Server-death classes (EOF mid-stream, connect
+     *  refused) get ONE automatic retry after the runtime brings the server
+     * back; everything else surfaces as before. */
+    private suspend fun onStreamError(msg: String, kind: AgentApi.ErrorKind) {
+        val canRetry = retryCount < 1 &&
+            (kind == AgentApi.ErrorKind.EOF || kind == AgentApi.ErrorKind.CONNECT)
+        if (!canRetry) {
+            val final = if (kind == AgentApi.ErrorKind.EOF) {
+                // The server died mid-turn and the retry budget is spent.
+                "Server agent mati saat memproses (kemungkinan dimatikan sistem). " +
+                    "Tunggu indikator server hijau lalu kirim ulang pesanmu."
+            } else msg
+            live.value = live.value?.copy(error = final, restarting = false)
+            return
+        }
+        retryCount++
+        retryPending = true
+        Logx.w("chat", "stream putus (${kind.name}) — server mati; tunggu pulih lalu lanjut otomatis (percobaan ulang $retryCount/1)")
+        live.value = live.value?.copy(restarting = true, error = null)
+        val recovered = awaitServerRecovery()
+        retryPending = false
+        if (turnCancelled) return
+        if (!recovered) {
+            Logx.e("chat", "server tidak pulih dalam batas waktu — berhenti mencoba ulang")
+            live.value = live.value?.copy(
+                busy = false,
+                restarting = false,
+                error = "Server agent tidak kembali dalam 45 detik. Cek status server di Pengaturan, lalu kirim ulang pesanmu.",
+            )
+            persist()
+            onTurnFinished?.invoke()
+            return
+        }
+        Logx.i("chat", "server pulih — melanjutkan giliran secara otomatis")
+        live.value = live.value?.copy(restarting = false)
+        startStream(session.model)
+    }
+
+    /** Wait (bounded) for the runtime to report the agent server healthy. */
+    private suspend fun awaitServerRecovery(timeoutMs: Long = 45_000): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline && live.value != null && !turnCancelled) {
+            if (Graph.runtime.state.value is RuntimeState.Running) return true
+            delay(500)
+        }
+        return !turnCancelled && Graph.runtime.state.value is RuntimeState.Running
+    }
+
     private fun finish() {
+        if (retryPending) return // a server-death retry is in flight; the turn continues
         val l = live.value ?: return
         val durMs = if (turnStartedAt > 0) System.currentTimeMillis() - turnStartedAt else 0
         if (l.error != null) {
             Logx.w("chat", "giliran selesai DGN ERROR setelah ${durMs}ms: ${l.error?.take(140)}")
             live.value = l.copy(busy = false)
         } else if (!receivedAnything) {
-            // The stream closed before a single event arrived (server
-            // restarted by its watchdog, connection dropped) — say so
-            // instead of silently vanishing (the "NIM tidak menjawab"
-            // field report was exactly this, with no visible cause).
+            if (retryCount < 1) {
+                // The stream closed before a single event arrived while the
+                // server was restarting mid-connect — same recovery path as
+                // an EOF, instead of a dead-end error (T-ML27 P3).
+                retryCount++
+                retryPending = true
+                Logx.w("chat", "stream tertutup tanpa event setelah ${durMs}ms — coba pulihkan otomatis")
+                live.value = l.copy(restarting = true)
+                scope.launch {
+                    val recovered = awaitServerRecovery()
+                    retryPending = false
+                    if (turnCancelled) return@launch
+                    if (recovered && live.value != null) {
+                        Logx.i("chat", "server pulih — melanjutkan giliran secara otomatis")
+                        live.value = live.value?.copy(restarting = false)
+                        startStream(session.model)
+                    } else {
+                        live.value = live.value?.copy(
+                            busy = false,
+                            restarting = false,
+                            error = "Koneksi ke server agent terputus sebelum jawaban diterima — coba kirim ulang pesanmu.",
+                        )
+                        persist()
+                        onTurnFinished?.invoke()
+                    }
+                }
+                return
+            }
             Logx.e("chat", "stream tertutup tanpa satu pun event setelah ${durMs}ms")
             live.value = l.copy(busy = false, error = "Koneksi ke server agent terputus sebelum jawaban diterima — coba kirim ulang pesanmu.")
         } else {
@@ -227,6 +321,13 @@ class ChatEngine(val session: Session) {
 
     fun stop() {
         Logx.i("chat", "stop ditekan — batalkan stream session=${session.id}")
+        turnCancelled = true
+        if (retryPending) {
+            // Also abandon an in-flight auto-retry: the suspended recovery
+            // coroutine sees the flag (or the cleared turn) and stands down.
+            retryPending = false
+            live.value = null
+        }
         call?.cancel()
     }
 

@@ -298,7 +298,11 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                             RuntimeState.Stopped -> "berhenti"
                         }
                         scope.launch {
-                            dump = withContext(Dispatchers.IO) { LogcatDump.dump(context, serverLine) }
+                            // In-app server-log ring buffer (T-ML27 P4): the
+                            // logcat buffer can silently drop our own lines,
+                            // so the dump carries this pruning-proof copy too.
+                            val panel = Graph.runtime.log.value.takeLast(300)
+                            dump = withContext(Dispatchers.IO) { LogcatDump.dump(context, serverLine, panel) }
                             dumping = false
                         }
                     },

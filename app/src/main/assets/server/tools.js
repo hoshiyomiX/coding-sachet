@@ -115,7 +115,15 @@ function writeFile(filePath, content) {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
-/** Run a shell command in the workdir with a timeout and output cap. */
+/** Run a shell command in the workdir with a timeout and output cap.
+ *
+ * The child runs DETACHED — its own process group — so a timeout can kill
+ * the WHOLE tree, not just bash (T-ML27 P1: an `apt-get install` that
+ * outlived its 120 s timeout kept running as an orphan, held the dpkg
+ * lock and burned the next agent rounds; the retry loop churned memory
+ * until the kernel OOM-killed the server, exit 137). At close, any group
+ * member still alive (background jobs, daemons) is also reaped: a tool
+ * call is one-shot and must never leak processes into the next round. */
 function runBash(command, onOutput) {
   return new Promise((resolve) => {
     if (typeof command !== 'string' || command.length === 0 || command.length > 64 * 1024) {
@@ -126,6 +134,7 @@ function runBash(command, onOutput) {
     log.dbg('tool', `bash: ${command.slice(0, 100).replace(/\s+/g, ' ')}${command.length > 100 ? '…' : ''}`);
     const child = spawn('/bin/bash', ['-c', command], {
       cwd: config.workdir,
+      detached: true, // new process group: child.pid == pgid of the whole tree
       env: {
         PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         HOME: '/root',
@@ -135,11 +144,21 @@ function runBash(command, onOutput) {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
+    /** Signal the child's whole process group (missing group = nothing
+     * left to signal; never throws on ESRCH/EPERM). */
+    const killGroup = (sig) => { try { process.kill(-child.pid, sig); } catch { /* group gone */ } };
+    /** True while some member of the group is still alive. */
+    const groupAlive = () => { try { process.kill(-child.pid, 0); return true; } catch { return false; } };
+
     let out = Buffer.alloc(0);
     let killed = false;
+    let done = false;
+    const finish = (r) => { if (!done) { done = true; resolve(r); } };
     const timer = setTimeout(() => {
       killed = true;
-      child.kill('SIGKILL');
+      killGroup('SIGTERM');
+      // Grace, then hard kill: dpkg/apt shed TERM less politely than bash.
+      setTimeout(() => killGroup('SIGKILL'), 2000);
     }, config.bashTimeoutMs);
 
     const push = (chunk) => {
@@ -153,12 +172,24 @@ function runBash(command, onOutput) {
     child.on('error', (e) => {
       clearTimeout(timer);
       log.err('tool', 'bash spawn gagal:', e.message);
-      resolve({ ok: false, error: `spawn: ${e.message}` });
+      finish({ ok: false, error: `spawn: ${e.message}` });
+    });
+    // Once bash itself has exited, give the streams a short grace to flush
+    // the command's own tail — then take the whole group down. Without this
+    // a leaked grandchild holding the pipes would keep 'close' (and the
+    // agent round) hanging forever; with it every tool call is one-shot.
+    child.on('exit', () => {
+      clearTimeout(timer);
+      setTimeout(() => {
+        if (!done && groupAlive()) {
+          log.dbg('tool', 'bash selesai — sisa proses grup dibunuh');
+          killGroup('SIGKILL');
+        }
+      }, 300).unref();
     });
     child.on('close', (code, signal) => {
-      clearTimeout(timer);
       if (killed) log.wrn('tool', `bash timeout ${config.bashTimeoutMs / 1000}s — proses dibunuh`);
-      resolve({
+      finish({
         ok: code === 0,
         code,
         signal: signal || null,
@@ -167,6 +198,25 @@ function runBash(command, onOutput) {
       });
     });
   });
+}
+
+// dpkg/apt lock contention shows up as the model retrying install commands
+// in a tight loop (T-ML27 P1 evidence: rounds 5-7 hammered apt while the
+// orphaned process held the lock). A deterministic note in the tool output
+// steers it to wait instead of spawning another install immediately.
+const LOCK_PATTERNS = [
+  /could not get lock/i,
+  /dpkg (frontend )?is locked/i,
+  /dpkg lock/i,
+  /apt::progress/i,
+  /resource temporarily unavailable/i,
+  /another process .*apt/i,
+];
+
+/** Append a wait-and-retry hint when the output smells like a lock fight. */
+function lockHint(output) {
+  if (!LOCK_PATTERNS.some((re) => re.test(output))) return output;
+  return output + '\n(catatan: ada proses apt/dpkg lain yang masih memegang lock — tunggu beberapa detik lalu coba lagi, JANGAN jalankan instalasi baru secara paralel)';
 }
 
 // ---------- tool registry exposed to the model ----------
@@ -186,7 +236,7 @@ const tools = [
       const r = await runBash(args.command);
       if (r.error) return r;
       const head = `exit=${r.code}${r.signal ? ` signal=${r.signal}` : ''}${r.timedOut ? ' (timeout)' : ''}`;
-      return { ok: r.ok, output: `${head}\n${r.output || '(no output)'}` };
+      return { ok: r.ok, output: lockHint(`${head}\n${r.output || '(no output)'}`) };
     },
   },
   {
@@ -242,4 +292,4 @@ const tools = [
 
 const toolByName = Object.fromEntries(tools.map((t) => [t.name, t]));
 
-module.exports = { tools, toolByName, safePath, safeNewPath, listDir, readFile, writeFile, runBash };
+module.exports = { tools, toolByName, safePath, safeNewPath, listDir, readFile, writeFile, runBash, lockHint };

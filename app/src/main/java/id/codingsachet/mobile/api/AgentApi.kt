@@ -281,6 +281,14 @@ class AgentApi(private val port: () -> Int) {
 
     // ---------- chat (SSE) ----------
 
+    /** Why an SSE chat stream ended in an error (T-ML27 P3).
+     *  EOF = the socket closed mid-stream: on this localhost hop that is
+     *  the server-died signature (the server always writes error+done
+     *  events before closing on real faults, and a user stop cancels the
+     *  call instead). CONNECT = refused before a response (server down or
+     *  restarting). Both are retryable once the server is healthy again. */
+    enum class ErrorKind { EOF, CONNECT, HTTP }
+
     /**
      * POST /api/chat and stream agent events. [onEvent] runs on an IO thread.
      * The returned Call can be cancelled to abort the run.
@@ -293,7 +301,7 @@ class AgentApi(private val port: () -> Int) {
         systemPrompt: String?,
         options: JsonObject? = null,
         onEvent: (JsonObject) -> Unit,
-        onError: (String) -> Unit,
+        onError: (String, ErrorKind) -> Unit,
         onClosed: () -> Unit,
     ): Call {
         val body = kotlinx.serialization.json.buildJsonObject {
@@ -317,7 +325,7 @@ class AgentApi(private val port: () -> Int) {
             override fun onFailure(call: Call, e: IOException) {
                 if (!call.isCanceled()) {
                     Logx.e("api", "chat stream gagal (${e.javaClass.simpleName}: ${e.message?.take(120)})")
-                    onError(e.message ?: "network error")
+                    onError(e.message ?: "network error", ErrorKind.CONNECT)
                 }
                 onClosed()
             }
@@ -328,7 +336,7 @@ class AgentApi(private val port: () -> Int) {
                         val body = runCatching { it.body.string() }.getOrDefault("")
                         if (!call.isCanceled()) {
                             Logx.w("api", "chat stream HTTP ${it.code}: ${errorOf(body, it.code).take(140)}")
-                            onError(errorOf(body, it.code))
+                            onError(errorOf(body, it.code), ErrorKind.HTTP)
                         }
                         onClosed()
                         return
@@ -347,7 +355,13 @@ class AgentApi(private val port: () -> Int) {
                     } catch (e: Exception) {
                         if (!call.isCanceled()) {
                             Logx.e("api", "chat stream putus saat membaca (${e.javaClass.simpleName}: ${e.message?.take(120)})")
-                            onError(e.message ?: "stream error")
+                            // EOF mid-stream = the server process died (T-ML27
+                            // field: exit 137 while apt-get ran). Give the caller
+                            // the class, not just the empty message.
+                            onError(
+                                if (e.message.isNullOrBlank()) "stream error" else e.message!!,
+                                ErrorKind.EOF,
+                            )
                         }
                     }
                     onClosed()

@@ -588,6 +588,17 @@ private fun LiveBubble(l: LiveTurn) {
                 modifier = Modifier.padding(horizontal = 4.dp),
             )
         }
+        // Server-death recovery hint (T-ML27 P3): the agent server was
+        // killed mid-turn (exit 137 in the field) and the turn will resume
+        // by itself once the runtime has it healthy again.
+        if (l.restarting) {
+            Text(
+                s.serverRestarting,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+        }
         ThinkingBlock(l.thinking)
         if (l.text.isNotBlank()) {
             Surface(

@@ -125,6 +125,7 @@ data class SachetStrings(
     val jsonInvalid: String,
     val rateLimitWaiting: String,
     val reconnecting: String,
+    val serverRestarting: String,
 )
 
 val IdStrings = SachetStrings(
@@ -249,6 +250,7 @@ val IdStrings = SachetStrings(
     jsonInvalid = "Input tidak valid",
     rateLimitWaiting = "Menunggu batas laju gateway",
     reconnecting = "Menyambung ulang ke",
+    serverRestarting = "Server agent dimatikan sistem — memulai ulang, tugas dilanjutkan otomatis…",
 )
 
 val EnStrings = SachetStrings(
@@ -373,6 +375,7 @@ val EnStrings = SachetStrings(
     jsonInvalid = "Invalid input",
     rateLimitWaiting = "Waiting for the gateway rate limit",
     reconnecting = "Reconnecting to",
+    serverRestarting = "The agent server was killed by the system — restarting, the task continues automatically…",
 )
 
 val LocalStrings = staticCompositionLocalOf { IdStrings }

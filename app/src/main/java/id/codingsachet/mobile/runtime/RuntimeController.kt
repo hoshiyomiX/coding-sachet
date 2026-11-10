@@ -294,12 +294,19 @@ class RuntimeController(
         var windowStart = System.currentTimeMillis()
         while (isActive && !stopRequested) {
             state.value = RuntimeState.Starting
-            killLeftoverServer()
-            var waited = 0
-            while (isActive && portBusy() && waited < 8_000) {
-                delay(250); waited += 250
+            // Fast-path restart (T-ML27 P2): the old order booted a whole
+            // proot just to run pkill BEFORE checking whether anything was
+            // even listening — seconds of latency (and up to the 8 s pkill
+            // timeout when it hung) on every restart. The port answers the
+            // question cheaper: free port = no leftover server to kill.
+            if (portBusy()) {
+                killLeftoverServer()
+                var waited = 0
+                while (isActive && portBusy() && waited < 8_000) {
+                    delay(250); waited += 250
+                }
+                if (waited > 0) logLine("Menunggu port bebas selama ${waited}ms")
             }
-            if (waited > 0) logLine("Menunggu port bebas selama ${waited}ms")
 
             ensureServerFilesCurrent()
 
@@ -320,6 +327,7 @@ class RuntimeController(
                 return@withContext
             }
             process = p
+            val startedAt = System.currentTimeMillis()
             val reader = launch { runCatching { p.inputStream.bufferedReader().forEachLine { logLine(it) } } }
             try {
                 var version: String? = null
@@ -365,20 +373,36 @@ class RuntimeController(
             }
             if (stopRequested) break
             val code = runCatching { p.exitValue() }.getOrDefault(-1)
-            logLine("Server keluar (kode $code)")
+            val lived = System.currentTimeMillis() - startedAt
+            logLine("Server keluar (kode $code${exitCodeNote(code)})")
+            // A run that lived a while is not a crash loop: an external kill
+            // (T-ML27 evidence: kode 137 while apt-get ran in the guest —
+            // kernel OOM killer / OEM memory manager) deserves an immediate
+            // restart, not a growing backoff (incident 00:12 waited 28 s).
+            if (lived > 60_000) failures = 0
             val now = System.currentTimeMillis()
             if (now - windowStart > 120_000) {
                 failures = 0
                 windowStart = now
             }
             failures++
-            state.value = RuntimeState.Crashed("Server berhenti (kode $code). Memulai ulang…")
+            state.value = RuntimeState.Crashed("Server berhenti (kode $code${exitCodeNote(code)}). Memulai ulang…")
             delay((1500L * failures).coerceAtMost(30_000))
         }
         state.value = RuntimeState.Stopped
     }
 
     private fun launcher() = ProotLauncher(paths, prefs.noSeccomp, rootMode())
+
+    /** Human-readable note for the exit codes the field actually produced
+     *  (T-ML27 P2): 137 = SIGKILL from outside the app — kernel OOM killer
+     *  or the OEM's memory manager, both observed striking while the agent
+     *  ran apt-get in the guest; 143 = SIGTERM. */
+    private fun exitCodeNote(code: Int): String = when (code) {
+        137 -> " — dimatikan paksa oleh sistem (tekanan memori?)"
+        143 -> " — dihentikan oleh sinyal berhenti"
+        else -> ""
+    }
 
     // ---------------------------------------------------------------- dns
 

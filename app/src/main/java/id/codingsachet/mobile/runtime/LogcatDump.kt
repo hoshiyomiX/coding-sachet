@@ -63,8 +63,13 @@ object LogcatDump {
 
     /** Dump + persist. Runs the (short-lived) `logcat -d` synchronously —
      *  call from Dispatchers.IO. [serverState] is a short human label of
-     *  the agent-server state to embed in the header. */
-    fun dump(context: Context, serverState: String): Result {
+     *  the agent-server state to embed in the header. [serverLog] carries
+     *  the in-app server-log panel (RuntimeController's ring buffer):
+     *  logcat can silently drop the app's own lines (T-ML27 field: a whole
+     *  turn's [agt]/[tool] lines vanished from the logcat buffer while the
+     *  OEM's UI spam survived), so the dump embeds this pruning-proof copy
+     *  as its own leading section. */
+    fun dump(context: Context, serverState: String, serverLog: List<String> = emptyList()): Result {
         val (bytes, command) = try {
             runLogcat()
         } catch (e: Exception) {
@@ -76,6 +81,11 @@ object LogcatDump {
         val kept = if (trimmed) String(bytes, start, bytes.size - start, Charsets.UTF_8) else String(bytes, Charsets.UTF_8)
         val text = buildString {
             append(buildHeader(context, serverState, command))
+            if (serverLog.isNotEmpty()) {
+                appendLine("==== log server (panel in-app, ${serverLog.size} baris terakhir — kebal pemangkasan logcat) ====")
+                serverLog.forEach { appendLine(it) }
+                appendLine("==== akhir log server ====")
+            }
             if (trimmed) {
                 appendLine("# [dipotong] logcat mentah melebihi ${DumpFormat.MAX_BYTES / (1024 * 1024)} MB — ")
                 appendLine("# hanya bagian TERBARU yang disimpan (logcat -d mencetak dari terlama).")
@@ -84,7 +94,7 @@ object LogcatDump {
         }
         val lines = text.lines().filter { it.isNotBlank() }.takeLast(MAX_LINES)
         val file = save(context, text)
-        Logx.i("rt", "dump logcat: ${lines.size} baris${if (trimmed) " (dipotong ke ekor 10 MB)" else ""} -> ${file?.absolutePath ?: "tidak tersimpan"}")
+        Logx.i("rt", "dump logcat: ${lines.size} baris${if (trimmed) " (dipotong ke ekor 10 MB)" else ""} + log server ${serverLog.size} baris -> ${file?.absolutePath ?: "tidak tersimpan"}")
         return Result(lines, file, null, trimmed)
     }
 
