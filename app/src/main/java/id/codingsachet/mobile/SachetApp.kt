@@ -2,6 +2,9 @@ package id.codingsachet.mobile
 
 import android.app.Application
 import id.codingsachet.mobile.api.AgentApi
+import id.codingsachet.mobile.api.ModelStatus
+import id.codingsachet.mobile.api.ModelVerify
+import id.codingsachet.mobile.api.Providers
 import id.codingsachet.mobile.data.ChatStore
 import id.codingsachet.mobile.data.Prefs
 import id.codingsachet.mobile.runtime.RuntimeController
@@ -20,6 +23,13 @@ object Graph {
         private set
     lateinit var runtime: RuntimeController
         private set
+
+    /** Live model-verification coordinator (T-ML26): the picker's dots
+     *  read ModelStatus, which only THIS fills — from the real gateway,
+     *  never from a hardcoded list. */
+    val verify: ModelVerify by lazy {
+        ModelVerify(api) { providerId -> prefs.setStatusJson(providerId, ModelStatus.toJson(providerId)) }
+    }
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     fun init(app: Application) {
@@ -28,6 +38,9 @@ object Graph {
         chats = ChatStore(app)
         val paths = RuntimePaths(app)
         runtime = RuntimeController(app, paths, prefs, api)
+        // Restore each provider's last live-verification results; the dots
+        // render instantly and re-sweep only once they go stale (12 h).
+        Providers.ALL.forEach { p -> ModelStatus.fromJson(p.id, prefs.statusJson(p.id)) }
     }
 }
 

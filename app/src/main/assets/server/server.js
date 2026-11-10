@@ -6,6 +6,7 @@
 //   GET  /health              liveness + versions + providers
 //   GET  /api/models          provider model list (X-Sachet-Key + X-Sachet-Provider)
 //   POST /api/chat            agent loop, SSE events (X-Sachet-Key + X-Sachet-Provider)
+//   POST /api/verify-models   live model check, SSE events {start|result|done}
 //   GET  /api/quota           remaining tokens (?fresh=1 skips cache)
 //   GET  /api/dns             current guest resolver servers
 //   POST /api/dns             rewrite the guest resolver {servers:[...]} (VPN-aware)
@@ -18,7 +19,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { config, providerById, HOME } = require('./config');
-const { runAgent } = require('./agent');
+const { runAgent, verifyModels } = require('./agent');
 const { safePath, listDir, readFile, writeFile } = require('./tools');
 const { fetchWithRetry, fetchRetryTimeout, netErrorDetail } = require('./net');
 const log = require('./log');
@@ -325,6 +326,63 @@ async function route(req, res) {
       // normal exit, not a failure; keep the error channel for real faults.
       if (e.message === 'dibatalkan') log.dbg('srv', `chat dibatalkan user ${providerId} ${body.model} ${Date.now() - chatT0}ms`);
       else log.err('srv', `chat gagal ${providerId} ${body.model} ${Date.now() - chatT0}ms:`, e.message);
+      emit({ type: 'error', message: e.message || String(e) });
+      emit({ type: 'done' });
+    } finally {
+      clearInterval(keepAlive);
+      try { res.end(); } catch { /* ignore */ }
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/verify-models') {
+    // Live model verification (T-ML26, owner order: "mengecek actual bukan
+    // dari membaca hardcoded list"). The app sends the model list it is
+    // displaying; results stream back as SSE so the dots fill progressively.
+    const key = gatewayKey(req);
+    if (!key) return sendJson(res, 401, { error: 'X-Sachet-Key hilang' });
+    const providerId = gatewayProviderId(req);
+    const provider = providerById(providerId);
+    if (!provider) {
+      return sendJson(res, 400, { error: `Provider tidak dikenal: ${providerId}` });
+    }
+    let body;
+    try { body = await readJson(req, 64 * 1024); } catch (e) {
+      return sendJson(res, 400, { error: `body: ${e.message}` });
+    }
+    let models = Array.isArray(body.models)
+      ? body.models.filter((m) => typeof m === 'string' && m && m.length <= 256)
+      : [];
+    models = [...new Set(models)].slice(0, 1000);
+    if (!models.length) {
+      // No list passed: verify the provider's own catalogue instead.
+      try { models = await fetchModels(key, provider); } catch (e) {
+        return sendJson(res, 502, { error: e.message });
+      }
+    }
+    log.inf('srv', `verify ${providerId} mulai ${models.length} model`);
+    const vT0 = Date.now();
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    const emit = (ev) => {
+      try { res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch { /* client gone */ }
+    };
+    const keepAlive = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* ignore */ } }, 15000);
+    const abort = new AbortController();
+    req.on('close', () => abort.abort());
+
+    try {
+      await verifyModels({ apiKey: key, providerId, models, signal: abort.signal, emit });
+    } catch (e) {
+      // A user cancel (sheet closed / cancel button) aborts the sweep — a
+      // normal exit, not a failure; results collected so far stay valid.
+      if (e.message === 'dibatalkan') log.dbg('srv', `verify dibatalkan user ${providerId} ${Date.now() - vT0}ms`);
+      else log.err('srv', `verify gagal ${providerId} ${Date.now() - vT0}ms:`, e.message);
       emit({ type: 'error', message: e.message || String(e) });
       emit({ type: 'done' });
     } finally {

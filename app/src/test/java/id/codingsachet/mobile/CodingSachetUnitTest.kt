@@ -1,5 +1,6 @@
 package id.codingsachet.mobile
 
+import id.codingsachet.mobile.api.ModelStatus
 import id.codingsachet.mobile.api.Providers
 import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
@@ -14,6 +15,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -26,57 +28,21 @@ import org.junit.Test
  */
 class CodingSachetUnitTest {
 
-    // ---------- Providers: free-model gating + lookup fallbacks ----------
+    // ---------- Providers: static metadata only (owner order T-ML26) ----------
 
     @Test
-    fun nimVerifiedModelsAreFree() {
-        val nim = Providers.NVIDIA
-        assertTrue("katalog NIM verified kosong", nim.verifiedModels.isNotEmpty())
-        nim.verifiedModels.forEach { id ->
-            assertTrue("model verified $id seharusnya free", nim.isFreeModel(id))
+    fun providersCarryNoHardcodedModelSets() {
+        // "mengecek actual bukan dari membaca hardcoded list": working/free
+        // status keputusan RUNTIME (ModelStatus + sweep live). Providers.kt
+        // hanya metadata statis — field bertipe Set = regresi daftar terbakar.
+        Providers.ALL.forEach { p ->
+            p.javaClass.declaredFields.forEach { f ->
+                assertFalse(
+                    "field ${p.id}.${f.name} bertipe Set — daftar model terbakar dilarang",
+                    Set::class.java.isAssignableFrom(f.type),
+                )
+            }
         }
-    }
-
-    @Test
-    fun nimDefaultModelIsVerifiedFree() {
-        val nim = Providers.NVIDIA
-        assertTrue(
-            "default model ${nim.defaultModel} harus ada di verifiedModels",
-            nim.defaultModel in nim.verifiedModels,
-        )
-        assertTrue(nim.isFreeModel(nim.defaultModel))
-    }
-
-    @Test
-    fun nimUnverifiedCatalogueModelIsNotFree() {
-        // Entri katalog NIM yang tidak menjawab chat utk key biasa
-        // (embedding/rerank/404) tidak boleh berbadge free.
-        assertFalse(Providers.NVIDIA.isFreeModel("nv-embedqa-e5-v5"))
-        assertFalse(Providers.NVIDIA.isFreeModel("model/ngasal"))
-    }
-
-    @Test
-    fun apinexFreePrefixGating() {
-        val apx = Providers.APINEX
-        assertTrue(apx.isFreeModel("free/glm-5.3"))
-        assertFalse(apx.isFreeModel("gpt-4o"))
-        assertTrue("APInex harus mengandalkan prefiks free/, bukan verifiedModels", apx.verifiedModels.isEmpty())
-        // Free tier broader than the prefix (allowFree catalogue, probed
-        // 2026-11-09): premium models on the free daily allowance.
-        assertTrue("model allowFree seharusnya free", apx.isFreeModel("claude-opus-5.5"))
-        assertTrue(apx.isFreeModel("gpt-6.1-terra"))
-    }
-
-    @Test
-    fun workingModelDots() {
-        // GREEN dot = verified working; RED = unverified (owner order).
-        val nim = Providers.NVIDIA
-        assertTrue(nim.isWorkingModel(nim.defaultModel))
-        assertFalse("model tak terverifikasi NIM harus dot merah", nim.isWorkingModel("nv-embedqa-e5-v5"))
-        // APInex: whole catalogue was healthy at audit time → all green.
-        val apx = Providers.APINEX
-        assertTrue(apx.isWorkingModel("free/glm-5.3"))
-        assertTrue(apx.isWorkingModel("model-baru-belum-terdaftar"))
     }
 
     @Test
@@ -95,6 +61,82 @@ class CodingSachetUnitTest {
             assertTrue("baseUrl ${p.baseUrl} harus https", p.baseUrl.startsWith("https://"))
             assertTrue("docsUrl ${p.docsUrl} harus https", p.docsUrl.startsWith("https://"))
         }
+    }
+
+    // ---------- ModelStatus: dot & free dari hasil live (T-ML26) ----------
+
+    @Test
+    fun modelStatusDotsFollowLiveResults() {
+        ModelStatus.reset()
+        // Belum pernah dicek = UNKNOWN (abu-abu), bukan merah palsu.
+        assertEquals(ModelStatus.State.UNKNOWN, ModelStatus.stateOf("nvidia", "m1"))
+        ModelStatus.apply("nvidia", "m1", ModelStatus.State.OK, true, now = 1000)
+        ModelStatus.apply("nvidia", "m2", ModelStatus.State.DEAD, false, now = 1000)
+        assertEquals(ModelStatus.State.OK, ModelStatus.stateOf("nvidia", "m1"))
+        assertEquals(ModelStatus.State.DEAD, ModelStatus.stateOf("nvidia", "m2"))
+        // Provider lain tidak ikut-ikutan
+        assertEquals(ModelStatus.State.UNKNOWN, ModelStatus.stateOf("apinex", "m1"))
+    }
+
+    @Test
+    fun modelStatusFreeCombinesPrefixAndLive() {
+        ModelStatus.reset()
+        // Prefiks free/ APInex intrinsik — tidak butuh sweep.
+        assertTrue(ModelStatus.isFree(Providers.APINEX, "free/apa-saja"))
+        // Tanpa hasil live, model non-prefix tidak berbadge free.
+        assertFalse(ModelStatus.isFree(Providers.APINEX, "claude-opus-5.5"))
+        assertFalse(ModelStatus.isFree(Providers.NVIDIA, "nv-embedqa-e5-v5"))
+        // Katalog live (allowFree) dan NIM menjawab = free.
+        ModelStatus.apply("apinex", "claude-opus-5.5", ModelStatus.State.OK, true, now = 1)
+        ModelStatus.apply("nvidia", "z-ai/glm-5.3-flash", ModelStatus.State.OK, true, now = 1)
+        ModelStatus.apply("nvidia", "mati/model", ModelStatus.State.DEAD, false, now = 1)
+        assertTrue(ModelStatus.isFree(Providers.APINEX, "claude-opus-5.5"))
+        assertTrue(ModelStatus.isFree(Providers.NVIDIA, "z-ai/glm-5.3-flash"))
+        assertFalse(ModelStatus.isFree(Providers.NVIDIA, "mati/model"))
+    }
+
+    @Test
+    fun modelStatusStaleness() {
+        ModelStatus.reset()
+        assertFalse("belum pernah dicek = tidak fresh", ModelStatus.isFresh("nvidia", now = 10_000))
+        ModelStatus.apply("nvidia", "m", ModelStatus.State.OK, true, now = 0)
+        assertEquals(0L, ModelStatus.lastCheckedAt("nvidia"))
+        assertTrue(ModelStatus.isFresh("nvidia", now = ModelStatus.STALE_MS - 1))
+        assertFalse("lebih dari 12 jam = basi, sweep ulang", ModelStatus.isFresh("nvidia", now = ModelStatus.STALE_MS + 1))
+    }
+
+    @Test
+    fun modelStatusOrderWarmStarts() {
+        ModelStatus.reset()
+        ModelStatus.apply("p", "a", ModelStatus.State.OK, true, now = 1)
+        ModelStatus.apply("p", "c", ModelStatus.State.DEAD, false, now = 1)
+        ModelStatus.apply("p", "d", ModelStatus.State.OK, true, now = 1)
+        val ordered = ModelStatus.orderForSweep(listOf("a", "b", "c", "d", "e"), "p", current = "b")
+        // Model aktif dulu, lalu yang terakhir hijau (urutan katalog asli),
+        // lalu sisanya.
+        assertEquals(listOf("b", "a", "d", "c", "e"), ordered)
+    }
+
+    @Test
+    fun modelStatusJsonRoundTrip() {
+        ModelStatus.reset()
+        ModelStatus.apply("x", "m1", ModelStatus.State.OK, true, now = 123)
+        ModelStatus.apply("x", "m2", ModelStatus.State.DEAD, null, now = 456)
+        ModelStatus.apply("x", "m3", ModelStatus.State.UNKNOWN, false, now = 789)
+        val json = ModelStatus.toJson("x")
+        ModelStatus.reset()
+        ModelStatus.fromJson("x", json)
+        assertEquals(ModelStatus.State.OK, ModelStatus.stateOf("x", "m1"))
+        assertEquals(ModelStatus.State.DEAD, ModelStatus.stateOf("x", "m2"))
+        assertEquals(ModelStatus.State.UNKNOWN, ModelStatus.stateOf("x", "m3"))
+        assertEquals(true, ModelStatus.entry("x", "m1")?.free)
+        assertNull(ModelStatus.entry("x", "m2")?.free)
+        assertEquals(false, ModelStatus.entry("x", "m3")?.free)
+        assertEquals(123L, ModelStatus.entry("x", "m1")?.at)
+        // Payload rusak tidak boleh melempar — toko dibiarkan kosong.
+        ModelStatus.reset()
+        ModelStatus.fromJson("x", "bukan json {")
+        assertNull(ModelStatus.entry("x", "m1"))
     }
 
     // ---------- Chat persistence wire format ----------
@@ -199,16 +241,29 @@ class CodingSachetUnitTest {
         assertSame(IdStrings, stringsFor(""))
     }
 
-    // ---------- Logcat dump v2 (T-ML25: "selengkap logcat") ----------
+    // ---------- Logcat dump (T-ML25 → T-ML26: filter Coding Sachet saja) ----------
 
     @Test
-    fun logcatDumpCommandCapturesAllOwnUidTags() {
-        // No tag whitelist (-s ...) anymore — the dump keeps EVERY line the
-        // UID may read; threadtime adds PID+TID, year adds the full date.
-        assertTrue(DumpFormat.COMMAND.startsWith("logcat -d "))
-        assertTrue("harus pakai format threadtime", DumpFormat.COMMAND.contains("threadtime"))
-        assertTrue("harus menyertakan tahun", DumpFormat.COMMAND.contains("year"))
-        assertFalse("filter tag -s tidak boleh ada lagi", DumpFormat.COMMAND.contains("-s"))
+    fun logcatDumpCommandFiltersToOwnUid() {
+        // Utama: --uid — semua proses milik aplikasi ini (app + anak
+        // proot/node + crash native-nya), proses lain difilter.
+        val cmd = DumpFormat.commandForUid(10123)
+        assertTrue(cmd.startsWith("logcat -d "))
+        assertTrue("harus pakai format threadtime", cmd.contains("threadtime"))
+        assertTrue("harus menyertakan tahun", cmd.contains("year"))
+        assertTrue("filter UID wajib di ujung perintah", cmd.endsWith("--uid=10123"))
+        assertFalse("filter tag -s tidak boleh ada", cmd.contains(" -s"))
+    }
+
+    @Test
+    fun logcatFallbackChainScopesProgressively() {
+        // OEM tanpa --uid: mundur ke --pid (proses app saja), lalu tanpa
+        // filter — semua varian berbagi format threadtime,year.
+        assertTrue(DumpFormat.commandForPid(4242).endsWith("--pid=4242"))
+        assertEquals("logcat -d -v threadtime,year", DumpFormat.COMMAND_UNFILTERED)
+        listOf(DumpFormat.commandForUid(1), DumpFormat.commandForPid(2), DumpFormat.COMMAND_UNFILTERED).forEach { c ->
+            assertTrue("$c harus threadtime", c.contains("threadtime,year"))
+        }
     }
 
     @Test

@@ -5,7 +5,7 @@
 
 const { config, providerById } = require('./config');
 const { toolByName } = require('./tools');
-const { fetchWithHeaderBudget, netErrorDetail } = require('./net');
+const { fetchWithRetry, fetchWithHeaderBudget, netErrorDetail } = require('./net');
 const { acquire, peekWaitMs, pauseFor, abortableSleep } = require('./ratelimit');
 const log = require('./log');
 
@@ -427,4 +427,203 @@ function safeJson(s) {
   try { return JSON.parse(s); } catch { return { _raw: s }; }
 }
 
-module.exports = { runAgent, callGateway, toOpenAiMessages, sanitizeOptions, buildBody, safeJson };
+// ---------- live model verification (T-ML26) ----------
+// Owner order: "Providers.kt mengecek actual bukan dari membaca hardcoded
+// list" — the app's model dots must reflect what the gateway answers RIGHT
+// NOW, never a set baked into the APK at build time (the NIM catalogue
+// fluctuates daily: the T-ML24 probe found one model dead and another
+// revived within 24 h; the APInex allowFree set drifted 35 → 34 a day
+// after it was baked).
+
+const abortErr = () => Object.assign(new Error('dibatalkan'), { name: 'AbortError' });
+
+/** Fetch + parse the APInex public catalogue
+ *  (apinex.bond/api/public/models): ONE unauthenticated GET returning
+ *  per-model health + allowFree — the relay's own liveness truth, zero
+ *  chat tokens spent. */
+async function fetchPublicCatalogue(provider, signal) {
+  const res = await fetchWithRetry(
+    provider.publicCatalogUrl,
+    { signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]) },
+    { retries: 1, delays: [500] }
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const j = await res.json().catch(() => null);
+  if (!j || !Array.isArray(j.models)) throw new Error('bentuk katalog tidak dikenal');
+  return j.models;
+}
+
+/** Read the probe response body until it proves the model is generating:
+ *  for SSE the first `data: <payload>` line, for a plain JSON body (gateway
+ *  ignored stream:true) any non-whitespace bytes. Resolves {ok,reason?};
+ * the first-chunk budget [firstChunkMs] turns a hanging model into a
+ *  clean "not answering" instead of a stalled sweep. */
+async function readUntilAlive(res, firstChunkMs, signal) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { reader.cancel(); } catch { /* already closed */ }
+      resolve(v);
+    };
+    const timer = setTimeout(() => finish({ ok: false, reason: 'timeout' }), firstChunkMs);
+    const isSse = String(res.headers.get('content-type') || '').includes('event-stream');
+    (async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) { finish({ ok: false, reason: 'stream berakhir tanpa data' }); return; }
+          buffer += decoder.decode(value, { stream: true });
+          let nl;
+          while ((nl = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, nl).replace(/\r$/, '');
+            buffer = buffer.slice(nl + 1);
+            if (line.startsWith('data:')) {
+              const payload = line.slice(5).trim();
+              if (payload) { finish({ ok: true }); return; }
+            }
+          }
+          // A gateway that ignored stream:true answers with a JSON body:
+          // any real bytes already prove the model is serving.
+          if (!isSse && buffer.trim()) { finish({ ok: true }); return; }
+        }
+      } catch (e) {
+        if (signal && signal.aborted) reject(abortErr());
+        else finish({ ok: false, reason: e.message });
+      }
+    })();
+  });
+}
+
+/** Probe ONE model: a tiny streaming chat call, alive when the FIRST data
+ *  chunk arrives — mirroring the app's actual chat path (the T-ML24 probe
+ *  found two NIM models that only ever answer through SSE). Returns
+ *  { ok, ms, reason? } with ok:null = cannot tell. Throws on a dead
+ *  gateway path (no point painting every model red) and on 401/403 (the
+ *  key itself is bad — the sweep must stop). */
+async function probeModel({ apiKey, provider, model, signal }) {
+  const t0 = Date.now();
+  const body = JSON.stringify({
+    model,
+    messages: [{ role: 'user', content: 'ping' }],
+    // Tiny on purpose: liveness only needs the model to START answering
+    // (16 tokens leave reasoning models room to open their stream — the
+    // same budget validateKey uses in the app).
+    max_tokens: 16,
+    stream: true,
+  });
+  let res;
+  try {
+    res = await fetchWithHeaderBudget(
+      provider.baseUrl + '/chat/completions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body,
+        signal,
+      },
+      { timeoutMs: config.connectTimeoutMs, retries: 1, delays: [500] }
+    );
+  } catch (e) {
+    if (signal && signal.aborted) throw abortErr();
+    throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`);
+  }
+  const ms = Date.now() - t0;
+
+  if (res.status === 401 || res.status === 403) {
+    const err = new Error(`Key ditolak gateway (HTTP ${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  if (!res.ok) {
+    await res.text().catch(() => {}); // drain the error body
+    if (res.status === 429) return { ok: null, ms, reason: 'HTTP 429' };
+    return { ok: false, ms, reason: `HTTP ${res.status}` };
+  }
+
+  const alive = await readUntilAlive(res, config.verifyFirstChunkMs, signal);
+  return { ok: alive.ok, ms: Date.now() - t0, ...(alive.reason ? { reason: alive.reason } : {}) };
+}
+
+/** Live verification sweep (T-ML26): decide for every model id whether it
+ *  actually answers RIGHT NOW, emitting progress events. APInex takes the
+ *  public-catalogue fast path (health → dot, allowFree → free badge, no
+ *  tokens); every other provider (and APInex when the catalogue is
+ *  unreachable) probes each model, paced by the SAME 15 RPM bucket as real
+ *  chats so a sweep can never starve the user's own messages.
+ *  Events: {type:'start',total} → {type:'result',model,ok,free,ms,reason?}
+ *  → {type:'done',ok,dead,unknown}. ok/free are null = cannot tell. */
+async function verifyModels({ apiKey, providerId, models, signal, emit }) {
+  const provider = providerById(providerId);
+  if (!provider) throw new Error(`Provider tidak dikenal: ${providerId}`);
+  emit({ type: 'start', total: models.length });
+
+  // ---- fast path: the APInex public catalogue ----
+  if (provider.publicCatalogUrl) {
+    try {
+      const entries = await fetchPublicCatalogue(provider, signal);
+      const byId = new Map(entries.map((e) => [e.id, e]));
+      let ok = 0, dead = 0, unknown = 0;
+      for (const m of models) {
+        if (signal && signal.aborted) throw abortErr();
+        const e = byId.get(m);
+        const alive = e ? e.health === 'live' : null;
+        if (alive === true) ok++; else if (alive === false) dead++; else unknown++;
+        emit({
+          type: 'result', model: m, ok: alive, ms: 0,
+          free: e ? e.allowFree === true : null,
+          ...(alive === false && e ? { reason: `health=${e.health}` } : {}),
+        });
+      }
+      log.inf('agt', `verify katalog ${providerId}: ${ok} hidup / ${dead} mati / ${unknown} tak dikenal`);
+      emit({ type: 'done', ok, dead, unknown });
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      log.wrn('agt', `verify katalog ${providerId} gagal (${e.message}) — lanjut probe per model`);
+    }
+  }
+
+  // ---- probe path ----
+  let ok = 0, dead = 0, unknown = 0;
+  let lastConnectFail = null;
+  for (const m of models) {
+    if (signal && signal.aborted) throw abortErr();
+    await acquire(providerId, signal); // same bucket as real chats (15 RPM)
+    const t0 = Date.now();
+    let r;
+    try {
+      r = await probeModel({ apiKey, provider, model: m, signal });
+      // Any answer — even a 404 — proves the gateway path itself is up.
+      lastConnectFail = null;
+    } catch (e) {
+      if (e && (e.name === 'AbortError' || e.status === 401 || e.status === 403)) throw e;
+      if (lastConnectFail) {
+        // Two connect-level failures in a row: the network/gateway path is
+        // down — abort the sweep with the error instead of painting every
+        // remaining model red.
+        throw e;
+      }
+      // A single pre-headers hang is far more likely one dead model than
+      // a dead network (the other probes answer): mark it and move on.
+      lastConnectFail = e;
+      r = { ok: false, ms: Date.now() - t0, reason: String(e.message).slice(0, 140) };
+    }
+    if (r.ok === true) ok++; else if (r.ok === false) dead++; else unknown++;
+    // NIM models are free to use once they answer; a probe cannot see the
+    // APInex allowFree flag (null → the app falls back to its free/ prefix).
+    // ok:null (429/…) must stay free:null — "cannot tell", not "not free".
+    const free = providerId === 'nvidia' ? (r.ok === true ? true : null) : null;
+    emit({ type: 'result', model: m, ok: r.ok, free, ms: Date.now() - t0, ...(r.reason ? { reason: r.reason } : {}) });
+    log.dbg('agt', `verify ${providerId} ${m}: ${r.ok === true ? 'OK' : r.ok === false ? 'MATI' : 'TAK PASTI'} ${r.reason ? `(${r.reason})` : ''} ${Date.now() - t0}ms`);
+  }
+  log.inf('agt', `verify probe ${providerId}: ${ok} hidup / ${dead} mati / ${unknown} tak pasti`);
+  emit({ type: 'done', ok, dead, unknown });
+}
+
+module.exports = { runAgent, callGateway, toOpenAiMessages, sanitizeOptions, buildBody, safeJson, verifyModels, probeModel };

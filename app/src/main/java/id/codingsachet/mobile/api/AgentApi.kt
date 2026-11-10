@@ -357,6 +357,81 @@ class AgentApi(private val port: () -> Int) {
         return call
     }
 
+    // ---------- model live verification (T-ML26) ----------
+
+    /**
+     * POST /api/verify-models and stream the sweep's SSE events
+     * ({start|result|done|error}). Mirrors [chatStream]'s SSE reading on
+     * the no-timeout client — a paced sweep can legitimately run for
+     * minutes. The returned Call can be cancelled to abort the sweep
+     * server-side (the server watches the socket close).
+     */
+    fun verifyModelsStream(
+        apiKey: String,
+        provider: Provider,
+        models: List<String>,
+        onEvent: (JsonObject) -> Unit,
+        onError: (String?) -> Unit,
+        onClosed: () -> Unit,
+    ): Call {
+        val body = kotlinx.serialization.json.buildJsonObject {
+            put("models", kotlinx.serialization.json.buildJsonArray {
+                models.forEach { add(JsonPrimitive(it)) }
+            })
+        }
+        val wire = json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), body)
+        val req = Request.Builder()
+            .url(baseUrl() + "/api/verify-models")
+            .header("X-Sachet-Key", apiKey)
+            .header("X-Sachet-Provider", provider.id)
+            .post(wire.toRequestBody("application/json".toMediaType()))
+            .build()
+
+        val call = sseClient.newCall(req)
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (!call.isCanceled()) {
+                    Logx.w("api", "verify stream gagal (${e.javaClass.simpleName}: ${e.message?.take(120)})")
+                    onError(e.message)
+                }
+                onClosed()
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    if (!it.isSuccessful) {
+                        val body = runCatching { it.body.string() }.getOrDefault("")
+                        if (!call.isCanceled()) {
+                            Logx.w("api", "verify stream HTTP ${it.code}: ${errorOf(body, it.code).take(140)}")
+                            onError(errorOf(body, it.code))
+                        }
+                        onClosed()
+                        return
+                    }
+                    try {
+                        val reader = it.body.byteStream().bufferedReader()
+                        while (true) {
+                            val line = reader.readLine() ?: break
+                            if (call.isCanceled()) break
+                            if (!line.startsWith("data:")) continue
+                            val payload = line.removePrefix("data:").trim()
+                            if (payload.isEmpty()) continue
+                            runCatching { json.parseToJsonElement(payload).jsonObject }
+                                .onSuccess { ev -> onEvent(ev) }
+                        }
+                    } catch (e: Exception) {
+                        if (!call.isCanceled()) {
+                            Logx.w("api", "verify stream putus saat membaca (${e.javaClass.simpleName}: ${e.message?.take(120)})")
+                            onError(e.message)
+                        }
+                    }
+                    onClosed()
+                }
+            }
+        })
+        return call
+    }
+
     // ---------- file explorer ----------
 
     suspend fun fsList(path: String): Result<JsonObject> = fsGet("/api/fs?path=" + java.net.URLEncoder.encode(path, "UTF-8"))

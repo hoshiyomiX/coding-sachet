@@ -66,6 +66,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.awaitCancellation
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -74,6 +75,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import id.codingsachet.mobile.Graph
+import id.codingsachet.mobile.api.ModelStatus
 import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
 import id.codingsachet.mobile.runtime.RuntimeState
@@ -649,10 +651,29 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
             .onFailure { error = it.message }
     }
 
+    // Live verification results (T-ML26, owner order: "mengecek actual
+    // bukan dari membaca hardcoded list"): the dots and free badges below
+    // read this snapshot — filled by a real sweep against the gateway,
+    // refreshed on every result while the sheet is open.
+    var status by remember(provider.id) { mutableStateOf(ModelStatus.snapshot(provider.id)) }
+    LaunchedEffect(provider.id) {
+        val listener: (String) -> Unit = { pid ->
+            if (pid == provider.id) status = ModelStatus.snapshot(provider.id)
+        }
+        ModelStatus.listen(listener)
+        try { awaitCancellation() } finally { ModelStatus.unlisten(listener) }
+    }
+    // Once the catalogue loads, start a sweep when the stored results are
+    // stale (or missing). It keeps running after the sheet closes.
+    LaunchedEffect(models) {
+        models?.let { Graph.verify.ensure(provider, Graph.prefs.apiKey, it, current) }
+    }
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(s.selectModel, style = MaterialTheme.typography.titleMedium)
-            // Legend for the working dots (green = verified, red = not).
+            // Legend for the live dots: green = answered the sweep, red =
+            // refused/hung, gray = not checked (yet).
             Text(s.modelVerifiedNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedTextField(
                 value = query,
@@ -662,19 +683,48 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // "Free" here = the free/ tier + allowFree catalogue on APInex,
-                // and the verified-working (free to use) models on NVIDIA NIM.
-                if (provider.freeModelPrefix != null || provider.verifiedModels.isNotEmpty()) {
-                    FilterChip(
-                        selected = freeOnly,
-                        onClick = { freeOnly = !freeOnly },
-                        label = { Text(s.modelFreeOnly) },
-                    )
-                }
+                // "Free" = the gateway's free/ tier + the live sweep's free
+                // flag (allowFree catalogue on APInex; answering models on
+                // NIM are free to use).
+                FilterChip(
+                    selected = freeOnly,
+                    onClick = { freeOnly = !freeOnly },
+                    label = { Text(s.modelFreeOnly) },
+                )
                 val loaded = models
                 if (loaded != null) {
-                    val n = loaded.count { !freeOnly || provider.isFreeModel(it) }
+                    val n = loaded.count { !freeOnly || provider.isFreeByPrefix(it) || status[it]?.free == true }
                     Text("$n / ${loaded.size} · ${provider.label}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            // Sweep status row: progress + cancel while running, timestamp
+            // + recheck button when idle (T-ML26).
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (Graph.verify.isRunning(provider.id)) {
+                    CircularProgressIndicator(Modifier.width(18.dp), strokeWidth = 2.dp)
+                    val p = Graph.verify.progress(provider.id)
+                    Text(
+                        if (p != null) String.format(s.modelCheckingFmt, p.first, p.second) else s.modelChecking,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = { Graph.verify.cancel(provider.id) }) { Text(s.cancel) }
+                } else {
+                    val last = ModelStatus.lastCheckedAt(provider.id)
+                    if (last != null) {
+                        val stamp = java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.getDefault()).format(java.util.Date(last))
+                        Text(
+                            String.format(s.modelLastCheckedFmt, stamp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    val loaded = models
+                    if (loaded != null) {
+                        TextButton(onClick = { Graph.verify.ensure(provider, Graph.prefs.apiKey, loaded, current, force = true) }) {
+                            Text(s.modelRecheck)
+                        }
+                    }
                 }
             }
             when {
@@ -687,17 +737,26 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                     Text(s.modelFetching)
                 }
                 else -> LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
-                    // Working models on top (owner order T-ML20 #2): the
-                    // stable sort keeps the gateway's order within each group.
-                    val sorted = models!!.sortedWith(compareByDescending { provider.isWorkingModel(it) })
+                    // Live-verified models on top, never-checked next,
+                    // confirmed-dead last; stable within each group.
+                    val sorted = models!!.sortedWith(
+                        compareByDescending { m ->
+                            when (status[m]?.state) {
+                                ModelStatus.State.OK -> 2
+                                ModelStatus.State.UNKNOWN, null -> 1
+                                ModelStatus.State.DEAD -> 0
+                            }
+                        }
+                    )
                     val filtered = sorted.filter {
-                        (!freeOnly || provider.isFreeModel(it)) &&
+                        (!freeOnly || provider.isFreeByPrefix(it) || status[it]?.free == true) &&
                             it.contains(query, ignoreCase = true)
                     }
                     items(filtered) { m ->
                         ModelRow(
                             model = m,
-                            provider = provider,
+                            state = status[m]?.state ?: ModelStatus.State.UNKNOWN,
+                            free = provider.isFreeByPrefix(m) || status[m]?.free == true,
                             current = current,
                             onPick = { onPick(m) },
                         )
@@ -708,11 +767,10 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
     }
 }
 
-/** One model row: working dot (green/red), name, FREE badge, current check. */
+/** One model row: live dot (green/red/gray), name, FREE badge, current check. */
 @Composable
-private fun ModelRow(model: String, provider: id.codingsachet.mobile.api.Provider, current: String, onPick: () -> Unit) {
+private fun ModelRow(model: String, state: ModelStatus.State, free: Boolean, current: String, onPick: () -> Unit) {
     val s = LocalStrings.current
-    val working = provider.isWorkingModel(model)
     ListItem(
         modifier = Modifier.clickable(onClick = onPick),
         colors = if (model == current) {
@@ -725,7 +783,11 @@ private fun ModelRow(model: String, provider: id.codingsachet.mobile.api.Provide
                 Modifier
                     .size(10.dp)
                     .background(
-                        if (working) sachetSuccess() else MaterialTheme.colorScheme.error,
+                        when (state) {
+                            ModelStatus.State.OK -> sachetSuccess()
+                            ModelStatus.State.DEAD -> MaterialTheme.colorScheme.error
+                            ModelStatus.State.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                         CircleShape,
                     ),
             )
@@ -741,7 +803,7 @@ private fun ModelRow(model: String, provider: id.codingsachet.mobile.api.Provide
         },
         trailingContent = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (provider.isFreeModel(model)) {
+                if (free) {
                     Surface(
                         shape = RoundedCornerShape(6.dp),
                         color = MaterialTheme.colorScheme.tertiaryContainer,

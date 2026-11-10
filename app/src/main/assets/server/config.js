@@ -59,6 +59,12 @@ const providers = {
     quota: {
       subscriptionPath: '/subscription',
     },
+    // Live model-verification source (T-ML26): the PUBLIC catalogue on the
+    // website host (not the API host) carries per-model health + allowFree
+    // — one unauthenticated GET gives the actual state of the whole relay
+    // without spending a single chat token. Env override: test suite only.
+    publicCatalogUrl:
+      process.env.SACHET_APINEX_CATALOG_URL || 'https://apinex.bond/api/public/models',
   },
   nvidia: {
     label: 'NVIDIA NIM',
@@ -102,6 +108,11 @@ const config = {
   // the system DNS right after the server answers /health — without a
   // spacing floor that second round duplicates every warm-up log line.
   warmupMinIntervalMs: Number(process.env.SACHET_WARMUP_MIN_INTERVAL_MS || 15000),
+
+  // Live model-verification sweep (T-ML26): how long a probe waits for the
+  // model's FIRST SSE data chunk before calling it dead. Env override:
+  // test suite only (fast timeouts).
+  verifyFirstChunkMs: Number(process.env.SACHET_VERIFY_FIRST_CHUNK_MS || 15000),
 
   // Tool limits.
   bashTimeoutMs: Number(process.env.SACHET_BASH_TIMEOUT_MS || 120000),

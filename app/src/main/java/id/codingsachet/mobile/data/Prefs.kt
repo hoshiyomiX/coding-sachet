@@ -103,6 +103,16 @@ class Prefs(ctx: Context) {
         get() = sp.getString("lastSessionId", "") ?: ""
         set(v) = sp.edit().putString("lastSessionId", v).apply()
 
+    // ---- live model-verification results (T-ML26) ----
+
+    /** Persisted [id.codingsachet.mobile.api.ModelStatus] JSON per provider
+     *  (blank = never swept). Written by the ModelVerify coordinator. */
+    fun statusJson(providerId: String): String =
+        sp.getString("status.$providerId", "") ?: ""
+
+    fun setStatusJson(providerId: String, v: String) =
+        sp.edit().putString("status.$providerId", v).apply()
+
     companion object {
         const val DEFAULT_PORT = 8765
         const val DEFAULT_PROVIDER = "apinex"

@@ -17,28 +17,26 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 /**
- * The app's debug log dump (T-ML17 #2, widened in T-ML25 by owner order
- * "log terasa kurang berguna karena tidak selengkap logcat").
+ * The app's debug log dump (T-ML17 #2, widened in T-ML25, scoped in T-ML26
+ * by owner order "dump v2 filter Coding Sachet saja").
  *
- * v2 = as complete as logcat can be for this app:
+ * v3 = as complete as logcat can be for THIS app, and nothing else:
  *
- *     logcat -d -v threadtime,year
+ *     logcat -d -v threadtime,year --uid=<myUid>
  *
- *   * NO tag whitelist anymore — every line the UID is allowed to read is
- *     kept: the app's own `CS` lines (Logx), the agent-server stdout piped
- *     in by RuntimeController, plus chatty, System.err, art, libc variants
- *     and any native crash output that never used to match `-s CS`.
+ *   * Filtered to Coding Sachet's own UID: the app's `CS` lines (Logx), the
+ *     agent-server stdout piped in by RuntimeController, chatty, System.err,
+ *     art, libc variants and native-crash output — from the app process AND
+ *     its proot/node server children. Other apps' and the system's lines are
+ *     excluded by design.
  *   * `threadtime` adds PID and TID per line (old `-v time` had neither
  *     TID nor year) — the same format `adb logcat` shows.
  *   * A context header is prepended (app version, device, Android version,
  *     network + VPN state, server state) so a shared dump is diagnosable
  *     on its own, without asking the sender for device details.
- *   * Android's logd still limits an unprivileged reader to its OWN UID's
- *     lines. The header therefore carries the adb command that unlocks the
- *     FULL system logcat (all processes) when the owner wants it:
- *
- *     adb shell pm grant id.codingsachet.mobile android.permission.READ_LOGS
- *
+ *   * OEM safety net: when logcat rejects `--uid` (exit != 0, empty output)
+ *     the dump retries with `--pid`, then unfiltered — the header always
+ *     records which command actually produced the output.
  *   * Output is capped to the newest [DumpFormat.MAX_BYTES] (10 MB), head
  *     first — `logcat -d` is oldest-first, so recent context always wins.
  *
@@ -67,7 +65,7 @@ object LogcatDump {
      *  call from Dispatchers.IO. [serverState] is a short human label of
      *  the agent-server state to embed in the header. */
     fun dump(context: Context, serverState: String): Result {
-        val bytes = try {
+        val (bytes, command) = try {
             runLogcat()
         } catch (e: Exception) {
             Logx.e("rt", "dump logcat gagal", e)
@@ -77,7 +75,7 @@ object LogcatDump {
         val trimmed = start > 0
         val kept = if (trimmed) String(bytes, start, bytes.size - start, Charsets.UTF_8) else String(bytes, Charsets.UTF_8)
         val text = buildString {
-            append(buildHeader(context, serverState))
+            append(buildHeader(context, serverState, command))
             if (trimmed) {
                 appendLine("# [dipotong] logcat mentah melebihi ${DumpFormat.MAX_BYTES / (1024 * 1024)} MB — ")
                 appendLine("# hanya bagian TERBARU yang disimpan (logcat -d mencetak dari terlama).")
@@ -90,19 +88,23 @@ object LogcatDump {
         return Result(lines, file, null, trimmed)
     }
 
-    /** Context header so a shared dump diagnoses itself (T-ML25 #2). */
-    private fun buildHeader(context: Context, serverState: String): String {
+    /** Context header so a shared dump diagnoses itself (T-ML25 #2). The
+     *  `sumber` line records the command that ACTUALLY produced the output
+     *  (the uid→pid→unfiltered chain in [runLogcat] picks the first one
+     *  logcat accepts). */
+    private fun buildHeader(context: Context, serverState: String, command: String): String {
         val now = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS Z", Locale.US).format(Date())
         return buildString {
-            appendLine("==== Coding Sachet — dump log lengkap ====")
+            appendLine("==== Coding Sachet — dump log Coding Sachet ====")
             appendLine("waktu     : $now")
             appendLine("app       : ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})")
             appendLine("perangkat : ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
             appendLine("jaringan  : ${networkSummary(context)}")
             appendLine("server    : $serverState")
-            appendLine("sumber    : ${DumpFormat.COMMAND} — semua tag yang boleh dibaca UID aplikasi ini, tanpa filter tag")
-            appendLine("catatan   : log proses lain / sistem hanya ikut terbaca bila izin READ_LOGS diberikan lewat adb:")
-            appendLine("           adb shell pm grant ${context.packageName} android.permission.READ_LOGS")
+            appendLine("sumber    : $command — hanya baris milik UID aplikasi Coding Sachet")
+            appendLine("           (proses app + server proot/node), semua tag yang boleh dibaca")
+            appendLine("catatan   : log aplikasi lain / sistem TIDAK ikut (difilter demi fokus);")
+            appendLine("           logcat penuh semua proses tetap bisa diambil via adb dari PC.")
             appendLine("==== mulai logcat ====")
         }
     }
@@ -127,8 +129,34 @@ object LogcatDump {
         }.getOrDefault("tidak diketahui")
     }
 
-    private fun runLogcat(): ByteArray {
-        val args = DumpFormat.COMMAND.split(" ").drop(1)
+    /** One logcat run's outcome: raw bytes + the process exit status. */
+    private class OnceResult(val bytes: ByteArray, val exit: Long)
+
+    /** The uid→pid→unfiltered chain (T-ML26): try the uid-scoped command
+     *  first; when logcat REJECTS a flag it exits non-zero with empty
+     *  stdout long before the 15 s watchdog, which is exactly the signal
+     *  to try the next command. A watchdog kill (huge dump) or any real
+     *  output never triggers a fallback. Returns the bytes plus the
+     *  command that actually produced them (for the header). */
+    private fun runLogcat(): Pair<ByteArray, String> {
+        val uid = android.os.Process.myUid()
+        val pid = android.os.Process.myPid()
+        val chain = listOf(
+            DumpFormat.commandForUid(uid),
+            DumpFormat.commandForPid(pid),
+            DumpFormat.COMMAND_UNFILTERED,
+        )
+        var last = OnceResult(ByteArray(0), -1L)
+        for (cmd in chain) {
+            last = runOnce(cmd)
+            if (last.exit == 0L || last.bytes.isNotEmpty()) return Pair(last.bytes, cmd)
+            Logx.w("rt", "logcat menolak perintah (exit ${last.exit}) — coba fallback berikutnya")
+        }
+        return Pair(last.bytes, chain.last())
+    }
+
+    private fun runOnce(command: String): OnceResult {
+        val args = command.split(" ").drop(1)
         // Absolute path first: ProcessBuilder's PATH lookup is not reliable
         // for system binaries on every OEM ("Cannot run program logcat").
         val proc = try {
@@ -154,14 +182,15 @@ object LogcatDump {
             start()
         }
         // `logcat -d` dumps the buffer and exits; the join is only a
-        // watchdog (15 s — the unfiltered dump is bigger than v1's).
+        // watchdog (15 s — the dump can be bigger than v1's).
         reader.join(15_000)
         if (reader.isAlive) {
             proc.destroyForcibly()
             reader.join(1_000)
         }
-        runCatching { proc.waitFor(2, TimeUnit.SECONDS) }
-        synchronized(out) { return out.toByteArray() }
+        val exited = runCatching { proc.waitFor(2, TimeUnit.SECONDS) }.getOrDefault(false)
+        val exit = if (exited) runCatching { proc.exitValue().toLong() }.getOrDefault(-1L) else -1L
+        synchronized(out) { return OnceResult(out.toByteArray(), exit) }
     }
 
     private fun save(context: Context, text: String): File? {

@@ -28,9 +28,21 @@ const http = require('http');
  *              GET /v1/subscription (the ONE documented quota API):
  *              { mode, unlimited, tokenLimit, tokensUsed, tokensRemaining }
  *              Without it the endpoint answers 404 (quota unsupported).
+ * opts.catalogue: serve the APInex PUBLIC catalogue (site-style path
+ *              GET /api/public/models — NOT under /v1) as
+ *              [{id, health, allowFree}, …] for the live-verification
+ *              fast path (T-ML26). Without it the path answers 404.
+ * opts.byModel: per-model scripted chat behavior, keyed by the request's
+ *              model id — used by the live-verification tests (T-ML26):
+ *              { kind: 'sse' }        → one SSE data chunk, stream left open
+ *              { kind: 'json' }       → 200 JSON (gateway ignored stream:true)
+ *              { kind: 'error', status, message } → non-200
+ *              { kind: 'hang' }       → swallowed: never even headers
+ *              { kind: 'hangStream' } → 200 + event-stream headers, then
+ *                                       silence (no data chunk ever)
  *
  * Returns { server, port, requests, chatAuths, modelRequests, chatAttempts,
- *           modelAttempts, quotaRequests, close() };
+ *           modelAttempts, quotaRequests, catalogueRequests, close() };
  * `requests` collects parsed chat bodies, `chatAuths` their Authorization
  * headers, `modelRequests` the /v1/models hits, `chatAttempts`/`modelAttempts`
  * count every connection (including flaky-destroyed ones).
@@ -44,6 +56,7 @@ function startMockGateway(script, opts = {}) {
   let chatAttempts = 0;
   let modelAttempts = 0;
   let quotaRequests = 0;
+  let catalogueRequests = 0;
   let n = 0;
   const server = http.createServer((req, res) => {
     let body = '';
@@ -53,6 +66,20 @@ function startMockGateway(script, opts = {}) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Invalid token' } }));
       };
+
+      // APInex public catalogue (site-style path, not under /v1) — the
+      // live-verification fast path (T-ML26).
+      if (req.method === 'GET' && req.url === '/api/public/models') {
+        catalogueRequests++;
+        if (!opts.catalogue) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end('{}');
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ models: opts.catalogue, healthCheckedAt: 'test' }));
+        return;
+      }
 
       if (req.url === '/v1/models' && req.method === 'GET') {
         modelAttempts++;
@@ -117,6 +144,34 @@ function startMockGateway(script, opts = {}) {
         const parsed = JSON.parse(body);
         requests.push(parsed);
         chatAuths.push(req.headers.authorization);
+
+        // Per-model scripted behavior for the verification tests (T-ML26).
+        const scripted = opts.byModel && opts.byModel[parsed.model];
+        if (scripted) {
+          if (scripted.kind === 'hang') return; // swallowed: no headers ever
+          if (scripted.kind === 'hangStream') {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.flushHeaders(); // headers only — no data chunk ever
+            return;
+          }
+          if (scripted.kind === 'error') {
+            res.writeHead(scripted.status || 404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: scripted.message || 'not found' } }));
+            return;
+          }
+          if (scripted.kind === 'json') {
+            // Gateway ignored stream:true — a plain JSON 200 still proves
+            // the model is serving.
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'pong' }, finish_reason: 'stop' }] }));
+            return;
+          }
+          // 'sse': one data chunk, then leave the stream open — the sweep
+          // cancels the body right after the first chunk arrives.
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant', content: 'p' }, finish_reason: null }] })}\n\n`);
+          return;
+        }
 
         const reply = script[Math.min(n, script.length - 1)];
         n++;
@@ -183,6 +238,7 @@ function startMockGateway(script, opts = {}) {
         get chatAttempts() { return chatAttempts; },
         get modelAttempts() { return modelAttempts; },
         get quotaRequests() { return quotaRequests; },
+        get catalogueRequests() { return catalogueRequests; },
         close: () => new Promise((r) => server.close(r)),
       });
     });
