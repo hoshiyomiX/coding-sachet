@@ -832,3 +832,67 @@ test('chat: hung first connect heals on retry (cold VPN path) and streams normal
   assert.strictEqual(retries.length, 1, 'exactly one reconnect hint');
   assert.strictEqual(gw.chatAttempts, 2, 'first attempt hung, second answered');
 });
+
+// ---------- per-session project workdir (T-ML28: one project per folder) ----------
+
+test('chat: body.workdir pins the bash cwd to the project folder (auto-created)', async (t) => {
+  const gw = await startMockGateway([
+    { kind: 'tools', calls: [{ id: 'c1', name: 'bash', args: { command: 'pwd' } }] },
+    { kind: 'text', text: 'Sudah.' },
+  ]);
+  t.after(() => gw.close());
+
+  const config = useGateways({ apinex: gw });
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  const project = path.join(ROOT, 'root/work/proyek-alpha');
+  assert.ok(!fs.existsSync(project), 'precondition: folder proyek belum ada');
+
+  const events = await collectSse(
+    port, '/api/chat',
+    { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
+    { model: 'test-pro', messages: [{ role: 'user', content: 'pwd dong' }], workdir: project }
+  );
+  const toolend = events.find((e) => e.type === 'toolend');
+  assert.ok(toolend && toolend.ok);
+  // bash ran INSIDE the project folder (auto-created), not the default workdir
+  assert.ok(toolend.output.includes(project));
+  assert.ok(fs.existsSync(project), 'folder proyek dibuat otomatis');
+
+  // the model is told the session workdir in the bash tool description
+  const sent = gw.requests[0];
+  const bashTool = (sent.tools || []).find((tl) => tl.function && tl.function.name === 'bash');
+  assert.ok(bashTool, 'tool bash dikirim ke gateway');
+  assert.ok(bashTool.function.description.includes(project));
+});
+
+test('chat: workdir di luar sandbox → fallback diam ke workdir default', async (t) => {
+  const gw = await startMockGateway([
+    { kind: 'tools', calls: [{ id: 'c1', name: 'bash', args: { command: 'pwd' } }] },
+    { kind: 'text', text: 'OK.' },
+  ]);
+  t.after(() => gw.close());
+
+  const config = useGateways({ apinex: gw });
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  const events = await collectSse(
+    port, '/api/chat',
+    { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
+    { model: 'test-pro', messages: [{ role: 'user', content: 'pwd' }], workdir: '/etc' }
+  );
+  const toolend = events.find((e) => e.type === 'toolend');
+  assert.ok(toolend && toolend.ok);
+  assert.ok(toolend.output.includes(config.workdir));
+  assert.ok(!toolend.output.includes('/etc'));
+});

@@ -4,7 +4,7 @@
 // tool calls the model asks for.
 
 const { config, providerById } = require('./config');
-const { toolByName } = require('./tools');
+const { toolsFor, resolveWorkdir } = require('./tools');
 const { fetchWithRetry, fetchWithHeaderBudget, netErrorDetail } = require('./net');
 const { acquire, peekWaitMs, pauseFor, abortableSleep } = require('./ratelimit');
 const log = require('./log');
@@ -319,12 +319,19 @@ function toOpenAiMessages(messages) {
  * `messages` is the app-owned history in our wire format; the returned
  * list of new messages lets the app extend its persisted history.
  */
-async function runAgent({ apiKey, providerId, model, messages, options, signal, emit, systemPrompt }) {
+async function runAgent({ apiKey, providerId, model, messages, options, signal, emit, systemPrompt, workdir }) {
   const openai = toOpenAiMessages(messages);
   if (systemPrompt) openai.unshift({ role: 'system', content: systemPrompt });
 
-  const { tools } = require('./tools');
-  const openaiTools = tools.map((t) => ({
+  // Per-session project folder (T-ML28: "one project per folder"): the
+  // bash tool's cwd — and the workdir the model is told about — follow the
+  // session's project when the app pins one via the request body. Invalid
+  // or missing values keep the server default; a chat never fails over it.
+  const wd = resolveWorkdir(workdir);
+  if (wd) log.inf('agt', `workdir sesi: ${wd}`);
+  const runTools = toolsFor(wd || config.workdir);
+  const runToolByName = Object.fromEntries(runTools.map((t) => [t.name, t]));
+  const openaiTools = runTools.map((t) => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.parameters },
   }));
@@ -388,7 +395,7 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
       emit({ type: 'tool', id: call.id, name: call.name, args });
 
       let result;
-      const tool = toolByName[call.name];
+      const tool = runToolByName[call.name];
       const toolT0 = Date.now();
       if (!tool) {
         log.wrn('agt', `tool tidak dikenal: ${call.name}`);

@@ -34,6 +34,18 @@ function safeNewPath(p) {
   return safePath(dir) === null ? null : abs;
 }
 
+/** Validate + create a per-session workdir (T-ML28: one project per
+ *  folder). Returns the absolute path, or null when the value is absent,
+ *  outside the sandbox, or unwritable — the caller then keeps the default
+ *  workdir instead of failing the chat. */
+function resolveWorkdir(p) {
+  if (typeof p !== 'string' || !p.trim()) return null;
+  const abs = safeNewPath(p.trim());
+  if (abs === null) return null;
+  try { fs.mkdirSync(abs, { recursive: true }); } catch { return null; }
+  return abs;
+}
+
 // ---------- tool implementations ----------
 
 /** List a directory: names, sizes, types. Depth-first, bounded. */
@@ -124,16 +136,21 @@ function writeFile(filePath, content) {
  * until the kernel OOM-killed the server, exit 137). At close, any group
  * member still alive (background jobs, daemons) is also reaped: a tool
  * call is one-shot and must never leak processes into the next round. */
-function runBash(command, onOutput) {
+function runBash(command, onOutput, cwdOverride) {
   return new Promise((resolve) => {
     if (typeof command !== 'string' || command.length === 0 || command.length > 64 * 1024) {
       resolve({ ok: false, error: 'Invalid command' });
       return;
     }
-    fs.mkdirSync(config.workdir, { recursive: true });
+    // Per-session project folder (T-ML28): the caller may pin the cwd of
+    // this command to a validated project directory; anything invalid falls
+    // back to the server's default workdir — a chat never fails over it.
+    const cwd = (typeof cwdOverride === 'string' && safeNewPath(cwdOverride)) || config.workdir;
+    fs.mkdirSync(cwd, { recursive: true });
+    if (cwd !== config.workdir) log.dbg('tool', `workdir sesi: ${cwd}`);
     log.dbg('tool', `bash: ${command.slice(0, 100).replace(/\s+/g, ' ')}${command.length > 100 ? '…' : ''}`);
     const child = spawn('/bin/bash', ['-c', command], {
-      cwd: config.workdir,
+      cwd,
       detached: true, // new process group: child.pid == pgid of the whole tree
       env: {
         PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
@@ -221,75 +238,83 @@ function lockHint(output) {
 
 // ---------- tool registry exposed to the model ----------
 
-const tools = [
-  {
-    name: 'bash',
-    description: `Run a shell command inside the Ubuntu sandbox (workdir ${config.workdir}). Use it for git, grep, find, installing packages with apt, running builds and tests. Output is capped.`,
-    parameters: {
-      type: 'object',
-      properties: {
-        command: { type: 'string', description: 'The bash command to run' },
+/** Build the tool registry for a run (T-ML28). The bash tool's cwd — and
+ *  the workdir the model is told about — follow the session's project
+ *  folder when one was pinned, else the server default. */
+function toolsFor(workdir) {
+  const wd = (typeof workdir === 'string' && safeNewPath(workdir)) || config.workdir;
+  return [
+    {
+      name: 'bash',
+      description: `Run a shell command inside the Ubuntu sandbox (workdir ${wd}). Use it for git, grep, find, installing packages with apt, running builds and tests. Output is capped.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'The bash command to run' },
+        },
+        required: ['command'],
       },
-      required: ['command'],
-    },
-    run: async (args) => {
-      const r = await runBash(args.command);
-      if (r.error) return r;
-      const head = `exit=${r.code}${r.signal ? ` signal=${r.signal}` : ''}${r.timedOut ? ' (timeout)' : ''}`;
-      return { ok: r.ok, output: lockHint(`${head}\n${r.output || '(no output)'}`) };
-    },
-  },
-  {
-    name: 'read_file',
-    description: 'Read a text file (source code, config, notes). Returns the content, possibly truncated for large files.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Absolute path of the file' },
+      run: async (args) => {
+        const r = await runBash(args.command, undefined, wd);
+        if (r.error) return r;
+        const head = `exit=${r.code}${r.signal ? ` signal=${r.signal}` : ''}${r.timedOut ? ' (timeout)' : ''}`;
+        return { ok: r.ok, output: lockHint(`${head}\n${r.output || '(no output)'}`) };
       },
-      required: ['path'],
     },
-    run: async (args) => {
-      const r = readFile(args.path);
-      if (!r.ok) return r;
-      return { ok: true, output: r.content, path: r.path, size: r.size, truncated: r.truncated, binary: r.binary };
-    },
-  },
-  {
-    name: 'write_file',
-    description: 'Create or overwrite a text file. Parent directories are created automatically.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Absolute path of the file' },
-        content: { type: 'string', description: 'Full file content' },
+    {
+      name: 'read_file',
+      description: 'Read a text file (source code, config, notes). Returns the content, possibly truncated for large files.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path of the file' },
+        },
+        required: ['path'],
       },
-      required: ['path', 'content'],
-    },
-    run: async (args) => writeFile(args.path, args.content),
-  },
-  {
-    name: 'list_dir',
-    description: 'List a directory tree (bounded depth). Use it to explore the project before editing.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Absolute path of the directory' },
-        depth: { type: 'number', description: 'Depth to walk (default 2, max 4)' },
+      run: async (args) => {
+        const r = readFile(args.path);
+        if (!r.ok) return r;
+        return { ok: true, output: r.content, path: r.path, size: r.size, truncated: r.truncated, binary: r.binary };
       },
-      required: ['path'],
     },
-    run: async (args) => {
-      const r = listDir(args.path, Math.min(Number(args.depth) || 2, 4));
-      if (!r.ok) return r;
-      return {
-        ok: true,
-        output: r.entries.map((e) => `${e.dir ? 'd' : '-'} ${String(e.size).padStart(9)}  ${e.name}`).join('\n') || '(empty)',
-      };
+    {
+      name: 'write_file',
+      description: 'Create or overwrite a text file. Parent directories are created automatically.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path of the file' },
+          content: { type: 'string', description: 'Full file content' },
+        },
+        required: ['path', 'content'],
+      },
+      run: async (args) => writeFile(args.path, args.content),
     },
-  },
-];
+    {
+      name: 'list_dir',
+      description: 'List a directory tree (bounded depth). Use it to explore the project before editing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path of the directory' },
+          depth: { type: 'number', description: 'Depth to walk (default 2, max 4)' },
+        },
+        required: ['path'],
+      },
+      run: async (args) => {
+        const r = listDir(args.path, Math.min(Number(args.depth) || 2, 4));
+        if (!r.ok) return r;
+        return {
+          ok: true,
+          output: r.entries.map((e) => `${e.dir ? 'd' : '-'} ${String(e.size).padStart(9)}  ${e.name}`).join('\n') || '(empty)',
+        };
+      },
+    },
+  ];
+}
+
+const tools = toolsFor(config.workdir);
 
 const toolByName = Object.fromEntries(tools.map((t) => [t.name, t]));
 
-module.exports = { tools, toolByName, safePath, safeNewPath, listDir, readFile, writeFile, runBash, lockHint };
+module.exports = { tools, toolsFor, toolByName, safePath, safeNewPath, resolveWorkdir, listDir, readFile, writeFile, runBash, lockHint };

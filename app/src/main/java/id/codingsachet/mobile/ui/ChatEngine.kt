@@ -131,12 +131,37 @@ class ChatEngine(val session: Session) {
             provider = Graph.prefs.active,
             model = model,
             messages = session.wireHistory(),
-            systemPrompt = SYSTEM_PROMPT,
+            systemPrompt = promptFor(),
             options = requestOptions(),
+            workdir = sessionWorkdir(),
             onEvent = { ev -> scope.launch { handle(ev) } },
             onError = { msg, kind -> scope.launch { onStreamError(msg, kind) } },
             onClosed = { scope.launch { finish() } },
         )
+    }
+
+    /** Per-session project folder (T-ML28 #4): <server workdir>/<sanitized
+     *  project name> — the agent pins the bash tool's cwd there and creates
+     *  the folder when absent. Null = legacy session on the default workdir.
+     *  The base comes from the /health cache; when unknown (server never
+     *  answered yet) the documented default is assumed — an invalid guess is
+     *  dropped server-side and the chat simply runs on the default workdir. */
+    private fun sessionWorkdir(): String? {
+        val project = session.project ?: return null
+        val base = Graph.prefs.workdirHint.ifBlank { "/sdcard/coding-sachet" }
+        return id.codingsachet.mobile.ui.projectDir(base, project)
+    }
+
+    /** The system prompt for this turn: the active scheme's persona
+     *  (Settings → skema siap pakai, T-ML28 #1) or the default coding
+     *  agent, plus the project-folder line for project sessions. Sent per
+     *  request — swapping schemes never needs a server reset. */
+    private fun promptFor(): String {
+        val schemePrompt = Graph.prefs.schemePrompt.takeIf { it.isNotBlank() }
+        val base = schemePrompt ?: SYSTEM_PROMPT
+        val project = session.project ?: return base
+        return base + "\n\nFolder proyek percakapan ini: ${sessionWorkdir()} — " +
+            "satu proyek per folder; kerjakan semua file proyek ini di dalam folder itu."
     }
 
     /** Konfigurasi JSON (Settings): structured options + the extra object

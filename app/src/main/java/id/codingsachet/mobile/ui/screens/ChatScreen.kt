@@ -3,6 +3,8 @@ package id.codingsachet.mobile.ui.screens
 import androidx.compose.foundation.background
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
@@ -29,9 +32,13 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -52,6 +59,8 @@ import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -62,6 +71,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -80,11 +90,15 @@ import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
 import id.codingsachet.mobile.runtime.RuntimeState
 import id.codingsachet.mobile.ui.ChatEngine
+import id.codingsachet.mobile.ui.FolderIcon
 import id.codingsachet.mobile.ui.LiveTurn
 import id.codingsachet.mobile.ui.LocalStrings
+import id.codingsachet.mobile.ui.ProjectNames
 import id.codingsachet.mobile.ui.StopIcon
 import id.codingsachet.mobile.ui.TextFileIcon
 import id.codingsachet.mobile.ui.ToolCardUi
+import id.codingsachet.mobile.ui.formatTokenCount
+import id.codingsachet.mobile.ui.projectDir
 import id.codingsachet.mobile.ui.components.Markdownish
 import id.codingsachet.mobile.ui.components.ToolCard
 import id.codingsachet.mobile.ui.sachetSuccess
@@ -92,6 +106,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 private val PrettyJson = Json { prettyPrint = true }
 
@@ -122,6 +142,15 @@ fun ChatScreen(
     var sessionsVersion by remember { mutableIntStateOf(0) }
     val nullLive = remember { MutableStateFlow<LiveTurn?>(null) }
 
+    // Two-tab chat session (T-ML28 #3): 0 = Prompt (chat), 1 = Project tree.
+    var tab by remember { mutableIntStateOf(0) }
+    // New-chat popup (T-ML28 #4): every new session names its project —
+    // one project per folder in the agent's default path.
+    var showNewProject by remember { mutableStateOf(false) }
+    var pendingSend by remember { mutableStateOf(false) }
+    // Bumped after a finished turn so the project tree reloads new files.
+    var treeVersion by remember { mutableIntStateOf(0) }
+
     // One engine per session, kept for the lifetime of the screen so a
     // running stream survives switching back and forth between chats.
     val engines = remember { HashMap<String, ChatEngine>() }
@@ -150,7 +179,7 @@ fun ChatScreen(
             )
         }
     }
-    LaunchedEffect(engine) { engine?.onTurnFinished = { refreshQuota() } }
+    LaunchedEffect(engine) { engine?.onTurnFinished = { refreshQuota(); treeVersion++ } }
     LaunchedEffect(Unit) { refreshQuota() }
     LaunchedEffect(runtimeState) { if (runtimeState is RuntimeState.Running) refreshQuota() }
 
@@ -169,8 +198,8 @@ fun ChatScreen(
         }
     }
 
-    fun newChat(): Session {
-        val ns = Graph.chats.create(model)
+    fun newChat(project: String? = null): Session {
+        val ns = Graph.chats.create(model, project)
         Graph.chats.reload()
         sessionsVersion++
         current = ns
@@ -178,11 +207,33 @@ fun ChatScreen(
         return ns
     }
 
+    /** Create a session (with or without a project) and — when the send
+     *  button triggered the popup — deliver the buffered message. */
+    fun createSessionWith(project: String?) {
+        val ns = newChat(project)
+        // Best-effort folder creation right away (idempotent); the agent
+        // server creates it again on the first send either way.
+        ns.project?.let { p ->
+            val base = Graph.prefs.workdirHint
+            if (base.isNotBlank()) {
+                val dir = projectDir(base, p)
+                scope.launch { runCatching { Graph.api.fsAction("mkdir", dir) } }
+            }
+        }
+        if (pendingSend) {
+            pendingSend = false
+            if (input.isNotBlank()) {
+                val e = engines.getOrPut(ns.id) { ChatEngine(ns) }
+                if (e.send(input, model)) input = ""
+            }
+        }
+    }
+
     ModalNavigationDrawer(
         drawerState = drawer,
         drawerContent = {
             ModalDrawerSheet {
-                Column(Modifier.padding(vertical = 12.dp)) {
+                Column(Modifier.fillMaxHeight().padding(vertical = 12.dp)) {
                     // Standard M3 drawer header: app identity.
                     Column(
                         Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp),
@@ -201,7 +252,7 @@ fun ChatScreen(
                         selected = false,
                         onClick = {
                             scope.launch { drawer.close() }
-                            newChat()
+                            showNewProject = true
                         },
                         modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                     )
@@ -214,7 +265,7 @@ fun ChatScreen(
                         modifier = Modifier.padding(start = 28.dp, top = 12.dp, bottom = 4.dp),
                     )
                     val sessions = remember(sessionsVersion) { Graph.chats.sessions }
-                    LazyColumn {
+                    LazyColumn(Modifier.weight(1f)) {
                         items(sessions, key = { it.id }) { sess ->
                             NavigationDrawerItem(
                                 label = {
@@ -227,9 +278,12 @@ fun ChatScreen(
                                         )
                                         Text(
                                             java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.getDefault())
-                                                .format(java.util.Date(sess.created)),
+                                                .format(java.util.Date(sess.created))
+                                                + (sess.project?.let { "  ·  $it" } ?: ""),
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
                                         )
                                     }
                                 },
@@ -266,60 +320,88 @@ fun ChatScreen(
                             )
                         }
                     }
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    // Top-bar buttons relocated here (T-ML28 #5): File and
+                    // Settings stay reachable from the drawer.
+                    NavigationDrawerItem(
+                        label = { Text(s.filesTitle) },
+                        icon = { Icon(TextFileIcon, contentDescription = s.filesTitle) },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawer.close() }
+                            onOpenFiles()
+                        },
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                    )
+                    NavigationDrawerItem(
+                        label = { Text(s.settingsTitle) },
+                        icon = { Icon(Icons.Filled.Settings, contentDescription = s.settingsTitle) },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawer.close() }
+                            onOpenSettings()
+                        },
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                    )
                 }
             }
         },
     ) {
         Scaffold(
             topBar = {
-                TopAppBar(
-                    navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawer.open() } }) {
-                            Icon(Icons.Filled.Menu, contentDescription = s.sessionsTitle)
-                        }
-                    },
-                    // The title block is the model selector: tapping it opens
-                    // the picker (standard chat-app top-center switcher).
-                    title = {
-                        Column(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable { showModels = true }
-                                .padding(vertical = 2.dp),
-                        ) {
-                            Text(
-                                current?.title?.ifBlank { s.chatNew } ?: s.appTagline,
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    TopAppBar(
+                        navigationIcon = {
+                            IconButton(onClick = { scope.launch { drawer.open() } }) {
+                                Icon(Icons.Filled.Menu, contentDescription = s.sessionsTitle)
+                            }
+                        },
+                        // The title block is the model selector: tapping it opens
+                        // the picker (standard chat-app top-center switcher).
+                        // Top-bar actions (File/Settings) and the runtime status
+                        // dot were removed by owner order T-ML28 #5 — the screens
+                        // live in the drawer, the status in Settings.
+                        title = {
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { showModels = true }
+                                    .padding(vertical = 2.dp),
+                            ) {
                                 Text(
-                                    model.ifBlank { s.selectModel },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
+                                    current?.title?.ifBlank { s.chatNew } ?: s.appTagline,
+                                    style = MaterialTheme.typography.titleMedium,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false),
                                 )
-                                Icon(
-                                    Icons.Filled.ArrowDropDown,
-                                    contentDescription = s.selectModel,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                RuntimeStatus(runtimeState)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        model.ifBlank { s.selectModel },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                    )
+                                    Icon(
+                                        Icons.Filled.ArrowDropDown,
+                                        contentDescription = s.selectModel,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
                             }
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = onOpenFiles) { Icon(TextFileIcon, contentDescription = s.filesTitle) }
-                        IconButton(onClick = onOpenSettings) { Icon(Icons.Filled.Settings, contentDescription = s.settingsTitle) }
-                    },
-                )
+                        },
+                    )
+                    // Two tabs (T-ML28 #3): the chat and the project's file tree.
+                    TabRow(selectedTabIndex = tab) {
+                        Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text(s.tabPrompt) })
+                        Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text(s.tabProjectTree) })
+                    }
+                }
             },
             bottomBar = {
+                if (tab == 0) {
                 Column {
                     // ---------- sisa token APInex (di atas kolom chat, kanan) ----------
                     if (Graph.prefs.provider == "apinex" && Graph.prefs.apiKey.isNotBlank()) {
@@ -368,8 +450,15 @@ fun ChatScreen(
                             } else {
                                 FilledIconButton(
                                     onClick = {
-                                        if (current == null) newChat()
-                                        val target = current ?: return@FilledIconButton
+                                        if (current == null) {
+                                            // New session → name its project first
+                                            // (T-ML28 #4); the typed text survives
+                                            // in the field and is sent on confirm.
+                                            pendingSend = true
+                                            showNewProject = true
+                                            return@FilledIconButton
+                                        }
+                                        val target = current
                                         val e = engines.getOrPut(target.id) { ChatEngine(target) }
                                         // Keep the typed text when the turn cannot
                                         // start (e.g. still busy) — it is not lost.
@@ -384,11 +473,20 @@ fun ChatScreen(
                         }
                     }
                 }
+                }
             },
         ) { padding ->
-            // ---------- messages ----------
+            // ---------- messages / project tree (two tabs, T-ML28 #3) ----------
             Box(Modifier.fillMaxSize().padding(padding)) {
-                if (msgs.isEmpty() && live == null) {
+                if (tab == 1) {
+                    ProjectTreePanel(
+                        rootPath = current?.project?.let { p ->
+                            projectDir(Graph.prefs.workdirHint.ifBlank { "/sdcard/coding-sachet" }, p)
+                        } ?: "",
+                        isProject = current?.project != null,
+                        version = treeVersion,
+                    )
+                } else if (msgs.isEmpty() && live == null) {
                     Column(
                         Modifier.fillMaxSize().padding(24.dp),
                         verticalArrangement = Arrangement.Center,
@@ -428,27 +526,20 @@ fun ChatScreen(
             onDismiss = { showModels = false },
         )
     }
-}
 
-/** Runtime status as a compact status dot + label (top bar supporting line). */
-@Composable
-private fun RuntimeStatus(state: RuntimeState) {
-    val s = LocalStrings.current
-    val label = when (state) {
-        is RuntimeState.Running -> s.runtimeRunning
-        is RuntimeState.Starting -> s.runtimeStarting
-        is RuntimeState.Crashed -> s.runtimeCrashed
-        else -> s.runtimeStopped
-    }
-    val color = when (state) {
-        is RuntimeState.Running -> sachetSuccess()
-        is RuntimeState.Crashed -> MaterialTheme.colorScheme.error
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(8.dp).background(color, CircleShape))
-        Spacer(Modifier.width(4.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+    // New-chat popup (T-ML28 #4): every new session names its project —
+    // one project per folder in the agent's default path.
+    if (showNewProject) {
+        NewProjectDialog(
+            onConfirm = { name ->
+                showNewProject = false
+                createSessionWith(name)
+            },
+            onDismiss = {
+                showNewProject = false
+                pendingSend = false
+            },
+        )
     }
 }
 
@@ -460,17 +551,9 @@ private sealed class QuotaState {
     data class Failed(val message: String) : QuotaState()
 }
 
-/** Compact Indonesian token counts: 19300000 → "19,3 jt", 45000 → "45,0 rb". */
-private fun formatTokens(tokens: Long): String {
-    val loc = java.util.Locale("id", "ID")
-    return when {
-        tokens >= 1_000_000L -> String.format(loc, "%.1f jt", tokens / 1e6)
-        tokens >= 1_000L -> String.format(loc, "%.1f rb", tokens / 1e3)
-        else -> tokens.toString()
-    }
-}
-
-/** "Sisa token" indicator above the chat composer, right-aligned. */
+/** "Sisa token" indicator above the chat composer, right-aligned. The
+ *  count is the ACTUAL number (T-ML28 #2: formatTokenCount, id-ID
+ *  grouping — 19300000 → "19.300.000"), never an abbreviation. */
 @Composable
 private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
     val s = LocalStrings.current
@@ -479,7 +562,7 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
         QuotaState.Loading -> "…"
         is QuotaState.Ok -> when {
             state.unlimited -> "∞"
-            state.tokens != null -> "±${formatTokens(state.tokens)}"
+            state.tokens != null -> formatTokenCount(state.tokens)
             else -> "?"
         }
         is QuotaState.Failed -> "—"
@@ -838,4 +921,308 @@ private fun ModelRow(model: String, state: ModelStatus.State, free: Boolean, cur
             }
         },
     )
+}
+
+// ---------- new-project popup + project tree (T-ML28 #3/#4) ----------
+
+/** One node of the project tree (lazy: children load on first expand). */
+private data class TreeEntry(
+    val name: String,
+    val path: String,
+    val dir: Boolean,
+    val size: Long,
+    val symlink: Boolean,
+)
+
+/** Popup shown on every new chat session: name the project — one project
+ *  per folder inside the agent's default path. */
+@Composable
+private fun NewProjectDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+    val s = LocalStrings.current
+    var name by remember { mutableStateOf("") }
+    val folder = Graph.prefs.workdirHint.ifBlank { "/sdcard/coding-sachet" }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(s.newProjectTitle) },
+        text = {
+            Column {
+                Text(s.newProjectHint, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text(s.newProjectName) },
+                    singleLine = true,
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "${s.newProjectFolder}: $folder/" +
+                        (if (name.isBlank()) "…" else ProjectNames.sanitize(name)),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(name.trim()) }, enabled = name.isNotBlank()) {
+                Text(s.newProjectCreate)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(s.cancel) } },
+    )
+}
+
+/** Read-only file preview for the project tree (editing stays in File tab). */
+@Composable
+private fun TreeFileViewer(path: String, onClose: () -> Unit) {
+    val s = LocalStrings.current
+    var content by remember { mutableStateOf<String?>(null) }
+    var binary by remember { mutableStateOf(false) }
+    var truncated by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(path) {
+        Graph.api.fsFile(path)
+            .onSuccess { o: JsonObject ->
+                binary = o["binary"]?.jsonPrimitive?.booleanOrNull ?: false
+                truncated = o["truncated"]?.jsonPrimitive?.booleanOrNull ?: false
+                content = o["content"]?.jsonPrimitive?.contentOrNull ?: ""
+            }
+            .onFailure { error = it.message }
+    }
+
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(path.substringAfterLast('/'), style = MaterialTheme.typography.titleSmall) },
+        text = {
+            Column {
+                Text(path, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+                Spacer(Modifier.height(8.dp))
+                when {
+                    error != null -> Text(s.fileLoadError + ": " + error, color = MaterialTheme.colorScheme.error)
+                    content == null -> CircularProgressIndicator()
+                    binary -> Text(s.fileBinary)
+                    else -> {
+                        if (truncated) {
+                            Text(s.fileTooLarge, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                        ) {
+                            Text(
+                                content ?: "",
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(320.dp)
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(8.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text(s.cancel) } },
+    )
+}
+
+/** The "Project tree" tab: lazily-expanded folder tree of the session's
+ *  project folder (or the main workdir for legacy project-less sessions).
+ *  [version] bumps after every finished turn so freshly written files show
+ *  up without a manual refresh. */
+@Composable
+private fun ProjectTreePanel(rootPath: String, isProject: Boolean, version: Int) {
+    val s = LocalStrings.current
+    val scope = rememberCoroutineScope()
+
+    var resolvedRoot by remember { mutableStateOf(rootPath) }
+    var roots by remember { mutableStateOf<List<TreeEntry>?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val expanded = remember(rootPath) { mutableStateMapOf<String, Boolean>() }
+    val children = remember(rootPath) { mutableStateMapOf<String, List<TreeEntry>?>() }
+    var viewer by remember { mutableStateOf<String?>(null) }
+
+    fun parseEntries(obj: JsonObject): List<TreeEntry> {
+        val base = obj["path"]?.jsonPrimitive?.contentOrNull ?: rootPath
+        return (obj["entries"]?.jsonArray ?: kotlinx.serialization.json.JsonArray(emptyList()))
+            .mapNotNull { el ->
+                val o = el as? JsonObject ?: return@mapNotNull null
+                val name = o["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                TreeEntry(
+                    name = name,
+                    path = if (base == "/") "/$name" else "$base/$name",
+                    dir = o["dir"]?.jsonPrimitive?.booleanOrNull ?: false,
+                    size = o["size"]?.jsonPrimitive?.longOrNull ?: 0L,
+                    symlink = o["symlink"]?.jsonPrimitive?.booleanOrNull ?: false,
+                )
+            }
+            .sortedWith(compareByDescending<TreeEntry> { it.dir }.thenBy { it.name.lowercase() })
+    }
+
+    fun loadChildren(dir: String) {
+        children[dir] = null // loading marker
+        scope.launch {
+            Graph.api.fsList(dir)
+                .onSuccess { children[dir] = parseEntries(it) }
+                .onFailure { children[dir] = emptyList() }
+        }
+    }
+
+    fun loadRoot() {
+        error = null
+        roots = null
+        scope.launch {
+            // A project folder may not exist yet (session created, nothing
+            // sent): create it first — idempotent, the agent server does the
+            // same on every send.
+            if (isProject && rootPath.isNotBlank()) {
+                Graph.api.fsAction("mkdir", rootPath)
+            }
+            Graph.api.fsList(rootPath)
+                .onSuccess { obj ->
+                    (obj["path"]?.jsonPrimitive?.contentOrNull)?.takeIf { it.isNotBlank() }?.let { resolvedRoot = it }
+                    roots = parseEntries(obj)
+                }
+                .onFailure { error = it.message }
+        }
+    }
+
+    LaunchedEffect(rootPath, version) { loadRoot() }
+
+    fun toggle(e: TreeEntry) {
+        if (!e.dir) {
+            viewer = e.path
+            return
+        }
+        val open = expanded[e.path] == true
+        expanded[e.path] = !open
+        if (!open && !children.containsKey(e.path)) loadChildren(e.path)
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        // Header: resolved root path + refresh.
+        Surface(tonalElevation = 1.dp) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        resolvedRoot.ifBlank { s.treeNoProject },
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (!isProject) {
+                        Text(
+                            s.treeNoProject,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                IconButton(onClick = { loadRoot() }) {
+                    Icon(Icons.Filled.Refresh, contentDescription = s.treeRefresh)
+                }
+            }
+        }
+        when {
+            error != null -> Column(Modifier.padding(16.dp)) {
+                Text(s.treeLoadError, color = MaterialTheme.colorScheme.error)
+                Text(error ?: "", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { loadRoot() }) { Text(s.retry) }
+            }
+            roots == null -> Row(
+                Modifier.fillMaxWidth().padding(20.dp),
+                horizontalArrangement = Arrangement.Center,
+            ) { CircularProgressIndicator() }
+            roots!!.isEmpty() -> Text(
+                s.treeEmpty,
+                Modifier.fillMaxWidth().padding(24.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            else -> {
+                val visible = buildList {
+                    fun walk(list: List<TreeEntry>, depth: Int) {
+                        for (e in list) {
+                            add(e to depth)
+                            if (e.dir && expanded[e.path] == true) {
+                                children[e.path]?.let { walk(it, depth + 1) }
+                            }
+                        }
+                    }
+                    walk(roots!!, 0)
+                }
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                ) {
+                    items(visible, key = { it.first.path }) { (e, depth) ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { toggle(e) }
+                                .padding(
+                                    start = (12 + depth * 20).dp,
+                                    end = 12.dp,
+                                    top = 8.dp,
+                                    bottom = 8.dp,
+                                ),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (e.dir) {
+                                Icon(
+                                    if (expanded[e.path] == true) Icons.Filled.KeyboardArrowDown
+                                    else Icons.Filled.KeyboardArrowRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            } else {
+                                Spacer(Modifier.width(18.dp))
+                            }
+                            Icon(
+                                if (e.dir) FolderIcon else TextFileIcon,
+                                contentDescription = null,
+                                tint = if (e.dir) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                e.name + if (e.symlink) " →" else "",
+                                Modifier.weight(1f),
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (!e.dir) {
+                                Text(
+                                    treeFileSize(e.size),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    viewer?.let { vp ->
+        TreeFileViewer(path = vp, onClose = { viewer = null })
+    }
+}
+
+private fun treeFileSize(n: Long): String = when {
+    n < 1024 -> "$n B"
+    n < 1024 * 1024 -> "%.1f KB".format(n / 1024.0)
+    else -> "%.1f MB".format(n / (1024.0 * 1024.0))
 }

@@ -97,6 +97,27 @@ class Prefs(ctx: Context) {
         get() = sp.getString("requestOptionsExtra", "") ?: ""
         set(v) = sp.edit().putString("requestOptionsExtra", v).apply()
 
+    /** Id of the active ready-made scheme (T-ML28: Schemes.ALL — "coding"
+     *  is the default and means the plain coding agent, no overrides). */
+    var schemeId: String
+        get() = sp.getString("schemeId", "coding") ?: "coding"
+        set(v) = sp.edit().putString("schemeId", v).apply()
+
+    /** System prompt pinned by the active scheme (blank = the default
+     *  coding-agent prompt). Sent per request — swapping never needs a
+     *  server reset. */
+    var schemePrompt: String
+        get() = sp.getString("schemePrompt", "") ?: ""
+        set(v) = sp.edit().putString("schemePrompt", v).apply()
+
+    /** Last workdir the agent server reported via /health
+     *  (/sdcard/coding-sachet, or /root/work when shared storage is
+     *  unavailable). Cached by RuntimeController so the project-folder
+     *  path can be built without a round trip. */
+    var workdirHint: String
+        get() = sp.getString("workdirHint", "") ?: ""
+        set(v) = sp.edit().putString("workdirHint", v).apply()
+
     /** Id of the chat session the user had open last. Restored on launch so
      *  closing the app (or a process death) never loses the current chat. */
     var lastSessionId: String

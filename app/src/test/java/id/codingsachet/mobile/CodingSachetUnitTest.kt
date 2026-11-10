@@ -8,13 +8,18 @@ import id.codingsachet.mobile.data.ToolCall
 import id.codingsachet.mobile.runtime.DumpFormat
 import id.codingsachet.mobile.ui.EnStrings
 import id.codingsachet.mobile.ui.IdStrings
+import id.codingsachet.mobile.ui.ProjectNames
 import id.codingsachet.mobile.ui.SachetStrings
+import id.codingsachet.mobile.ui.Schemes
+import id.codingsachet.mobile.ui.formatTokenCount
+import id.codingsachet.mobile.ui.projectDir
 import id.codingsachet.mobile.ui.stringsFor
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -281,5 +286,85 @@ class CodingSachetUnitTest {
         assertTrue("ekor harus <= batas", kept.toByteArray().size <= 100)
         assertTrue("harus mulai di awal baris", kept.startsWith("line-"))
         assertTrue(kept.endsWith("\n"))
+    }
+
+    // ---------- T-ML28: scheme templates, project folders, actual token count ----------
+
+    @Test
+    fun schemeTemplatesSurviveServerSanitization() {
+        // Every ready-made template must pass the agent server's
+        // sanitizeOptions unchanged: no reserved keys, values in range,
+        // within the 4096-char options budget.
+        val reserved = setOf("model", "messages", "stream", "tools", "tool_choice", "n")
+        val efforts = setOf("minimal", "low", "medium", "high")
+        val json = Json { ignoreUnknownKeys = true }
+        Schemes.ALL.forEach { sc ->
+            assertTrue("skema ${sc.id} tak punya id unik", Schemes.ALL.count { it.id == sc.id } == 1)
+            assertTrue("skema ${sc.id}: label ID/EN harus terisi", sc.labelId.isNotBlank() && sc.labelEn.isNotBlank())
+            if (sc.optionsJson.isEmpty()) return@forEach
+            assertTrue("skema ${sc.id}: options > 4096 karakter", sc.optionsJson.length <= 4096)
+            val o = json.parseToJsonElement(sc.optionsJson) as JsonObject
+            assertTrue("skema ${sc.id}: options kosong padahal non-blank", o.isNotEmpty())
+            o.forEach { (k, v) ->
+                assertFalse("skema ${sc.id}: kunci reserved $k", k in reserved)
+                val p = v as? kotlinx.serialization.json.JsonPrimitive
+                    ?: throw AssertionError("skema ${sc.id}: nilai $k bukan primitif")
+                when (k) {
+                    "temperature" -> assertTrue("skema ${sc.id}: temperature di luar 0..2", p.content.toDouble() in 0.0..2.0)
+                    "top_p" -> assertTrue("skema ${sc.id}: top_p di luar 0..1", p.content.toDouble() in 0.0..1.0)
+                    "presence_penalty", "frequency_penalty" ->
+                        assertTrue("skema ${sc.id}: $k di luar -2..2", p.content.toDouble() in -2.0..2.0)
+                    "reasoning_effort" -> assertTrue("skema ${sc.id}: effort tak dikenal", p.content in efforts)
+                    else -> throw AssertionError("skema ${sc.id}: kunci tak dikenal $k")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun codingSchemeIsTheUntouchedDefault() {
+        val coding = Schemes.byId("coding")!!
+        assertEquals("", coding.optionsJson)   // gateway defaults
+        assertNull(coding.systemPrompt)        // default coding-agent prompt
+        assertEquals("", Schemes.storedPrompt(coding))
+        assertEquals("coding", Schemes.DEFAULT_ID)
+        // Every other scheme pins a persona + at least one option.
+        Schemes.ALL.filter { it.id != "coding" }.forEach {
+            assertFalse("skema ${it.id} tanpa persona", it.systemPrompt.isNullOrBlank())
+            assertTrue("skema ${it.id} tanpa opsi", it.optionsJson.isNotBlank())
+        }
+    }
+
+    @Test
+    fun projectNamesSanitizeToFolderSafeSegments() {
+        assertEquals("My-App-2", ProjectNames.sanitize("My App 2!"))
+        assertEquals("etc-passwd", ProjectNames.sanitize("../etc/passwd"))
+        assertEquals("proyek-keren", ProjectNames.sanitize("  proyek   keren  "))
+        assertEquals(ProjectNames.FALLBACK, ProjectNames.sanitize("!!!???"))
+        assertEquals(ProjectNames.FALLBACK, ProjectNames.sanitize("   "))
+        assertEquals(64, ProjectNames.sanitize("a".repeat(100)).length)
+        assertEquals("a.b-c-d", ProjectNames.sanitize("a.b c/d"))
+        assertFalse(
+            "karakter non-aman lolos",
+            Regex("[^A-Za-z0-9._-]").containsMatchIn(ProjectNames.sanitize("h\u00e9llo w\u00f6rld")),
+        )
+    }
+
+    @Test
+    fun projectDirJoinsBaseAndSanitizedName() {
+        assertEquals("/sdcard/coding-sachet/My-App", projectDir("/sdcard/coding-sachet", "My App"))
+        assertEquals("/sdcard/coding-sachet/x", projectDir("/sdcard/coding-sachet/", "x"))
+        // One project per folder: different names never share a folder.
+        assertNotEquals(projectDir("/b", "satu"), projectDir("/b", "dua"))
+    }
+
+    @Test
+    fun tokenCountShowsTheActualNumber() {
+        // T-ML28 #2: actual number with id-ID grouping, no abbreviations.
+        assertEquals("19.300.000", formatTokenCount(19_300_000L))
+        assertEquals("45.000", formatTokenCount(45_000L))
+        assertEquals("123", formatTokenCount(123L))
+        assertFalse(formatTokenCount(19_300_000L).contains("jt"))
+        assertFalse(formatTokenCount(45_000L).contains("rb"))
     }
 }

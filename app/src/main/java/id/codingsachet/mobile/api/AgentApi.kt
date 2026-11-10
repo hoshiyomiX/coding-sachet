@@ -300,6 +300,7 @@ class AgentApi(private val port: () -> Int) {
         messages: List<id.codingsachet.mobile.data.Msg>,
         systemPrompt: String?,
         options: JsonObject? = null,
+        workdir: String? = null,
         onEvent: (JsonObject) -> Unit,
         onError: (String, ErrorKind) -> Unit,
         onClosed: () -> Unit,
@@ -311,6 +312,10 @@ class AgentApi(private val port: () -> Int) {
             // Konfigurasi JSON (Settings): OpenAI-compatible request options.
             // The agent server sanitizes them (reserved keys stripped).
             if (options != null && options.isNotEmpty()) put("options", options)
+            // Per-session project folder (T-ML28): the agent validates it
+            // against the sandbox, creates it when absent, and pins the bash
+            // tool's cwd there. Absent/invalid = the server default workdir.
+            if (!workdir.isNullOrBlank()) put("workdir", JsonPrimitive(workdir))
         }
         val wire = json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), body)
         val req = Request.Builder()

@@ -459,8 +459,51 @@ private fun JsonConfigSection() {
         preview?.let { runCatching { Json { prettyPrint = true }.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), it) }.getOrDefault("{}") } ?: ""
     }
 
+    // Ready-made scheme templates (T-ML28 #1, owner order: "template siap
+    // pakai konfigurasi json untuk beragam skema"): one tap fills the
+    // structured fields AND pins the scheme's system prompt. Swapping is
+    // per-request — NO server reset is needed (validated against the code
+    // path: ChatEngine reads these prefs at send time; the agent server
+    // applies options + systemPrompt on every /api/chat body and strips
+    // agent-owned keys).
+    var schemeId by remember { mutableStateOf(Graph.prefs.schemeId) }
+
+    fun applyScheme(sc: id.codingsachet.mobile.ui.Scheme) {
+        schemeId = sc.id
+        Graph.prefs.schemeId = sc.id
+        Graph.prefs.requestOptions = id.codingsachet.mobile.ui.Schemes.storedOptions(sc)
+        Graph.prefs.requestOptionsExtra = ""
+        Graph.prefs.schemePrompt = id.codingsachet.mobile.ui.Schemes.storedPrompt(sc)
+        // Reflect the stored template into the editor fields.
+        optTemp = storedField(Graph.prefs.requestOptions, "temperature")
+        optTopP = storedField(Graph.prefs.requestOptions, "top_p")
+        optMaxTok = storedField(Graph.prefs.requestOptions, "max_tokens")
+        optPresence = storedField(Graph.prefs.requestOptions, "presence_penalty")
+        optFrequency = storedField(Graph.prefs.requestOptions, "frequency_penalty")
+        optSeed = storedField(Graph.prefs.requestOptions, "seed")
+        optStop = storedField(Graph.prefs.requestOptions, "stop")
+        optReasoning = storedField(Graph.prefs.requestOptions, "reasoning_effort")
+        optExtra = ""
+        savedNote = s.jsonSaved
+    }
+
     SectionTitle(s.jsonConfigSection)
     Text(s.jsonConfigHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+    Text(s.schemeSection, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+    ) {
+        id.codingsachet.mobile.ui.Schemes.ALL.forEach { sc ->
+            FilterChip(
+                selected = schemeId == sc.id,
+                onClick = { applyScheme(sc) },
+                label = { Text(if (Graph.prefs.lang == "en") sc.labelEn else sc.labelId) },
+            )
+        }
+    }
+    Text(s.schemeHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
     val numKeyboard = KeyboardOptions(keyboardType = KeyboardType.Number)
     OutlinedTextField(value = optTemp, onValueChange = { optTemp = it; savedNote = null },
@@ -535,6 +578,10 @@ private fun JsonConfigSection() {
             optSeed = ""; optStop = ""; optReasoning = ""; optExtra = ""
             Graph.prefs.requestOptions = ""
             Graph.prefs.requestOptionsExtra = ""
+            // Reset also returns the scheme to the default coding agent.
+            schemeId = id.codingsachet.mobile.ui.Schemes.DEFAULT_ID
+            Graph.prefs.schemeId = id.codingsachet.mobile.ui.Schemes.DEFAULT_ID
+            Graph.prefs.schemePrompt = ""
             savedNote = s.jsonSaved
         }) { Text(s.jsonReset) }
         savedNote?.let { Text(it, Modifier.align(Alignment.CenterVertically), style = MaterialTheme.typography.labelMedium) }

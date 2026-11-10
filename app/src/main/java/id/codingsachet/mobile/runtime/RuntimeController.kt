@@ -340,6 +340,11 @@ class RuntimeController(
                     state.value = RuntimeState.Running(version)
                     failures = 0
                     pushSystemDns()
+                    // Cache the server's resolved workdir (T-ML28): the chat
+                    // builds per-session project-folder paths from it without
+                    // a round trip (/sdcard/coding-sachet or /root/work).
+                    runCatching { api.workdir() }.getOrNull()
+                        ?.takeIf { it.isNotBlank() }?.let { prefs.workdirHint = it }
                     Logx.i("rt", "server aktif (v$version, node di atas proot)")
                 } else {
                     Logx.w("rt", "health check gagal — proses ${if (p.isAlive) "hidup tapi tidak menjawab" else "sudah mati"}")

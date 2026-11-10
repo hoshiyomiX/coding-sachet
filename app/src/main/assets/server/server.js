@@ -6,6 +6,7 @@
 //   GET  /health              liveness + versions + providers
 //   GET  /api/models          provider model list (X-Sachet-Key + X-Sachet-Provider)
 //   POST /api/chat            agent loop, SSE events (X-Sachet-Key + X-Sachet-Provider)
+//                              body.workdir = per-session project folder (optional)
 //   POST /api/verify-models   live model check, SSE events {start|result|done}
 //   GET  /api/quota           remaining tokens (?fresh=1 skips cache)
 //   GET  /api/dns             current guest resolver servers
@@ -290,7 +291,7 @@ async function route(req, res) {
       return sendJson(res, 400, { error: 'model dan messages wajib' });
     }
 
-    log.inf('srv', `chat mulai ${providerId} ${body.model} msgs=${body.messages.length}`);
+    log.inf('srv', `chat mulai ${providerId} ${body.model} msgs=${body.messages.length}${typeof body.workdir === 'string' && body.workdir ? ` workdir=${body.workdir.slice(0, 160)}` : ''}`);
     const chatT0 = Date.now();
     let chatTurns = 0;
 
@@ -319,6 +320,10 @@ async function route(req, res) {
         // OpenAI-compatible request options (Settings → Konfigurasi JSON):
         // sanitized inside the agent; reserved keys can never pass.
         options: body.options,
+        // Per-session project folder (T-ML28: one project per folder). The
+        // agent validates it against the sandbox and creates it when absent;
+        // invalid values silently fall back to the server's default workdir.
+        workdir: typeof body.workdir === 'string' ? body.workdir.slice(0, 512) : undefined,
         signal: abort.signal,
         emit,
       });

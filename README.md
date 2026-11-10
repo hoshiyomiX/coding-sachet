@@ -13,8 +13,11 @@ Lingkungan (rootfs Ubuntu + Node.js) **dibundel di dalam APK** dengan kompresi u
 - **Environment in-APK**: Ubuntu 24.04.5 + Node.js dikompres `xz -9e` — dibongkar sekali ke penyimpanan aplikasi, tanpa unduhan berulang
 - **Split ABI**: satu APK per arsitektur (arm64-v8a, armeabi-v7a, x86_64) — pasang yang cocok dengan perangkatmu
 - **Chat + agent coding**: streaming SSE, thinking/reasoning, *tool calling* multi-putaran — ganti model/penyedia di tengah sesi aman (riwayat lintas model di-*healing* otomatis: id tool-call disintesis, putaran terhenti dilipat rapi)
+- **Dua tab per sesi chat**: **Prompt** (percakapan + composer) dan **Project tree** — pohon folder proyek yang bisa dibentangkan per folder; ketuk file untuk pratinjau, muat ulang otomatis setiap giliran selesai
+- **Satu proyek per folder**: setiap chat baru dimulai dari popup nama proyek — foldernya `<folder kerja>/nama-proyek` di path default (`/sdcard/coding-sachet`), dibuat otomatis, dan tool `bash` agent berjalan di dalamnya (workdir per-request di body `/api/chat`); sesi lama tanpa proyek tetap memakai workdir utama
+- **Skema siap pakai**: template konfigurasi JSON + prompt sistem yang bisa digonta-ganti — *Coding*, *Brainstorming*, *Menulis*, *Analisis* — di Pengaturan → Konfigurasi JSON. **Tanpa reset server**: opsi dan prompt ikut setiap request, berlaku pada pesan berikutnya; kunci milik agent (model, messages, stream, tools) selalu ditolak server
 - **Ramah VPN**: daftar DNS sistem Android (ikut jaringan/VPN aktif) didorong ke guest lewat `POST /api/dns` + retry koneksi singkat — perbaiki "Koneksi ke gateway gagal: fetch failed" saat VPN menyala
-- **Chip sisa token APInex**: indikator sisa kuota di kanan atas kolom chat (`/v1/subscription` + `/v1/balance`, fallback pasangan billing OpenAI-style), diperbarui tiap akhir giliran dan bisa diketuk untuk menyegarkan
+- **Chip sisa token APInex**: angka aktual utuh (mis. `19.300.000`) di atas kolom chat, dari satu API resmi `/v1/subscription` (tanpa fallback non-resmi), diperbarui tiap akhir giliran dan bisa diketuk untuk menyegarkan
 - **Kartu tool yang bisa dibentangkan**: `bash`, `read_file`, `write_file`, `list_dir` — argumen + output lengkap
 - **Mode root (HP rooted)**: aktifkan "Akses root perangkat" di Pengaturan — server berjalan via `su`, seluruh penyimpanan perangkat muncul sebagai folder `/device` dan bisa dijelajahi dari tab File (termasuk `/data/data`, `/system`)
 - **File browser & editor** untuk workdir `/sdcard/coding-sachet` di penyimpanan bersama (fallback otomatis `/root/work` bila penyimpanan tidak tersedia) — plus folder baru, dan navigasi ke atas
@@ -49,7 +52,7 @@ APK (Compose UI, Kotlin)
  ├─ assets/server/*.js   → dicopy ke /opt/sachet di dalam guest
  └─ RuntimeController: ekstrak env dari APK (dekoder xz pure-Java) → proot → watchdog
 GUEST (proot Ubuntu): node /opt/sachet/server.js  ↔  127.0.0.1:8765
-APP ↔ server lokal: /api/chat (SSE), /api/models, /api/fs*   (header X-Sachet-Key + X-Sachet-Provider)
+APP ↔ server lokal: /api/chat (SSE; body.workdir = folder proyek sesi), /api/models, /api/fs*   (header X-Sachet-Key + X-Sachet-Provider)
 SERVER ↔ GATEWAY: api.apinex.bond/v1  atau  integrate.api.nvidia.com/v1 (OpenAI-compatible, function calling)
 ```
 

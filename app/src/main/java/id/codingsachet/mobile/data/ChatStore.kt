@@ -33,6 +33,10 @@ data class Session(
     var title: String,
     val created: Long,
     var model: String,
+    /** Project name (T-ML28 #4): this chat works inside
+     *  <agent-workdir>/<ProjectNames.sanitize(project)> — one project per
+     *  folder. Null = legacy session on the server's default workdir. */
+    val project: String? = null,
     val messages: MutableList<Msg> = mutableListOf(),
 ) {
     fun wireHistory(): List<Msg> = messages.toList()
@@ -56,12 +60,13 @@ class ChatStore(ctx: Context) {
         }
     }
 
-    fun create(model: String): Session {
+    fun create(model: String, project: String? = null): Session {
         val s = Session(
             id = UUID.randomUUID().toString().replace("-", "").take(16),
             title = "",
             created = System.currentTimeMillis(),
             model = model,
+            project = project?.trim()?.takeIf { it.isNotEmpty() },
         )
         index[s.id] = s
         save(s)
