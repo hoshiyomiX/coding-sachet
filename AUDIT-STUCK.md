@@ -157,6 +157,6 @@ Test server **68/68** (3 baru: closure post-hoc, pre-flight, maxTurns) · CI run
 
 Verifikasi dari perangkat yang menunggu: (1) `git clone` langsung jalan tanpa apt; (2) matikan paksa server di tengah turn → sesi lanjut sendiri ≤90 dtk; (3) sesi yang menabrak budget menampilkan pesan "Giliran dihentikan oleh pengaman budget…" dan kartu tool-nya berhenti (tidak berputar); (4) sesi lama yang dulu berputar "berjalan…" kini tampak "terputus…".
 
-## §10 Addendum T-ML32 — budget guard dihapus (2026-11-11, APK 1.0.33-33)
+## §10 Addendum T-ML32 — budget guard dihapus (2026-11-11, APK 1.0.34-34)
 
 Atas perintah owner ("Hapus pengaman budget karena tidak perlu. APInex sudah menyediakan token gratis sebanyak 20.000.000 token/day"), seluruh mekanisme budget guard dilepas dari agent: leg pre-flight, leg post-hoc, closure sintesis `stopForBudget`, `estimateCompletionTokens`, dan konstanta `sessionBudgetTokens` di config — run yang sah tidak lagi berhenti di ≈100 rb token/giliran. Yang TETAP: pelacakan usage + meter UI (event `usage` per putaran), pemangkasan `forModel`, kompaksi konteks, `maxTurns` 24, done-tracking jalur mati-server (recoverOrFail 90 dtk), dan kartu yatim "terputus…". Konsekuensi pada poin verifikasi perangkat (3) di §9: tidak lagi relevan — tidak ada batas budget yang bisa ditabrak; sisa poinnya tetap berlaku.
