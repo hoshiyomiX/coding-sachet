@@ -22,6 +22,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -87,6 +88,12 @@ class RuntimeController(
     @Volatile private var stopRequested = false
     @Volatile private var installing = false
     @Volatile var userStopped = false
+    // Set when the server's stdout shows proot reporting a child killed by a
+    // signal ("proot info: vpid 1: terminated with signal 9", T-ML30 field
+    // evidence). proot then exits 0 — without this flag the log line "Server
+    // keluar (kode 0)" reads as a normal stop and misleads the diagnosis
+    // (T-ML31 P1-5).
+    @Volatile private var sawSignalKill = false
 
     // ---- VPN-aware DNS push ----
     // The guest resolves gateway hostnames with its own resolv.conf; public
@@ -294,6 +301,7 @@ class RuntimeController(
         var windowStart = System.currentTimeMillis()
         while (isActive && !stopRequested) {
             state.value = RuntimeState.Starting
+            sawSignalKill = false
             // Fast-path restart (T-ML27 P2): the old order booted a whole
             // proot just to run pkill BEFORE checking whether anything was
             // even listening — seconds of latency (and up to the 8 s pkill
@@ -328,7 +336,14 @@ class RuntimeController(
             }
             process = p
             val startedAt = System.currentTimeMillis()
-            val reader = launch { runCatching { p.inputStream.bufferedReader().forEachLine { logLine(it) } } }
+            val reader = launch {
+                runCatching {
+                    p.inputStream.bufferedReader().forEachLine {
+                        if (it.contains("terminated with signal")) sawSignalKill = true
+                        logLine(it)
+                    }
+                }
+            }
             try {
                 var version: String? = null
                 val deadline = System.currentTimeMillis() + 120_000
@@ -374,12 +389,20 @@ class RuntimeController(
                     if (p.isAlive) p.destroyForcibly()
                 }
                 process = null
+                // Bounded drain before cancelling: let the stdout reader
+                // finish the process's final lines — proot's "terminated with
+                // signal" evidence — but never hang the restart loop on a
+                // pipe held open by a leaked grandchild (T-ML31 P1-5).
+                withTimeoutOrNull(250) { reader.join() }
                 reader.cancel()
             }
             if (stopRequested) break
             val code = runCatching { p.exitValue() }.getOrDefault(-1)
             val lived = System.currentTimeMillis() - startedAt
-            logLine("Server keluar (kode $code${exitCodeNote(code)})")
+            val signalKillNote = if (sawSignalKill && code == 0)
+                " — node dibunuh paksa sinyal 9 (tekanan memori?) walau proot keluar 0"
+            else ""
+            logLine("Server keluar (kode $code${exitCodeNote(code)}$signalKillNote)")
             // A run that lived a while is not a crash loop: an external kill
             // (T-ML27 evidence: kode 137 while apt-get ran in the guest —
             // kernel OOM killer / OEM memory manager) deserves an immediate
@@ -391,7 +414,7 @@ class RuntimeController(
                 windowStart = now
             }
             failures++
-            state.value = RuntimeState.Crashed("Server berhenti (kode $code${exitCodeNote(code)}). Memulai ulang…")
+            state.value = RuntimeState.Crashed("Server berhenti (kode $code${exitCodeNote(code)}$signalKillNote). Memulai ulang…")
             delay((1500L * failures).coerceAtMost(30_000))
         }
         state.value = RuntimeState.Stopped

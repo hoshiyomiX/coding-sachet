@@ -193,6 +193,16 @@ fun ChatScreen(
         msgs.filter { it.role == "tool" && it.toolCallId != null }.associateBy { it.toolCallId!! }
     }
 
+    // Tool calls that may STILL be running (T-ML31 P2-7): only the newest
+    // assistant round while a turn is actually in flight. Every other
+    // no-result card is an interrupted round (server killed mid-tool, old
+    // budget stop) and must render "terputus…" instead of spinning
+    // "berjalan…" forever — including after an app restart.
+    val busyNow = live?.busy == true
+    val activeCallIds = if (busyNow) {
+        msgs.lastOrNull { it.role == "assistant" }?.toolCalls?.map { it.id }?.toSet() ?: emptySet()
+    } else emptySet()
+
     val listState = rememberLazyListState()
     LaunchedEffect(live?.text?.length, live?.cards?.size, live?.thinking?.length, msgs.size) {
         if (listState.layoutInfo.totalItemsCount > 0) {
@@ -516,7 +526,7 @@ fun ChatScreen(
                         contentPadding = PaddingValues(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(msgs) { m -> MessageBubble(m, toolResults) }
+                        items(msgs) { m -> MessageBubble(m, toolResults, activeCallIds) }
                         live?.let { l -> item { LiveBubble(l) } }
                     }
                 }
@@ -635,7 +645,7 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
 
 /** Persisted messages: user bubbles right, assistant content + tool cards left. */
 @Composable
-private fun MessageBubble(m: Msg, toolResults: Map<String, Msg>) {
+private fun MessageBubble(m: Msg, toolResults: Map<String, Msg>, activeCallIds: Set<String> = emptySet()) {
     when (m.role) {
         "user" -> {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -671,6 +681,7 @@ private fun MessageBubble(m: Msg, toolResults: Map<String, Msg>) {
                             args = prettyArgs(call.args),
                             output = result?.content,
                             ok = result?.let { resultOk(it) },
+                            interrupted = result == null && call.id !in activeCallIds,
                         )
                     )
                 }

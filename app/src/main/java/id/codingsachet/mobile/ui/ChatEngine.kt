@@ -32,6 +32,10 @@ data class ToolCardUi(
     val args: String,
     val output: String? = null,
     val ok: Boolean? = null,   // null = still running
+    /** No result AND no live run in flight for this call (T-ML31 P2-7):
+     *  an interrupted round (server killed mid-tool, budget stop before
+     *  the old closure) — rendered "terputus…", never "berjalan…". */
+    val interrupted: Boolean = false,
 )
 
 /** What is being streamed right now, below the persisted history. */
@@ -87,6 +91,14 @@ class ChatEngine(val session: Session) {
     // silently vanishing reads as "the model never replied".
     private var receivedAnything = false
 
+    // Set when the server's terminal `done` event arrives (T-ML31 P0-1).
+    // The server ALWAYS emits done before closing on a designed exit —
+    // a stream that FINs cleanly WITHOUT one means the node process was
+    // killed mid-turn (T-ML30 field: proot prints its signal line, exits
+    // 0, the socket closes at an event boundary). finish() must treat
+    // that as a server death, not a "clean finish".
+    private var receivedDone = false
+
     private val json = Json { ignoreUnknownKeys = true }
 
     /** Returns false (caller keeps the input) when a turn cannot start.
@@ -100,6 +112,7 @@ class ChatEngine(val session: Session) {
         Graph.chats.autoTitle(session)
         persist()
         receivedAnything = false
+        receivedDone = false
         turnStartedAt = System.currentTimeMillis()
         retryCount = 0
         turnCancelled = false
@@ -125,6 +138,9 @@ class ChatEngine(val session: Session) {
     @Volatile private var turnCancelled = false
 
     private fun startStream(model: String) {
+        // Fresh stream attempt (initial or auto-retry): the done marker
+        // belongs to THIS attempt, not the one that just died.
+        receivedDone = false
         val key = Graph.prefs.apiKey
         if (key.isBlank()) {
             Logx.w("chat", "kirim diblokir: API key belum diatur")
@@ -266,6 +282,12 @@ class ChatEngine(val session: Session) {
                 Logx.e("chat", "event error dari server: ${ev.str("message").take(160)}")
                 live.value = live.value?.copy(error = ev.str("message"))
             }
+            "done" -> {
+                // The server's designed terminal event — every planned exit
+                // (final answer, budget guard, turn cap, gateway error)
+                // emits it right before closing the stream (T-ML31 P0-1).
+                receivedDone = true
+            }
         }
     }
 
@@ -285,18 +307,27 @@ class ChatEngine(val session: Session) {
             return
         }
         retryCount++
-        retryPending = true
         Logx.w("chat", "stream putus (${kind.name}) — server mati; tunggu pulih lalu lanjut otomatis (percobaan ulang $retryCount/1)")
         live.value = live.value?.copy(restarting = true, error = null)
+        recoverOrFail("Server agent tidak kembali dalam 90 detik. Cek status server di Pengaturan, lalu kirim ulang pesanmu.")
+    }
+
+    /** Shared server-death recovery tail (T-ML27 P3; also the T-ML31 P0-1
+     *  clean-FIN-without-done path): wait for the runtime to bring the
+     *  agent server back, then re-issue the stream so the turn continues
+     *  by itself; give up with [giveUp] when the wait times out. The
+     *  caller has already set restarting=true and incremented retryCount. */
+    private suspend fun recoverOrFail(giveUp: String) {
+        retryPending = true
         val recovered = awaitServerRecovery()
         retryPending = false
         if (turnCancelled) return
-        if (!recovered) {
+        if (!recovered || live.value == null) {
             Logx.e("chat", "server tidak pulih dalam batas waktu — berhenti mencoba ulang")
             live.value = live.value?.copy(
                 busy = false,
                 restarting = false,
-                error = "Server agent tidak kembali dalam 45 detik. Cek status server di Pengaturan, lalu kirim ulang pesanmu.",
+                error = giveUp,
             )
             persist()
             onTurnFinished?.invoke()
@@ -307,8 +338,11 @@ class ChatEngine(val session: Session) {
         startStream(session.model)
     }
 
-    /** Wait (bounded) for the runtime to report the agent server healthy. */
-    private suspend fun awaitServerRecovery(timeoutMs: Long = 45_000): Boolean {
+    /** Wait (bounded) for the runtime to report the agent server healthy.
+     *  90 s (T-ML31 P0-2): a kill during dpkg leaves orphaned apt children
+     *  chewing CPU/IO — the fastest field restart after such a kill took
+     *  ≤44 s, which already overflowed the old 45 s budget. */
+    private suspend fun awaitServerRecovery(timeoutMs: Long = 90_000): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline && live.value != null && !turnCancelled) {
             if (Graph.runtime.state.value is RuntimeState.Running) return true
@@ -330,31 +364,36 @@ class ChatEngine(val session: Session) {
                 // server was restarting mid-connect — same recovery path as
                 // an EOF, instead of a dead-end error (T-ML27 P3).
                 retryCount++
-                retryPending = true
                 Logx.w("chat", "stream tertutup tanpa event setelah ${durMs}ms — coba pulihkan otomatis")
                 live.value = l.copy(restarting = true)
                 scope.launch {
-                    val recovered = awaitServerRecovery()
-                    retryPending = false
-                    if (turnCancelled) return@launch
-                    if (recovered && live.value != null) {
-                        Logx.i("chat", "server pulih — melanjutkan giliran secara otomatis")
-                        live.value = live.value?.copy(restarting = false)
-                        startStream(session.model)
-                    } else {
-                        live.value = live.value?.copy(
-                            busy = false,
-                            restarting = false,
-                            error = "Koneksi ke server agent terputus sebelum jawaban diterima — coba kirim ulang pesanmu.",
-                        )
-                        persist()
-                        onTurnFinished?.invoke()
-                    }
+                    recoverOrFail("Koneksi ke server agent terputus sebelum jawaban diterima — coba kirim ulang pesanmu.")
                 }
                 return
             }
             Logx.e("chat", "stream tertutup tanpa satu pun event setelah ${durMs}ms")
             live.value = l.copy(busy = false, error = "Koneksi ke server agent terputus sebelum jawaban diterima — coba kirim ulang pesanmu.")
+        } else if (!receivedDone && !turnCancelled && retryCount < 1) {
+            // T-ML31 P0-1: clean FIN without the server's done event — on
+            // this localhost hop that is the node-killed signature (T-ML30:
+            // SIGKILL to node alone, proot exits 0, socket FINs at an event
+            // boundary). Take the server-death recovery path instead of a
+            // silent "clean finish" that strands the turn forever.
+            retryCount++
+            Logx.w("chat", "stream tertutup TANPA event done setelah ${durMs}ms — server mati di tengah giliran; coba pulihkan otomatis")
+            live.value = l.copy(restarting = true)
+            scope.launch {
+                recoverOrFail("Server agent mati saat memproses (kemungkinan dimatikan sistem). Tunggu indikator server hijau lalu kirim ulang pesanmu.")
+            }
+            return
+        } else if (!receivedDone && !turnCancelled) {
+            // Retry budget spent on a done-less close — surface the death
+            // instead of faking a clean finish (the T-ML30 stuck shape).
+            Logx.e("chat", "stream tertutup tanpa done (percobaan ulang habis) setelah ${durMs}ms")
+            live.value = l.copy(
+                busy = false,
+                error = "Server agent mati saat memproses (kemungkinan dimatikan sistem). Tunggu indikator server hijau lalu kirim ulang pesanmu.",
+            )
         } else {
             Logx.i("chat", "giliran selesai bersih ${durMs}ms (${session.messages.size} pesan tersimpan)")
             live.value = null

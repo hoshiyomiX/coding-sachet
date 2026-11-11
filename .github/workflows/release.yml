@@ -111,8 +111,53 @@ jobs:
               curl -sSL --retry 3 -o /tmp/ubuntu.tar.gz "$UB_URL" && break || { echo "retry ubuntu ($i)"; sleep 5; }
             done
             echo "$(ubuntu_sha "$UB_ARCH")  /tmp/ubuntu.tar.gz" | sha256sum -c -
-            # Ultra compression: pristine rootfs repacked from gzip to xz -9e.
-            gunzip -c /tmp/ubuntu.tar.gz | xz -9e -T0 > app/src/main/assets/env/ubuntu-rootfs.tar.xz
+            # Bake git into the rootfs (T-ML31 P0-3): 6/6 field server-kills
+            # started with the model running apt to install git (dpkg
+            # maintainer scripts = peak memory under proot -> kernel OOM
+            # killer picks node). git + its runtime library closure are
+            # RESOLVED against this very rootfs's dpkg status (apt with Dir
+            # overrides — no chroot/qemu needed), downloaded, and extracted
+            # with dpkg-deb -x --root-ownergroup: no maintainer scripts ever
+            # run, no dpkg state is touched, the guest just gets /usr/bin/git.
+            ROOTFS=/tmp/rootfs-$UB_ARCH
+            mkdir -p "$ROOTFS"
+            tar -xzf /tmp/ubuntu.tar.gz -C "$ROOTFS"
+            mkdir -p "$ROOTFS/var/lib/apt/lists/partial" "$ROOTFS/var/cache/apt/archives/partial"
+            # Keyring dari rootfs itu sendiri (deterministik, tanpa sudo):
+            # ubuntu-base selalu membawa ubuntu-archive-keyring.gpg.
+            TRUSTED="$ROOTFS/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+            [ -f "$TRUSTED" ] || { echo "FATAL: keyring ubuntu hilang dari rootfs"; exit 1; }
+            cat > /tmp/git-sources.list <<EOF
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main universe
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-updates main universe
+          deb [arch=arm64,armhf] http://ports.ubuntu.com/ubuntu-ports noble main universe
+          deb [arch=arm64,armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe
+          EOF
+            APTOPTS=( -o Dir="$ROOTFS"
+              -o Dir::State::status="$ROOTFS/var/lib/dpkg/status"
+              -o Dir::Etc::sourcelist=/tmp/git-sources.list
+              -o Dir::Etc::sourceparts=-
+              -o Dir::Etc::trusted="$TRUSTED"
+              -o Dir::Etc::trustedparts=-
+              -o APT::Architecture="$UB_ARCH"
+              -o APT::Architectures="$UB_ARCH"
+              -o Acquire::Languages=none )
+            for i in 1 2 3; do
+              apt-get "${APTOPTS[@]}" update && break || { echo "retry apt update ($i)"; sleep 5; }
+            done
+            apt-get "${APTOPTS[@]}" install -y --no-install-recommends --download-only git
+            set -- "$ROOTFS"/var/cache/apt/archives/*.deb
+            echo "git closure: $# paket"
+            [ "$#" -ge 5 ] || { echo "FATAL: closure git < 5 paket"; exit 1; }
+            for deb in "$@"; do dpkg-deb -x --root-owner-group "$deb" "$ROOTFS"; done
+            rm -f "$ROOTFS"/var/cache/apt/archives/*.deb
+            rm -rf "$ROOTFS"/var/lib/apt/lists/*
+            [ -x "$ROOTFS/usr/bin/git" ] || { echo "FATAL: /usr/bin/git tidak ada di rootfs"; exit 1; }
+            [ -d "$ROOTFS/usr/lib/git-core" ] || { echo "FATAL: /usr/lib/git-core hilang"; exit 1; }
+            # Ultra compression: rootfs (dengan git) repacked ke xz -9e,
+            # kepemilikan dipaksa root:root seperti tarball asli ubuntu-base.
+            tar -C "$ROOTFS" -cf - --owner=0 --group=0 . | xz -9e -T0 > app/src/main/assets/env/ubuntu-rootfs.tar.xz
+            rm -rf "$ROOTFS"
             NODE_URL="https://nodejs.org/dist/v$NODEVER/node-v$NODEVER-linux-$NODEARCH.tar.xz"
             for i in 1 2 3; do
               curl -sSL --retry 3 -o app/src/main/assets/env/node-runtime.tar.xz "$NODE_URL" && break || { echo "retry node ($i)"; sleep 5; }
@@ -136,13 +181,22 @@ jobs:
           done
           ls -l coding-sachet-*.apk
 
-      - name: Verify APK signatures
+      - name: Verify APK signatures + baked git
         run: |
           set -e
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
           for APK in coding-sachet-*.apk; do
             echo "--- $APK"
             "$APKSIGNER" verify --print-certs "$APK" | head -3
+          done
+          # The rootfs asset shipped inside every release APK must carry git
+          # (T-ML31 P0-3) — prove it from the artifact itself, not from the
+          # build log.
+          for APK in coding-sachet-1.0.*.apk; do
+            unzip -p "$APK" assets/env/ubuntu-rootfs.tar.xz \
+              | xz -dc | tar -tf - | grep -q '^\./usr/bin/git$' \
+              || { echo "FATAL: rootfs di $APK tanpa /usr/bin/git"; exit 1; }
+            echo "$APK: /usr/bin/git terbukti di dalam rootfs"
           done
 
       - name: Prepare release files
@@ -159,7 +213,7 @@ jobs:
         run: |
           set -e
           TAG="beta"
-          NOTES="Coding Sachet beta build ${{ github.run_number }} — split ABI APKs (arm64-v8a, armeabi-v7a, x86_64). Ubuntu 24.04 + Node.js bundled inside the APK (xz ultra compression, no first-run downloads). Providers: APInex (https://api.apinex.bond/v1) & NVIDIA NIM (https://integrate.api.nvidia.com/v1)."
+          NOTES="Coding Sachet beta build ${{ github.run_number }} — split ABI APKs (arm64-v8a, armeabi-v7a, x86_64). Ubuntu 24.04 + Node.js + git bundled inside the APK (xz ultra compression, no first-run downloads). Providers: APInex (https://api.apinex.bond/v1) & NVIDIA NIM (https://integrate.api.nvidia.com/v1)."
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --title "Coding Sachet beta build ${{ github.run_number }}" --notes "$NOTES" --prerelease
           fi

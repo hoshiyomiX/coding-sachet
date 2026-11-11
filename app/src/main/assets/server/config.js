@@ -116,6 +116,12 @@ const config = {
 
   // Tool limits.
   bashTimeoutMs: Number(process.env.SACHET_BASH_TIMEOUT_MS || 120000),
+  // Package-manager commands get a far longer leash (T-ML31 P1-4): apt/
+  // dpkg maintainer scripts under proot on a phone outrun 120 s, and a
+  // timeout kill leaves dpkg half-configured — the exact state that pushes
+  // the model into `dpkg --configure -a`, historically the peak-memory
+  // moment the kernel OOM-killer strikes the node server (T-ML27/T-ML30).
+  bashTimeoutPkgMs: Number(process.env.SACHET_BASH_TIMEOUT_PKG_MS || 600000),
   bashMaxOutput: 128 * 1024,        // bytes kept from a command's output (UI + app history)
   readMaxBytes: 256 * 1024,         // largest file returned by the read tool / fs file API
   writeMaxBytes: 2 * 1024 * 1024,   // largest accepted file write

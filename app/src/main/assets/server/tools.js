@@ -127,6 +127,19 @@ function writeFile(filePath, content) {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
+/** Timeout for one bash call (T-ML31 P1-4): any command that runs the
+ *  package manager (apt / apt-get / dpkg, anywhere in a compound command,
+ *  optionally under sudo) gets 600 s instead of the default — see
+ *  config.bashTimeoutPkgMs for why a short kill is worse than a long
+ *  wait. Deliberately over-broad (matches "echo apt" too): a false
+ *  positive only extends a timeout, a false negative kills dpkg
+ *  mid-flight — the OOM-kill incident class. */
+function bashTimeoutFor(command) {
+  return /\b(apt|apt-get|dpkg)\b/.test(command)
+    ? config.bashTimeoutPkgMs
+    : config.bashTimeoutMs;
+}
+
 /** Run a shell command in the workdir with a timeout and output cap.
  *
  * The child runs DETACHED — its own process group — so a timeout can kill
@@ -171,12 +184,13 @@ function runBash(command, onOutput, cwdOverride) {
     let killed = false;
     let done = false;
     const finish = (r) => { if (!done) { done = true; resolve(r); } };
+    const timeoutMs = bashTimeoutFor(command);
     const timer = setTimeout(() => {
       killed = true;
       killGroup('SIGTERM');
       // Grace, then hard kill: dpkg/apt shed TERM less politely than bash.
       setTimeout(() => killGroup('SIGKILL'), 2000);
-    }, config.bashTimeoutMs);
+    }, timeoutMs);
 
     const push = (chunk) => {
       out = out.length + chunk.length > config.bashMaxOutput
@@ -205,7 +219,7 @@ function runBash(command, onOutput, cwdOverride) {
       }, 300).unref();
     });
     child.on('close', (code, signal) => {
-      if (killed) log.wrn('tool', `bash timeout ${config.bashTimeoutMs / 1000}s — proses dibunuh`);
+      if (killed) log.wrn('tool', `bash timeout ${timeoutMs / 1000}s — proses dibunuh`);
       finish({
         ok: code === 0,
         code,

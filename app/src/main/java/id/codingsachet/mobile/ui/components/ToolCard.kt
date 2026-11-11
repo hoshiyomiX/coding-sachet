@@ -105,7 +105,14 @@ fun ToolCard(card: ToolCardUi) {
                     )
                 }
                 when (card.ok) {
-                    null -> Text(s.toolRunning, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    null -> Text(
+                        if (card.interrupted) s.toolInterrupted else s.toolRunning,
+                        style = MaterialTheme.typography.labelSmall,
+                        // Interrupted reads as a muted state, not the active
+                        // primary color a running call shows (T-ML31 P2-7).
+                        color = if (card.interrupted) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.primary,
+                    )
                     true -> Text(s.toolDone, style = MaterialTheme.typography.labelSmall, color = sachetSuccess())
                     false -> Text(s.toolFailed, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                 }
