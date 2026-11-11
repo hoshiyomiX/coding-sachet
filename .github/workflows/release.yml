@@ -106,11 +106,25 @@ jobs:
             esac
             echo "===== ABI $ABI (rootfs $UB_ARCH, node v$NODEVER-$NODEARCH, idx $IDX) ====="
             mkdir -p app/src/main/assets/env
-            UB_URL="https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-$UB_ARCH.tar.gz"
-            for i in 1 2 3; do
-              curl -sSL --retry 3 -o /tmp/ubuntu.tar.gz "$UB_URL" && break || { echo "retry ubuntu ($i)"; sleep 5; }
+            UB_PATH="ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-$UB_ARCH.tar.gz"
+            UB_WANT="$(ubuntu_sha "$UB_ARCH")"
+            UB_OK=""
+            # cdimage.ubuntu.com went DNS-dark from GitHub runners on
+            # 2026-11-11 (3 runs in 12 minutes, "Could not resolve host"
+            # every attempt while other hosts resolved fine) — the tarball
+            # is sha256-pinned per attempt, so any mirror serving the same
+            # bytes is safe: canonical host first, then verified mirrors.
+            for HOST in cdimage.ubuntu.com mirrors.tuna.tsinghua.edu.cn/ubuntu-cdimage mirrors.ustc.edu.cn/ubuntu-cdimage; do
+              for i in 1 2; do
+                if curl -sSL --connect-timeout 20 --max-time 240 -o /tmp/ubuntu.tar.gz "https://$HOST/$UB_PATH" \
+                   && echo "$UB_WANT  /tmp/ubuntu.tar.gz" | sha256sum -c -; then
+                  UB_OK="$HOST"; break 2
+                fi
+                echo "retry ubuntu via $HOST ($i)"; sleep 5
+              done
             done
-            echo "$(ubuntu_sha "$UB_ARCH")  /tmp/ubuntu.tar.gz" | sha256sum -c -
+            [ -n "$UB_OK" ] || { echo "FATAL: ubuntu-base $UB_ARCH gagal dari semua mirror"; exit 1; }
+            echo "ubuntu-base $UB_ARCH dari $UB_OK"
             # Bake git into the rootfs (T-ML31 P0-3): 6/6 field server-kills
             # started with the model running apt to install git (dpkg
             # maintainer scripts = peak memory under proot -> kernel OOM
