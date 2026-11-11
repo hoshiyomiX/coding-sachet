@@ -150,7 +150,13 @@ jobs:
             echo "git closure: $# paket"
             [ "$#" -ge 5 ] || { echo "FATAL: closure git < 5 paket"; exit 1; }
             for deb in "$@"; do dpkg-deb -x --root-owner-group "$deb" "$ROOTFS"; done
-            rm -f "$ROOTFS"/var/cache/apt/archives/*.deb
+            # Purge EVERYTHING apt left behind: the downloaded .debs, the
+            # lock, and above all pkgcache.bin/srcpkgcache.bin — the runner's
+            # apt 2.7 builds those ~99 MB binary caches inside Dir::Cache
+            # (run #31 shipped them: rootfs asset 75 MB instead of ~30 MB).
+            # The pristine archives/partial skeleton is recreated after.
+            rm -rf "$ROOTFS"/var/cache/apt/*
+            mkdir -p "$ROOTFS"/var/cache/apt/archives/partial
             rm -rf "$ROOTFS"/var/lib/apt/lists/*
             [ -x "$ROOTFS/usr/bin/git" ] || { echo "FATAL: /usr/bin/git tidak ada di rootfs"; exit 1; }
             [ -d "$ROOTFS/usr/lib/git-core" ] || { echo "FATAL: /usr/lib/git-core hilang"; exit 1; }
