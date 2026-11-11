@@ -497,10 +497,18 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
   let usedTokens = 0;
   const folded = new Set(); // indexes of openai entries already compacted
 
-  while (turn < config.maxTurns) {
+  // NO turn ceiling (T-ML34, owner order: "hapus semua limit pada agent
+  // terkecuali 15 RPM" — field evidence 2026-11-11 21:23: a healthy run
+  // was cut at putaran 24/24 while the model still asked for tools,
+  // finish=tool_calls). The loop runs until the model stops calling
+  // tools, the user stops it, or the app disconnects (server.js wires
+  // req 'close' → AbortSignal, and callGateway rejects on abort). The
+  // ONLY agent-side limit left is the client-side 15 RPM rate limiter
+  // (ratelimit.js — hardcoded, owner-ordered).
+  while (true) {
     turn++;
     emit({ type: 'turn', n: turn });
-    log.dbg('agt', `putaran ${turn}/${config.maxTurns}`);
+    log.dbg('agt', `putaran ${turn}`);
 
     // Fold old tool results once the prompt estimate passes the threshold
     // (fix #3) — before the request, so round 1 of a long RESENT history
@@ -600,17 +608,9 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
       openai.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: forModel(output) });
     }
   }
-
-  // Turn ceiling reached: clean closure — a persisted note instead of a
-  // transient error the user loses on the next screen change (T-ML31).
-  log.wrn('agt', `batas ${config.maxTurns} putaran agent tercapai`);
-  const capMsg = {
-    role: 'assistant',
-    content: `Batas ${config.maxTurns} putaran agent untuk satu giliran tercapai. Pekerjaan terakhir sudah selesai — kirim pesan baru bila masih ada lanjutannya.`,
-  };
-  emit({ type: 'message', msg: capMsg });
-  added.push(capMsg);
-  emit({ type: 'done', turns: turn });
+  // Unreachable: the loop above only exits via return (model stopped
+  // asking for tools) or a thrown error (user stop / disconnect / gateway
+  // failure) — kept explicit so a future edit cannot fall through silently.
   return added;
 }
 

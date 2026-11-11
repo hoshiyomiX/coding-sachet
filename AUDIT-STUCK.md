@@ -180,3 +180,17 @@ Bukti: `upload/logcat-20261111-144405.txt` (app **1.0.35 build 351** = run#35 df
 | F5 | Handler level-proses dipasang sekali per proses (guard) | Suite test yang memanggil `start()` berulang tak menumpuk listener |
 
 Sekaligus terverifikasi di lapangan dari dump yang sama: **T-ML32 hidup** — chat #2 berjalan sampai 240.947 token run tanpa berhenti di batas 100 rb (guard sudah tidak ada), `usage ptok/ctok/run` + meter sesi tetap jalan; T-ML29 (kompaksi, est stabil ±15 rb pada msgs=108) juga terkonfirmasi.
+
+## §12 Addendum T-ML34 — plafon putaran dihapus: agent tanpa limit kecuali 15 RPM (2026-11-11, APK 1.0.37-37)
+
+Bukti: `upload/logcat-20261111-212320.txt` (app **1.0.36 build 361** = run#36 3b98333 — T-ML33 terbukti hidup di lapangan: 25 panggilan gateway tanpa crash "terminated", usage/meter jalan). Chat (13:21:06, proyek tesoww, msgs=108) berjalan sehat 24 putaran penuh (run 475.260 token, tanpa henti budget — T-ML32 juga holding), lalu di 13:22:44 **dipaksa berhenti oleh plafon `maxTurns: 24`** (`[WRN] [agt] batas 24 putaran agent tercapai`) — padahal putaran 24 diakhiri model dengan `finish=tool_calls` dan tool terakhir sukses (`tool bash OK 65ms`): model masih ingin melanjutkan pekerjaan ketika loop dipotong. Atas perintah owner ("Hapus semua limit pada agent terkecuali 15 RPM"):
+
+| # | Perubahan | Efek |
+|---|---|---|
+| 1 | agent.js: `while (turn < config.maxTurns)` → `while (true)`; log `putaran N/24` → `putaran N`; blok closure "Batas N putaran agent untuk satu giliran tercapai…" DIHAPUS | Loop hanya berhenti lewat jalan yang sah: model berhenti minta tool (`finish=stop`), user menekan stop, atau koneksi app terputus (`req 'close'` → AbortSignal → callGateway reject) |
+| 2 | config.js: konstanta `maxTurns` (+ env `SACHET_MAX_TURNS`) dihapus, diganti komentar sejarah | Tidak ada lagi plafon putaran di sisi server |
+| 3 | test: test plafon diganti test "putaran berjalan tanpa batas" — 30 ronde tool + 1 ronde final = 31 permintaan gateway (melewati plafon lama 24), rpmLimit diangkat per-test karena pacing 15 RPM akan memakan menit (limit itu sendiri diuji di ratelimit.test.js) | Bukti regresi: run panjang menembus 24 tanpa pesan cap, tanpa error, done normal |
+
+Yang TETAP (satu-satunya limit agent yang tersisa, atas perintah owner): **rate limiter 15 RPM** sisi klien (ratelimit.js `DEFAULT_RPM=15` + `providers.*.rpmLimit`, sliding window 60 dtk — pemenuhan batas akun free tier APInex, tak tersentuh oleh perubahan ini). Yang juga tetap karena bukan limit giliran: cap output tool 128 KB/256 KB + jendela `forModel` 4 KB (higiena token T-ML29 — tidak menghentikan loop), timeout bash 120 s/600 s (guard per-tool; hasil error tetap dilanjutkan model ke putaran berikutnya), `requestTimeoutMs`/`connectTimeoutMs` (guard jaringan per permintaan).
+
+Konsekuensi yang disadari owner: model yang terus meminta tool akan berjalan tanpa henti pada ±15 putaran/menit (±285 rb token/menit pada pola lapangan) sampai user memberhentikan atau kuota harian 20 M APInex habis — meter sesi & QuotaChip tetap tersedia sebagai kanal pantau.

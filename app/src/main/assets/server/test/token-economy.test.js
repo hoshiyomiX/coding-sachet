@@ -218,32 +218,47 @@ test('budget guard DIHAPUS (T-ML32): pemakaian besar tidak lagi menghentikan gil
   assert.strictEqual(added[added.length - 1].content, 'Lanjut sampai sini.');
 });
 
-test('batas maxTurns: pesan penjelasan ter-persist (bukan error transient)', async (t) => {
+test('batas maxTurns DIHAPUS (T-ML34): putaran berjalan tanpa batas', async (t) => {
+  // Owner order: "hapus semua limit pada agent terkecuali 15 RPM" (field
+  // evidence 2026-11-11 21:23, app 1.0.36: a healthy run was cut at
+  // putaran 24/24 while the model still asked for tools). A run far past
+  // the old 24 ceiling must keep going: no cap note, tools still run,
+  // done still emitted the normal way.
   const replies = [];
-  for (let i = 0; i < 5; i++) {
-    replies.push({ kind: 'tools', calls: [{ id: `m${i}`, name: 'bash', args: { command: `echo ${i}` } }] });
+  for (let i = 0; i < 30; i++) {
+    replies.push({ kind: 'tools', calls: [{ id: `u${i}`, name: 'bash', args: { command: `echo ${i}` } }] });
   }
+  replies.push({ kind: 'text', text: 'Selesai setelah 31 putaran.' });
   const gw = await startMockGateway(replies);
   t.after(() => gw.close());
 
   useGateway(gw);
-  const oldMax = config.maxTurns;
-  config.maxTurns = 3;
-  t.after(() => { config.maxTurns = oldMax; });
+  assert.strictEqual(config.maxTurns, undefined, 'konstanta maxTurns harus hilang dari config');
+
+  // The paced 15 RPM limiter would space 31 requests over minutes; the
+  // limit itself is covered by ratelimit.test.js — lift it for this run
+  // only (limitFor reads provider config at call time).
+  const oldRpm = config.providers.apinex.rpmLimit;
+  config.providers.apinex.rpmLimit = 1000;
+  t.after(() => { config.providers.apinex.rpmLimit = oldRpm; });
 
   const events = [];
   const added = await agent.runAgent({
     apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',
-    messages: [{ role: 'user', content: 'ulangi' }],
+    messages: [{ role: 'user', content: 'ulangi terus' }],
     signal: null, emit: (e) => events.push(e),
   });
 
-  assert.strictEqual(gw.requests.length, 3);
-  const note = added[added.length - 1];
-  assert.strictEqual(note.role, 'assistant');
-  assert.ok(note.content.includes('3 putaran'));
-  assert.ok(!events.some((e) => e.type === 'error'), 'cap putaran bukan error lagi');
+  // The run went past the old 24 ceiling: 31 gateway requests in total.
+  assert.strictEqual(gw.requests.length, 31);
+  const toolends = events.filter((e) => e.type === 'toolend');
+  assert.strictEqual(toolends.length, 30, 'semua 30 tool dieksekusi');
+  // …no cap note was ever persisted…
+  assert.ok(!added.some((m) => m.role === 'assistant' && /putaran agent untuk satu giliran/.test(m.content || '')));
+  assert.ok(!events.some((e) => e.type === 'error'), 'tidak ada error pada run panjang');
+  // …and the run ends the normal way.
   assert.strictEqual(events.at(-1).type, 'done');
+  assert.strictEqual(added[added.length - 1].content, 'Selesai setelah 31 putaran.');
 });
 
 test('stream_options adaptif: 400 dijawab ulang sekali tanpa field', async (t) => {

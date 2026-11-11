@@ -95,8 +95,13 @@ const config = {
   // unmounted) the private /root/work is used instead. SACHET_WORKDIR wins.
   workdir: process.env.SACHET_WORKDIR || defaultWorkdir(),
 
-  // Agent loop limits.
-  maxTurns: Number(process.env.SACHET_MAX_TURNS || 24),
+  // NO turn ceiling: maxTurns (24) was removed by owner order in T-ML34 —
+  // "hapus semua limit pada agent terkecuali 15 RPM" (field evidence
+  // 2026-11-11: a healthy 25-round run was cut at putaran 24/24 mid-work,
+  // finish=tool_calls, run 475 k tokens). The agent loop now runs until
+  // the model stops calling tools, the user stops, or the connection
+  // drops. The only agent-side limit left is the client-side 15 RPM cap
+  // (ratelimit.js DEFAULT_RPM + providers.*.rpmLimit, owner-ordered).
 
   // Upstream request limits.
   requestTimeoutMs: Number(process.env.SACHET_TIMEOUT_MS || 300000),
