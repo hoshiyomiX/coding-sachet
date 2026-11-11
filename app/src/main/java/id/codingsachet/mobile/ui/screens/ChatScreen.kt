@@ -195,8 +195,8 @@ fun ChatScreen(
 
     // Tool calls that may STILL be running (T-ML31 P2-7): only the newest
     // assistant round while a turn is actually in flight. Every other
-    // no-result card is an interrupted round (server killed mid-tool, old
-    // budget stop) and must render "terputus…" instead of spinning
+    // no-result card is an interrupted round (e.g. server killed mid-tool)
+    // and must render "terputus…" instead of spinning
     // "berjalan…" forever — including after an app restart.
     val busyNow = live?.busy == true
     val activeCallIds = if (busyNow) {

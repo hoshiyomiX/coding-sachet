@@ -1,8 +1,8 @@
 'use strict';
 // Token-economy tests (T-ML29, from the T-ML28 usage audit): usage
 // accounting, the model-side tool-output window, read_lines, context
-// compaction, the session budget guard, and the adaptive stream_options
-// fallback — all against the mock gateway, no network.
+// compaction, the removed budget guard (T-ML32), and the adaptive
+// stream_options fallback — all against the mock gateway, no network.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -178,20 +178,20 @@ test('kompaksi: hasil tool lama dilipat, terbaru keep tetap utuh', async (t) => 
   assert.ok(!tools5[0].content.includes('satu'), 'hasil terlama tak boleh utuh');
 });
 
-test('budget guard post-hoc: putaran terbuka DITUTUP — toolresult sintesis + pesan ter-persist, bukan error transient', async (t) => {
-  // T-ML31 field evidence: the 1.0.30 incident left a toolCalls message
-  // without results, so the UI card spun "berjalan…" forever and the
-  // session read as stuck. The guard must now close the round cleanly.
+test('budget guard DIHAPUS (T-ML32): pemakaian besar tidak lagi menghentikan giliran', async (t) => {
+  // Owner order: APInex grants 20 M free tokens/day — the 100 k/turn cap
+  // only cut healthy long runs (field evidence: a legitimate turn stopped
+  // at ≈113.678 tokens). A run far past the old limit must keep going:
+  // no stop message, tools still run, done still emitted, usage still
+  // accounted.
   const gw = await startMockGateway([
-    { kind: 'tools', calls: [{ id: 'b1', name: 'bash', args: { command: 'echo x' } }], usage: U(900, 300) },
-    { kind: 'text', text: 'tak sampai sini' },
+    { kind: 'tools', calls: [{ id: 'g1', name: 'bash', args: { command: 'echo x' } }], usage: U(60000, 55000) },
+    { kind: 'text', text: 'Lanjut sampai sini.', usage: U(61000, 2000) },
   ]);
   t.after(() => gw.close());
 
   useGateway(gw);
-  const oldBudget = config.sessionBudgetTokens;
-  config.sessionBudgetTokens = 1000;
-  t.after(() => { config.sessionBudgetTokens = oldBudget; });
+  assert.strictEqual(config.sessionBudgetTokens, undefined, 'konstanta guard harus hilang dari config');
 
   const events = [];
   const added = await agent.runAgent({
@@ -200,63 +200,22 @@ test('budget guard post-hoc: putaran terbuka DITUTUP — toolresult sintesis + p
     signal: null, emit: (e) => events.push(e),
   });
 
-  // Round 1 usage (1200) already exceeds 1000 → stop right there; the
-  // pending b1 call is NEVER executed for real…
-  assert.strictEqual(gw.requests.length, 1);
-  // …but it DOES get a synthesized closure the UI can render:
-  const toolend = events.find((e) => e.type === 'toolend' && e.id === 'b1');
-  assert.ok(toolend, 'harus ada toolend sintesis utk panggilan tertunda');
-  assert.strictEqual(toolend.ok, false);
-  assert.ok(toolend.output.includes('dihentikan'));
-  // The persisted history ends gateway-valid: tool result present…
-  const toolMsg = added.find((m) => m.role === 'tool' && m.toolCallId === 'b1');
-  assert.ok(toolMsg, 'harus ada pesan tool utk b1 di added');
-  assert.ok(toolMsg.content.includes('dihentikan'));
-  // …followed by a persisted assistant note (survives app restarts)…
-  const note = added[added.length - 1];
-  assert.strictEqual(note.role, 'assistant');
-  assert.ok(note.content.includes('pengaman budget'));
-  assert.ok(note.content.includes('tidak dijalankan'));
-  // …emitted as a message event, and NO transient error event remains.
-  assert.ok(events.some((e) => e.type === 'message' && e.msg === note));
-  assert.ok(!events.some((e) => e.type === 'error'), 'stop budget bukan error lagi');
-  assert.strictEqual(events.at(-1).type, 'done');
-});
-
-test('budget guard pre-flight: putaran berikut TIDAK dikirim saat proyeksi sudah lewat batas', async (t) => {
-  // T-ML31: the field incident burned a 10 s / ~15 k-token gateway round
-  // and only then stopped. When the running usage plus the projected
-  // prompt already crosses the budget, the round must not even start.
-  const gw = await startMockGateway([
-    { kind: 'tools', calls: [{ id: 'p1', name: 'bash', args: { command: 'echo x' } }], usage: U(950, 50) },
-    { kind: 'text', text: 'tak sampai sini' },
-  ]);
-  t.after(() => gw.close());
-
-  useGateway(gw);
-  const oldBudget = config.sessionBudgetTokens;
-  config.sessionBudgetTokens = 1000; // round 1 usage = 1000 → lolos post-hoc (tidak >1000)
-  t.after(() => { config.sessionBudgetTokens = oldBudget; });
-
-  const events = [];
-  const added = await agent.runAgent({
-    apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',
-    messages: [{ role: 'user', content: 'echo' }],
-    signal: null, emit: (e) => events.push(e),
-  });
-
-  // Round 1 ran for real (its tool executed)…
-  assert.strictEqual(gw.requests.length, 1);
-  const toolend = events.find((e) => e.type === 'toolend' && e.id === 'p1');
-  assert.ok(toolend, 'tool putaran 1 tetap dieksekusi normal');
+  // Round 1 usage (115k) is far past the old 100k cap — the run must not
+  // stop: round 2 WAS sent…
+  assert.strictEqual(gw.requests.length, 2);
+  // …the tool ran for real…
+  const toolend = events.find((e) => e.type === 'toolend' && e.id === 'g1');
+  assert.ok(toolend, 'tool putaran 1 dieksekusi normal');
   assert.strictEqual(toolend.ok, true);
-  // …but round 2 was never sent: pre-flight stopped before the gateway.
-  const note = added[added.length - 1];
-  assert.strictEqual(note.role, 'assistant');
-  assert.ok(note.content.includes('pengaman budget'));
-  // No pending calls at a pre-flight stop → no "tidak dijalankan" clause.
-  assert.ok(!note.content.includes('tidak dijalankan'));
+  // …usage accounting keeps flowing (runTotal = 115k + 63k = 178k)…
+  const usage = events.filter((e) => e.type === 'usage');
+  assert.strictEqual(usage.length, 2);
+  assert.strictEqual(usage[1].runTotal, 178000);
+  // …and NO budget-stop note was ever persisted…
+  assert.ok(!added.some((m) => m.role === 'assistant' && /pengaman budget/.test(m.content || '')));
+  // …the run ends the normal way.
   assert.strictEqual(events.at(-1).type, 'done');
+  assert.strictEqual(added[added.length - 1].content, 'Lanjut sampai sini.');
 });
 
 test('batas maxTurns: pesan penjelasan ter-persist (bukan error transient)', async (t) => {

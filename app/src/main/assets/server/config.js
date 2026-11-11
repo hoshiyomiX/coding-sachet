@@ -130,13 +130,14 @@ const config = {
   // feed the UI and the persisted history — the copy SENT TO THE MODEL is
   // windowed to head+tail (toolModelBudgetChars), old tool results are
   // folded to one-line summaries once the prompt estimate passes
-  // contextCompactTokens (the newest contextCompactKeep stay intact), and
-  // a run is stopped with a clear error past sessionBudgetTokens of
-  // gateway-reported usage (0 disables the guard).
+  // contextCompactTokens (the newest contextCompactKeep stay intact).
+  // NO per-turn token stop: the budget guard (sessionBudgetTokens) was
+  // removed by owner order in T-ML32 — APInex grants 20 M free tokens
+  // per day, so the 100 k/turn cap only cut healthy long runs. Usage is
+  // still tracked and displayed.
   toolModelBudgetChars: Number(process.env.SACHET_TOOL_MODEL_BUDGET_CHARS || 4096),
   contextCompactTokens: Number(process.env.SACHET_CONTEXT_COMPACT_TOKENS || 16000),
   contextCompactKeep: Number(process.env.SACHET_CONTEXT_COMPACT_KEEP || 3),
-  sessionBudgetTokens: Number(process.env.SACHET_SESSION_BUDGET_TOKENS || 100000),
 
   // File API sandbox: paths must resolve under one of these roots.
   allowedRoots: [HOME, '/tmp', '/sdcard', '/storage/emulated/0', ...extraRoots],

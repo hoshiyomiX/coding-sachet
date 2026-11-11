@@ -306,7 +306,7 @@ function forModel(text) {
 }
 
 /** Rough token estimate of the wire messages (~4 chars per token) — used
- *  for compaction and the budget guard when the gateway reports no usage. */
+ *  by the compaction threshold. */
 function estimateTokens(msgs) {
   let ch = 0;
   for (const m of msgs) {
@@ -420,40 +420,11 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
   const added = [];   // messages the app should persist
   let turn = 0;
 
-  /** Budget-guard termination (T-ML31): close the round CLEANLY — a
-   *  persisted explanation the user can still read after an app restart,
-   *  plus `done`. NEVER a transient error event alone: the field incident
-   *  (1.0.30, run 105.337 tok) left a toolCalls message without results,
-   *  so the UI rendered "berjalan…" forever and the session read as stuck. */
-  const stopForBudget = (est, pendingCalls) => {
-    log.wrn('agt', `budget sesi ${config.sessionBudgetTokens} token terlampaui (≈${est}) — giliran dihentikan`);
-    // Synthesize the results the pending calls will never produce, so no
-    // tool card spins forever and the history stays gateway-valid.
-    for (const call of pendingCalls) {
-      const note = `[dihentikan karena budget token sesi ≈${est} > ${config.sessionBudgetTokens} — panggilan ini tidak dijalankan]`;
-      emit({ type: 'tool', id: call.id, name: call.name, args: safeJson(call.args) });
-      emit({ type: 'toolend', id: call.id, ok: false, output: note });
-      const toolMsg = { role: 'tool', toolCallId: call.id, name: call.name, content: note };
-      emit({ type: 'toolresult', msg: toolMsg });
-      added.push(toolMsg);
-    }
-    const stopMsg = {
-      role: 'assistant',
-      content: `Giliran dihentikan oleh pengaman budget: pemakaian token ≈${est} sudah melewati batas ${config.sessionBudgetTokens} untuk satu giliran.` +
-        (pendingCalls.length ? ' Panggilan tool terakhir tidak dijalankan.' : '') +
-        ' Histori sesi tetap utuh — kirim pesan baru untuk melanjutkan, atau mulai percakapan baru bila konteks sudah terlalu panjang.',
-    };
-    emit({ type: 'message', msg: stopMsg });
-    added.push(stopMsg);
-    emit({ type: 'done', turns: turn });
-    return added;
-  };
-
-  // Token economy (T-ML29): gateway-reported usage when the gateway sends
-  // it, else a local chars/4 estimate — the accumulator drives the budget
-  // guard and the per-run usage events the app displays.
+  // Token economy (T-ML29): gateway-reported usage of every round feeds
+  // the per-run usage events the app displays. There is NO budget stop
+  // anymore (T-ML32, owner order: APInex grants 20 M free tokens/day —
+  // the 100 k/turn guard only cut healthy long runs).
   let usedTokens = 0;
-  let usageKnown = false;
   const folded = new Set(); // indexes of openai entries already compacted
 
   while (turn < config.maxTurns) {
@@ -465,22 +436,6 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
     // (fix #3) — before the request, so round 1 of a long RESENT history
     // gets the same protection as a long fresh run.
     compactOldTools(openai, folded, config.contextCompactTokens, config.contextCompactKeep);
-
-    // Budget guard, pre-flight leg (T-ML31): stop BEFORE burning another
-    // gateway round when the projected cost already crosses the budget —
-    // the field incident spent a 10 s / ~15 k-token round whose tool call
-    // was then never run. estimateTokens() misses the tool schema and the
-    // system prompt, hence the 1.25x margin plus a floor for that constant
-    // overhead (capped at 10% of the budget so tiny budgets stay usable).
-    if (config.sessionBudgetTokens > 0) {
-      const overhead = Math.min(1000, Math.ceil(config.sessionBudgetTokens / 10));
-      const projected = (usageKnown ? usedTokens : 0) +
-        Math.ceil(estimateTokens(openai) * 1.25) + overhead;
-      if (projected > config.sessionBudgetTokens) {
-        log.wrn('agt', `budget sesi ${config.sessionBudgetTokens} token — proyeksi putaran ${turn} ≈${projected}, hentikan sebelum panggilan gateway`);
-        return stopForBudget(projected, []);
-      }
-    }
 
     const gwT0 = Date.now();
     const t = await callGateway({
@@ -515,7 +470,6 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
     // Usage accounting (fix #1): the gateway-reported counts of THIS round,
     // plus the running total — the app shows it as the session meter.
     if (t.usage) {
-      usageKnown = true;
       const add = t.usage.totalTokens ??
         ((t.usage.promptTokens ?? 0) + (t.usage.completionTokens ?? 0));
       if (add > 0) usedTokens += add;
@@ -529,17 +483,6 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
     if (!wantsTools) {
       emit({ type: 'done', turns: turn });
       return added;
-    }
-
-    // Budget guard, post-hoc leg (fix #6): stop once the reported usage
-    // (or local estimate, when the gateway stays silent) crosses the
-    // per-run budget — closing the round cleanly instead of leaving a
-    // dangling tool_calls message (T-ML31 field evidence).
-    if (config.sessionBudgetTokens > 0) {
-      const est = usageKnown ? usedTokens : estimateTokens(openai) + estimateCompletionTokens(t);
-      if (est > config.sessionBudgetTokens) {
-        return stopForBudget(est, t.toolCalls);
-      }
     }
 
     // Record the assistant turn (with tool_calls) for the next round.
@@ -588,9 +531,8 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
     }
   }
 
-  // Turn ceiling reached: same clean-closure shape as the budget guard —
-  // a persisted note instead of a transient error the user loses on the
-  // next screen change (T-ML31).
+  // Turn ceiling reached: clean closure — a persisted note instead of a
+  // transient error the user loses on the next screen change (T-ML31).
   log.wrn('agt', `batas ${config.maxTurns} putaran agent tercapai`);
   const capMsg = {
     role: 'assistant',
@@ -605,14 +547,6 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
 function safeJson(s) {
   if (typeof s !== 'string' || !s.trim()) return {};
   try { return JSON.parse(s); } catch { return { _raw: s }; }
-}
-
-/** Completion-side estimate (chars/4) for the budget guard when the
- *  gateway reports no usage: the round's own text + reasoning + tool args. */
-function estimateCompletionTokens(t) {
-  let ch = t.content.length + t.reasoning.length;
-  for (const c of t.toolCalls) ch += (c.name || '').length + (c.args || '').length;
-  return Math.ceil(ch / 4);
 }
 
 // ---------- live model verification (T-ML26) ----------

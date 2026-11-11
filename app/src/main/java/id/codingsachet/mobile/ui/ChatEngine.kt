@@ -33,8 +33,8 @@ data class ToolCardUi(
     val output: String? = null,
     val ok: Boolean? = null,   // null = still running
     /** No result AND no live run in flight for this call (T-ML31 P2-7):
-     *  an interrupted round (server killed mid-tool, budget stop before
-     *  the old closure) — rendered "terputus…", never "berjalan…". */
+     *  an interrupted round (e.g. server killed mid-tool) — rendered
+     *  "terputus…", never "berjalan…". */
     val interrupted: Boolean = false,
 )
 
@@ -284,8 +284,8 @@ class ChatEngine(val session: Session) {
             }
             "done" -> {
                 // The server's designed terminal event — every planned exit
-                // (final answer, budget guard, turn cap, gateway error)
-                // emits it right before closing the stream (T-ML31 P0-1).
+                // (final answer, turn cap, gateway error) emits it right
+                // before closing the stream (T-ML31 P0-1).
                 receivedDone = true
             }
         }
