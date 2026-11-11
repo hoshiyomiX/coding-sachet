@@ -116,9 +116,21 @@ const config = {
 
   // Tool limits.
   bashTimeoutMs: Number(process.env.SACHET_BASH_TIMEOUT_MS || 120000),
-  bashMaxOutput: 128 * 1024,        // bytes kept from a command's output
+  bashMaxOutput: 128 * 1024,        // bytes kept from a command's output (UI + app history)
   readMaxBytes: 256 * 1024,         // largest file returned by the read tool / fs file API
   writeMaxBytes: 2 * 1024 * 1024,   // largest accepted file write
+
+  // Token economy (T-ML29, from the T-ML28 usage audit): the caps above
+  // feed the UI and the persisted history — the copy SENT TO THE MODEL is
+  // windowed to head+tail (toolModelBudgetChars), old tool results are
+  // folded to one-line summaries once the prompt estimate passes
+  // contextCompactTokens (the newest contextCompactKeep stay intact), and
+  // a run is stopped with a clear error past sessionBudgetTokens of
+  // gateway-reported usage (0 disables the guard).
+  toolModelBudgetChars: Number(process.env.SACHET_TOOL_MODEL_BUDGET_CHARS || 4096),
+  contextCompactTokens: Number(process.env.SACHET_CONTEXT_COMPACT_TOKENS || 16000),
+  contextCompactKeep: Number(process.env.SACHET_CONTEXT_COMPACT_KEEP || 3),
+  sessionBudgetTokens: Number(process.env.SACHET_SESSION_BUDGET_TOKENS || 100000),
 
   // File API sandbox: paths must resolve under one of these roots.
   allowedRoots: [HOME, '/tmp', '/sdcard', '/storage/emulated/0', ...extraRoots],

@@ -38,6 +38,9 @@ data class Session(
      *  folder. Null = legacy session on the server's default workdir. */
     val project: String? = null,
     val messages: MutableList<Msg> = mutableListOf(),
+    /** Gateway-reported tokens spent in THIS session (T-ML29 usage meter),
+     *  accumulated from the per-round usage events. */
+    var tokensUsed: Long = 0,
 ) {
     fun wireHistory(): List<Msg> = messages.toList()
 }

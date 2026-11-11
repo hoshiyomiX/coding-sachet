@@ -24,7 +24,7 @@ function synthToolCallId() {
 // (apinex.bond/developers/models/chat: "Extra OpenAI fields are generally
 // forwarded"). These keys belong to the agent itself and can never be
 // overridden from user config.
-const RESERVED_OPTION_KEYS = ['model', 'messages', 'stream', 'tools', 'tool_choice', 'n'];
+const RESERVED_OPTION_KEYS = ['model', 'messages', 'stream', 'tools', 'tool_choice', 'n', 'stream_options'];
 const REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high'];
 const OPTIONS_MAX_JSON = 4096;
 
@@ -60,9 +60,13 @@ function sanitizeOptions(options) {
 }
 
 /** The chat/completions request body: agent-owned fields first, then the
- *  sanitized user options last (they may override max_tokens etc.). */
-function buildBody({ model, messages, tools, provider, options }) {
+ *  sanitized user options last (they may override max_tokens etc.).
+ *  `usage` adds stream_options.include_usage — the OpenAI way to receive
+ *  token counts on a streamed reply (T-ML29); dropped adaptively when a
+ *  relay rejects the field with a 400. */
+function buildBody({ model, messages, tools, provider, options, usage = true }) {
   const body = { model, messages, stream: true };
+  if (usage) body.stream_options = { include_usage: true };
   // NIM asks integrations to set max_tokens explicitly; APInex uses its own
   // default, so the field is only sent when configured — and a user-set
   // max_tokens always wins over the provider default.
@@ -115,8 +119,12 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
 
   let res;
   try {
-    const body = JSON.stringify(buildBody({ model, messages, tools, provider, options: opts }));
-    log.dbg('agt', `gateway ${provider.label} ${model} msgs=${messages.length}${tools && tools.length ? ` tools=${tools.length}` : ''}`);
+    // Adaptive usage field (T-ML29): a relay that rejects unknown fields
+    // answers 400 — that specific failure is retried once WITHOUT the
+    // field before any error reaches the user.
+    let sendUsage = true;
+    let body = JSON.stringify(buildBody({ model, messages, tools, provider, options: opts, usage: sendUsage }));
+    log.dbg('agt', `gateway ${provider.label} ${model} msgs=${messages.length}${tools && tools.length ? ` tools=${tools.length}` : ''} est=${estimateTokens(messages)}tok`);
     try {
       for (let attempt = 0; ; attempt++) {
         // Surface a hint before a long limiter wait so the UI never looks dead.
@@ -144,6 +152,13 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
             if (onDelta) onDelta({ type: 'netretry', attempt: attemptNo, provider: provider.label, detail: netErrorDetail(err).slice(0, 120) });
           }
         );
+        if (res.status === 400 && sendUsage) {
+          await res.text().catch(() => {}); // drain the error body
+          sendUsage = false;
+          body = JSON.stringify(buildBody({ model, messages, tools, provider, options: opts, usage: false }));
+          log.wrn('agt', 'HTTP 400 — gateway menolak stream_options; coba ulang tanpa field usage');
+          continue; // paced again through the limiter
+        }
         if (res.ok || res.status !== 429 || attempt >= MAX_429_RETRIES) break;
         await res.text().catch(() => {}); // drain the error body
         const waitMs = retryAfterMs(res);
@@ -182,7 +197,7 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
     }
 
     // ---- parse the SSE stream ----
-    const turn = { content: '', reasoning: '', toolCalls: [], finishReason: null };
+    const turn = { content: '', reasoning: '', toolCalls: [], finishReason: null, usage: null };
 
     try {
       const decoder = new TextDecoder();
@@ -203,6 +218,18 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
           let j;
           try { j = JSON.parse(payload); } catch { continue; }
           if (j.error) throw new Error(j.error.message || 'gateway error');
+          // The usage chunk (stream_options.include_usage, T-ML29): it
+          // carries NO choices — read it before the choices guard below.
+          if (j.usage && typeof j.usage === 'object') {
+            const pickNum = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+            turn.usage = {
+              promptTokens: pickNum(j.usage.prompt_tokens),
+              completionTokens: pickNum(j.usage.completion_tokens),
+              reasoningTokens: pickNum(j.usage.completion_tokens_details && j.usage.completion_tokens_details.reasoning_tokens),
+              cachedTokens: pickNum(j.usage.prompt_tokens_details && j.usage.prompt_tokens_details.cached_tokens),
+              totalTokens: pickNum(j.usage.total_tokens),
+            };
+          }
           const ch = j.choices && j.choices[0];
           if (!ch) continue;
           if (ch.finish_reason) turn.finishReason = ch.finish_reason;
@@ -259,6 +286,60 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
  *     message (dangling tool_calls are a hard 400 on NIM/OpenAI),
  *   * orphan tool results (their assistant message is gone) are dropped.
  */
+
+// ---------- token economy (T-ML29, from the T-ML28 usage audit) ----------
+
+/** What the MODEL sees of a tool output: a head+tail window with a note.
+ *  The app's persisted history and the UI keep the full text — only the
+ *  gateway-bound copy is trimmed (fix #2: one 256 KB read_file used to be
+ *  resent whole on EVERY later round). */
+function forModel(text) {
+  if (typeof text !== 'string') return String(text ?? '');
+  const budget = config.toolModelBudgetChars;
+  if (budget <= 0 || text.length <= budget) return text;
+  const head = Math.ceil(budget / 2);
+  const tail = budget - head;
+  const hidden = text.length - budget;
+  return text.slice(0, head) +
+    `\n…[${hidden} karakter di tengah dipangkas hemat token — pakai read_lines/grep untuk bagian tertentu]…\n` +
+    text.slice(-tail);
+}
+
+/** Rough token estimate of the wire messages (~4 chars per token) — used
+ *  for compaction and the budget guard when the gateway reports no usage. */
+function estimateTokens(msgs) {
+  let ch = 0;
+  for (const m of msgs) {
+    ch += (m.content || '').length;
+    if (Array.isArray(m.tool_calls)) {
+      for (const c of m.tool_calls) {
+        ch += (c.function && c.function.name ? c.function.name.length : 0) +
+              (c.function && c.function.arguments ? c.function.arguments.length : 0);
+      }
+    }
+  }
+  return Math.ceil(ch / 4);
+}
+
+/** Fold OLD tool results (all but the newest `keep`) into one-line
+ *  summaries until the prompt estimate fits the threshold — the quadratic
+ *  resend otherwise burns the account on long runs (T-ML28 counterfactual:
+ *  24 apt rounds ≈ 6.9 M tokens). `folded` tracks indexes so already-folded
+ *  entries are never re-folded; only the gateway-bound copy changes. */
+function compactOldTools(openai, folded, thresholdTokens, keep) {
+  keep = Math.max(1, keep | 0);
+  while (estimateTokens(openai) > thresholdTokens) {
+    const toolIdx = [];
+    openai.forEach((m, i) => { if (m.role === 'tool') toolIdx.push(i); });
+    const candidates = toolIdx.slice(0, Math.max(0, toolIdx.length - keep));
+    const target = candidates.find((i) => !folded.has(i));
+    if (target === undefined) break; // everything foldable is folded already
+    const m = openai[target];
+    folded.add(target);
+    m.content = `[output ${m.name || 'tool'} dipangkas hemat token — asli ${m.content.length}ch]`;
+  }
+}
+
 function toOpenAiMessages(messages) {
   const out = [];
   for (let i = 0; i < messages.length; i++) {
@@ -294,7 +375,7 @@ function toOpenAiMessages(messages) {
               role: 'tool',
               tool_call_id: wireCalls[k].id,
               name: r.name || wireCalls[k].function.name,
-              content: r.content || '',
+              content: forModel(r.content || ''),
             });
           }
         } else {
@@ -339,17 +420,29 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
   const added = [];   // messages the app should persist
   let turn = 0;
 
+  // Token economy (T-ML29): gateway-reported usage when the gateway sends
+  // it, else a local chars/4 estimate — the accumulator drives the budget
+  // guard and the per-run usage events the app displays.
+  let usedTokens = 0;
+  let usageKnown = false;
+  const folded = new Set(); // indexes of openai entries already compacted
+
   while (turn < config.maxTurns) {
     turn++;
     emit({ type: 'turn', n: turn });
     log.dbg('agt', `putaran ${turn}/${config.maxTurns}`);
+
+    // Fold old tool results once the prompt estimate passes the threshold
+    // (fix #3) — before the request, so round 1 of a long RESENT history
+    // gets the same protection as a long fresh run.
+    compactOldTools(openai, folded, config.contextCompactTokens, config.contextCompactKeep);
 
     const gwT0 = Date.now();
     const t = await callGateway({
       apiKey, providerId, model, messages: openai, tools: openaiTools, options, signal,
       onDelta: (e) => emit(e),
     });
-    log.dbg('agt', `gateway selesai ${Date.now() - gwT0}ms content=${t.content.length}ch toolCalls=${t.toolCalls.length} finish=${t.finishReason || '?'}`);
+    log.dbg('agt', `gateway selesai ${Date.now() - gwT0}ms content=${t.content.length}ch reasoning=${t.reasoning.length}nch toolCalls=${t.toolCalls.length} finish=${t.finishReason || '?'}`);
 
     // Gateways that omit tool_call ids get synthesized ones here, before
     // the round is persisted or echoed — the ids then survive in history.
@@ -374,9 +467,41 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
     emit({ type: 'message', msg: assistantMsg });
     added.push(assistantMsg);
 
+    // Usage accounting (fix #1): the gateway-reported counts of THIS round,
+    // plus the running total — the app shows it as the session meter.
+    if (t.usage) {
+      usageKnown = true;
+      const add = t.usage.totalTokens ??
+        ((t.usage.promptTokens ?? 0) + (t.usage.completionTokens ?? 0));
+      if (add > 0) usedTokens += add;
+      log.inf('agt', `usage ptok=${t.usage.promptTokens ?? '?'} ctok=${t.usage.completionTokens ?? '?'}` +
+        `${t.usage.reasoningTokens != null ? ` rtok=${t.usage.reasoningTokens}` : ''}` +
+        `${t.usage.cachedTokens != null ? ` cache=${t.usage.cachedTokens}` : ''}` +
+        ` total=${add} run=${usedTokens}`);
+      emit({ type: 'usage', ...t.usage, runTotal: usedTokens });
+    }
+
     if (!wantsTools) {
       emit({ type: 'done', turns: turn });
       return added;
+    }
+
+    // Budget guard (fix #6): stop before running another round once the
+    // reported usage (or local estimate, when the gateway stays silent)
+    // crosses the per-run budget. The interrupted round heals on the next
+    // message (toOpenAiMessages folds it to plain text).
+    if (config.sessionBudgetTokens > 0) {
+      const est = usageKnown ? usedTokens : estimateTokens(openai) + estimateCompletionTokens(t);
+      if (est > config.sessionBudgetTokens) {
+        log.wrn('agt', `budget sesi ${config.sessionBudgetTokens} token terlampaui (≈${est}) — giliran dihentikan`);
+        emit({
+          type: 'error',
+          message: `Pemakaian token giliran ini sudah ≈${est}, melebihi batas ${config.sessionBudgetTokens}. ` +
+            'Giliran dihentikan agar kuotamu aman — kirim pesan baru untuk melanjutkan.',
+        });
+        emit({ type: 'done', turns: turn });
+        return added;
+      }
     }
 
     // Record the assistant turn (with tool_calls) for the next round.
@@ -419,7 +544,9 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
       const toolMsg = { role: 'tool', toolCallId: call.id, name: call.name, content: output };
       emit({ type: 'toolresult', msg: toolMsg });
       added.push(toolMsg);
-      openai.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: output });
+      // The gateway only ever sees the windowed copy (fix #2); the app's
+      // persisted history keeps the full output for the UI.
+      openai.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: forModel(output) });
     }
   }
 
@@ -432,6 +559,14 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
 function safeJson(s) {
   if (typeof s !== 'string' || !s.trim()) return {};
   try { return JSON.parse(s); } catch { return { _raw: s }; }
+}
+
+/** Completion-side estimate (chars/4) for the budget guard when the
+ *  gateway reports no usage: the round's own text + reasoning + tool args. */
+function estimateCompletionTokens(t) {
+  let ch = t.content.length + t.reasoning.length;
+  for (const c of t.toolCalls) ch += (c.name || '').length + (c.args || '').length;
+  return Math.ceil(ch / 4);
 }
 
 // ---------- live model verification (T-ML26) ----------
@@ -633,4 +768,4 @@ async function verifyModels({ apiKey, providerId, models, signal, emit }) {
   emit({ type: 'done', ok, dead, unknown });
 }
 
-module.exports = { runAgent, callGateway, toOpenAiMessages, sanitizeOptions, buildBody, safeJson, verifyModels, probeModel };
+module.exports = { runAgent, callGateway, toOpenAiMessages, sanitizeOptions, buildBody, safeJson, verifyModels, probeModel, forModel, estimateTokens, compactOldTools };

@@ -63,6 +63,11 @@ data class LiveTurn(
 class ChatEngine(val session: Session) {
 
     val live = MutableStateFlow<LiveTurn?>(null)
+
+    /** Gateway-reported usage accumulated over this session (T-ML29) —
+     *  seeded from the persisted counter so the meter survives restarts. */
+    val sessionTokens = MutableStateFlow(session.tokensUsed)
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var call: Call? = null
 
@@ -242,6 +247,20 @@ class ChatEngine(val session: Session) {
                     name = m.str("name"),
                 )
                 persist()
+            }
+            "usage" -> {
+                // Token usage the gateway reported for one agent round
+                // (T-ML29 fix #1: stream_options.include_usage). Feeds the
+                // session meter chip; totalTokens preferred, else p+c.
+                val pt = ev["promptTokens"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+                val ct = ev["completionTokens"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+                val total = ev["totalTokens"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: (pt + ct)
+                if (total > 0) {
+                    session.tokensUsed += total
+                    sessionTokens.value = session.tokensUsed
+                    Logx.i("chat", "usage +$total tok (ptok=$pt ctok=$ct) → sesi ${session.tokensUsed}")
+                    persist()
+                }
             }
             "error" -> {
                 Logx.e("chat", "event error dari server: ${ev.str("message").take(160)}")

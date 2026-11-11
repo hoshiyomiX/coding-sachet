@@ -240,13 +240,14 @@ function lockHint(output) {
 
 /** Build the tool registry for a run (T-ML28). The bash tool's cwd — and
  *  the workdir the model is told about — follow the session's project
- *  folder when one was pinned, else the server default. */
+ *  folder when one was pinned, else the server default. The output windows
+ *  and read_lines are the token economy (T-ML29). */
 function toolsFor(workdir) {
   const wd = (typeof workdir === 'string' && safeNewPath(workdir)) || config.workdir;
   return [
     {
       name: 'bash',
-      description: `Run a shell command inside the Ubuntu sandbox (workdir ${wd}). Use it for git, grep, find, installing packages with apt, running builds and tests. Output is capped.`,
+      description: `Run a shell command inside the Ubuntu sandbox (workdir ${wd}). Use it for git, grep, find, installing packages with apt, running builds and tests. You receive the head and tail of the output (~4 KB total); the full output is kept on record — narrow the command (grep, tail, head) when you need the middle.`,
       parameters: {
         type: 'object',
         properties: {
@@ -263,7 +264,7 @@ function toolsFor(workdir) {
     },
     {
       name: 'read_file',
-      description: 'Read a text file (source code, config, notes). Returns the content, possibly truncated for large files.',
+      description: 'Read a text file (source code, config, notes). For big files you receive the head and tail (~4 KB total) — use read_lines to page through the rest.',
       parameters: {
         type: 'object',
         properties: {
@@ -275,6 +276,37 @@ function toolsFor(workdir) {
         const r = readFile(args.path);
         if (!r.ok) return r;
         return { ok: true, output: r.content, path: r.path, size: r.size, truncated: r.truncated, binary: r.binary };
+      },
+    },
+    {
+      name: 'read_lines',
+      description: 'Read a line range of a text file with line numbers — the way to see the MIDDLE of a file whose read_file was windowed, or to page through big files.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path of the file' },
+          from: { type: 'number', description: 'First line to read, 1-based (default 1)' },
+          count: { type: 'number', description: 'How many lines (default 120, max 400)' },
+        },
+        required: ['path'],
+      },
+      run: async (args) => {
+        const r = readFile(args.path);
+        if (!r.ok) return r;
+        if (r.binary) return { ok: false, error: 'File biner — tidak bisa dibaca per baris.' };
+        const lines = r.content.split('\n');
+        const from = Math.max(1, Math.floor(Number(args.from) || 1));
+        const count = Math.min(Math.max(1, Math.floor(Number(args.count) || 120)), 400);
+        const slice = lines.slice(from - 1, from - 1 + count);
+        if (!slice.length) return { ok: false, error: `Baris ${from} melebihi akhir file (total ${lines.length} baris).` };
+        let out = slice.map((l, i) => `${String(from + i).padStart(6)}| ${l}`).join('\n');
+        if (out.length > 16384) out = out.slice(0, 16384) + '\n…(dipotong 16 KB — minta rentang lebih sempit)';
+        return {
+          ok: true,
+          output: `baris ${from}–${from + slice.length - 1} dari ${lines.length} (file ${r.size} byte):\n${out}`,
+          path: r.path,
+          totalLines: lines.length,
+        };
       },
     },
     {

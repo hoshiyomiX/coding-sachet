@@ -141,6 +141,7 @@ fun ChatScreen(
     var input by remember { mutableStateOf("") }
     var sessionsVersion by remember { mutableIntStateOf(0) }
     val nullLive = remember { MutableStateFlow<LiveTurn?>(null) }
+    val nullTokens = remember { MutableStateFlow(0L) }
 
     // Two-tab chat session (T-ML28 #3): 0 = Prompt (chat), 1 = Project tree.
     var tab by remember { mutableIntStateOf(0) }
@@ -184,6 +185,7 @@ fun ChatScreen(
     LaunchedEffect(runtimeState) { if (runtimeState is RuntimeState.Running) refreshQuota() }
 
     val live by (engine?.live ?: nullLive).collectAsState()
+    val sessionTokens by (engine?.sessionTokens ?: nullTokens).collectAsState()
     val msgs = current?.messages ?: emptyList()
 
     // Tool results of the persisted history, keyed by toolCallId.
@@ -403,10 +405,15 @@ fun ChatScreen(
             bottomBar = {
                 if (tab == 0) {
                 Column {
-                    // ---------- sisa token APInex (di atas kolom chat, kanan) ----------
-                    if (Graph.prefs.provider == "apinex" && Graph.prefs.apiKey.isNotBlank()) {
-                        QuotaChip(state = quotaState, onRefresh = { refreshQuota(fresh = true) })
-                    }
+                    // ---------- meter token (T-ML29) ----------
+                    // Kiri: pemakaian sesi ini (usage gateway, semua provider).
+                    // Kanan: sisa token APInex (hanya provider apinex).
+                    TokenMeterRow(
+                        sessionTokens = sessionTokens,
+                        showQuota = Graph.prefs.provider == "apinex" && Graph.prefs.apiKey.isNotBlank(),
+                        quotaState = quotaState,
+                        onRefreshQuota = { refreshQuota(fresh = true) },
+                    )
                     // ---------- composer ----------
                     Surface(tonalElevation = 3.dp) {
                         Row(
@@ -554,12 +561,49 @@ private sealed class QuotaState {
     data class Failed(val message: String) : QuotaState()
 }
 
-/** "Sisa token" indicator above the chat composer, right-aligned. The
- *  count is the ACTUAL number (T-ML28 #2: formatTokenCount, id-ID
- *  grouping — 19300000 → "19.300.000"), never an abbreviation. */
+/** Token meter row above the composer (T-ML29): session usage on the left
+ *  (gateway-reported via stream_options.include_usage, any provider),
+ *  APInex remaining quota on the right. Both counts are the ACTUAL number
+ *  (formatTokenCount, id-ID grouping — 19300000 → "19.300.000", T-ML28 #2),
+ *  never an abbreviation — the old "±20,0 jt" rounding hid ±100k. */
+@Composable
+private fun TokenMeterRow(
+    sessionTokens: Long,
+    showQuota: Boolean,
+    quotaState: QuotaState,
+    onRefreshQuota: () -> Unit,
+) {
+    val showSession = sessionTokens > 0
+    if (!showSession && !(showQuota && quotaState !is QuotaState.Idle)) return
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (showSession) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.heightIn(min = 32.dp).padding(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    "${LocalStrings.current.sessionUsageLabel}: ${formatTokenCount(sessionTokens)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        if (showQuota) QuotaChip(state = quotaState, onRefresh = onRefreshQuota)
+    }
+}
+
+/** The APInex remaining-quota chip — a Surface only; the enclosing row owns
+ *  alignment. Emits nothing while Idle. */
 @Composable
 private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
     val s = LocalStrings.current
+    if (state is QuotaState.Idle) return
     val value = when (state) {
         QuotaState.Idle -> return
         QuotaState.Loading -> "…"
@@ -570,27 +614,22 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
         }
         is QuotaState.Failed -> "—"
     }
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
-        horizontalArrangement = Arrangement.End,
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier
+            .heightIn(min = 32.dp)
+            .clickable(onClick = onRefresh)
+            .semantics { contentDescription = "${s.quotaLabel}: $value" }
+            .padding(horizontal = 12.dp, vertical = 4.dp),
     ) {
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier
-                .heightIn(min = 32.dp)
-                .clickable(onClick = onRefresh)
-                .semantics { contentDescription = "${s.quotaLabel}: $value" }
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-        ) {
-            Text(
-                "${s.quotaLabel}: $value",
-                style = MaterialTheme.typography.labelMedium,
-                color = if (state is QuotaState.Failed) MaterialTheme.colorScheme.error
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-        }
+        Text(
+            "${s.quotaLabel}: $value",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (state is QuotaState.Failed) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
     }
 }
 

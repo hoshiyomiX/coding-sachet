@@ -11,6 +11,15 @@ const http = require('http');
  *   { kind: 'text', text }                → plain assistant text
  *   { kind: 'tools', text, calls: [{id, name, args}] } → tool_calls round
  *   { kind: 'error', status, message }    → non-200 reply (e.g. 429 rate limit)
+ *   { kind: 'reject_stream_options', text?, calls? }
+ *                                          → HTTP 400 "stream_options not
+ *   supported" WHEN the request carries stream_options, else a normal
+ *   reply (exercises the agent's adaptive drop of the field, T-ML29)
+ * reply.usage / opts.usage: an OpenAI usage object appended as the final
+ *   SSE chunk before [DONE] (stream_options.include_usage, T-ML29):
+ *   { prompt_tokens, completion_tokens, total_tokens,
+ *     prompt_tokens_details: { cached_tokens },
+ *     completion_tokens_details: { reasoning_tokens } }
  *
  * opts.key:    the bearer token the mock accepts (default 'sk-test-123')
  * opts.models: model ids served by /v1/models
@@ -188,6 +197,12 @@ function startMockGateway(script, opts = {}) {
           res.end(JSON.stringify({ error: { message: reply.message } }));
           return;
         }
+        if (reply.kind === 'reject_stream_options' && parsed.stream_options) {
+          // A strict relay that rejects unknown body fields (T-ML29).
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'Unrecognized request argument supplied: stream_options' } }));
+          return;
+        }
 
         // SSE reply
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -216,6 +231,10 @@ function startMockGateway(script, opts = {}) {
           send({ choices: [{ delta: { content: t.slice(Math.ceil(t.length / 2)) }, finish_reason: null }] });
           send({ choices: [{ delta: {}, finish_reason: 'stop' }] });
         }
+        // The usage chunk a stream_options.include_usage gateway sends
+        // as the LAST data event (empty choices, T-ML29).
+        const usage = reply.usage || opts.usage;
+        if (usage) send({ choices: [], usage });
         res.write('data: [DONE]\n\n');
         res.end();
         return;
