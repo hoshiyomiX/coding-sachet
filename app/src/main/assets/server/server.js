@@ -518,6 +518,46 @@ async function route(req, res) {
   sendJson(res, 404, { error: 'not found' });
 }
 
+/** Sliding-window burst detector behind the unhandledRejection policy
+ *  (T-ML33): an isolated stray rejection is survivable, a BURST is fatal.
+ *  Pure and unit-tested — start() only wires it to the process event. */
+function makeUnhandledPolicy({ limit = 5, windowMs = 60000 } = {}) {
+  const hits = [];
+  return {
+    /** Record one rejection at `now`; true only when the window is full. */
+    note(now = Date.now()) {
+      hits.push(now);
+      while (hits.length && now - hits[0] > windowMs) hits.shift();
+      return hits.length >= limit;
+    },
+  };
+}
+
+// Process-level handlers are installed ONCE per process: the test suite
+// calls start() dozens of times and must not pile up listeners.
+let processHandlersInstalled = false;
+
+function installProcessHandlers() {
+  if (processHandlersInstalled) return;
+  processHandlersInstalled = true;
+  // Die loudly if the event loop breaks: the app's supervisor restarts us.
+  process.on('uncaughtException', (e) => { log.err('srv', 'uncaught:', e.stack || e.message); process.exit(1); });
+  // An unhandled rejection used to mean instant exit(1) — until the
+  // 2026-11-11 field crash, where ONE transient socket cut (undici
+  // "terminated" racing the body cleanup) took the whole server down with
+  // the turn. Isolated rejections are logged and SURVIVED now; only a burst
+  // (>= 5 within the window) means the process is truly wedged — then exit
+  // so the app supervisor fast-path restarts us clean.
+  const burst = makeUnhandledPolicy();
+  process.on('unhandledRejection', (e) => {
+    log.err('srv', 'unhandled:', (e && (e.stack || e.message)) || e);
+    if (burst.note()) {
+      log.err('srv', 'unhandledRejection beruntun — proses dianggap rusak, keluar untuk restart bersih');
+      process.exit(1);
+    }
+  });
+}
+
 /** Start the server; returns the http.Server (useful for tests). */
 function start() {
   try {
@@ -542,9 +582,7 @@ function start() {
     }
     log.inf('srv', `workdir: ${config.workdir}`);
   });
-  // Die loudly if the event loop breaks: the app's supervisor restarts us.
-  process.on('uncaughtException', (e) => { log.err('srv', 'uncaught:', e.stack || e.message); process.exit(1); });
-  process.on('unhandledRejection', (e) => { log.err('srv', 'unhandled:', e); process.exit(1); });
+  installProcessHandlers();
   return srv;
 }
 
@@ -582,4 +620,4 @@ function productionSetup() {
 
 if (require.main === module) main();
 
-module.exports = { main, start, route, fetchModels, fetchQuota, writeResolvConf, currentResolvServers, warmUpGateways, log: logLine };
+module.exports = { main, start, route, fetchModels, fetchQuota, writeResolvConf, currentResolvServers, warmUpGateways, makeUnhandledPolicy, log: logLine };

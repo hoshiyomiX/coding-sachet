@@ -105,8 +105,25 @@ function clampWait(ms) {
 // content exists before headers, so retrying a 429 is always safe.
 const MAX_429_RETRIES = 2;
 
+/** cancel() on an ALREADY-ERRORED stream returns a promise REJECTED with
+ *  the stored error (WHATWG Streams spec) — a try/catch around the CALL
+ *  itself can never see that. The 2026-11-11 field crash: a mid-stream
+ *  socket cut left exactly such a floating rejection, and the process-level
+ *  unhandledRejection handler answered with exit(1) — one transient network
+ *  blip killed the whole server ("Server keluar (kode 1)") and took the
+ *  turn with it. Every body/reader cleanup goes through here now; the
+ *  no-op catch is NOT optional. */
+function cancelQuietly(cancelable) {
+  try {
+    const p = cancelable && typeof cancelable.cancel === 'function'
+      ? cancelable.cancel()
+      : null;
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  } catch { /* already closed */ }
+}
+
 /** One streamed call to the provider. Returns the assembled assistant turn. */
-async function callGateway({ apiKey, providerId, model, messages, tools, options, signal, onDelta }) {
+async function callGatewayOnce({ apiKey, providerId, model, messages, tools, options, signal, onDelta }) {
   const provider = providerById(providerId) || config.providers.apinex;
   const opts = sanitizeOptions(options);
   const controller = new AbortController();
@@ -198,11 +215,11 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
 
     // ---- parse the SSE stream ----
     const turn = { content: '', reasoning: '', toolCalls: [], finishReason: null, usage: null };
+    let done = false;
 
     try {
       const decoder = new TextDecoder();
       let buffer = '';
-      let done = false;
 
       for await (const chunk of res.body) {
         buffer += decoder.decode(chunk, { stream: true });
@@ -217,7 +234,11 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
 
           let j;
           try { j = JSON.parse(payload); } catch { continue; }
-          if (j.error) throw new Error(j.error.message || 'gateway error');
+          if (j.error) {
+            const ge = new Error(j.error.message || 'gateway error');
+            ge.gatewayError = true; // rethrown untouched by the stream catch
+            throw ge;
+          }
           // The usage chunk (stream_options.include_usage, T-ML29): it
           // carries NO choices — read it before the choices guard below.
           if (j.usage && typeof j.usage === 'object') {
@@ -261,8 +282,30 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
         }
         if (done) break;
       }
+    } catch (e) {
+      // The stream died mid-read (socket cut → undici "terminated", or the
+      // request timer aborting a stalled stream). What happens next depends
+      // on how much of the round the user already SAW (T-ML33).
+      if (done) {
+        // [DONE] arrived — the round is complete whatever cleanup says.
+        log.wrn('agt', `stream ${provider.label} selesai dengan sisa error (${e.message}) — putaran tetap dipakai`);
+        turn.toolCalls = turn.toolCalls.filter((tc) => tc.name || tc.id);
+        return turn;
+      }
+      if (signal && signal.aborted) throw new Error('dibatalkan'); // user stop: final
+      if (e.gatewayError) throw e; // the gateway itself reported an error
+      const sawContent = turn.content !== '' || turn.reasoning !== '';
+      if (!sawContent) {
+        // Nothing visible was emitted — tool-call fragments are assembled
+        // silently and only surface AFTER a round completes, so a fresh
+        // attempt can never duplicate anything the user saw.
+        const err = new Error(`stream ${provider.label} terputus sebelum ada data: ${e.message}`);
+        err.streamRetry = true;
+        throw err;
+      }
+      throw new Error(`Koneksi ke ${provider.label} terputus di tengah balasan (${e.message}) — sebagian balasan tidak sempat tersimpan, kirim pesan lagi untuk melanjutkan`);
     } finally {
-      try { res.body.cancel(); } catch { /* already closed */ }
+      cancelQuietly(res.body);
     }
 
     turn.toolCalls = turn.toolCalls.filter((t) => t.name || t.id);
@@ -270,6 +313,33 @@ async function callGateway({ apiKey, providerId, model, messages, tools, options
   } finally {
     clearTimeout(timer);
     if (signal) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+// Bounded transparent retries for streams that die before any visible
+// output (T-ML33). One is enough: the 2026-11-11 field failure class is a
+// single VPN-path hiccup, not a sustained outage — a dead path still fails
+// cleanly through the connect-phase retries and the request timer.
+const MAX_STREAM_RETRIES = 1;
+
+/** Stream-resilient front door: a gateway stream that dies BEFORE anything
+ *  visible was emitted gets ONE transparent retry — the user sees a
+ *  reconnect hint instead of a dead turn. Retries go through the rate
+ *  limiter again (they are real requests) and a user stop during the paced
+ *  wait aborts immediately instead of retrying a cancelled turn. */
+async function callGateway(params) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await callGatewayOnce(params);
+    } catch (e) {
+      if (!e || !e.streamRetry || attempt >= MAX_STREAM_RETRIES) throw e;
+      const provider = providerById(params.providerId) || config.providers.apinex;
+      log.wrn('agt', `stream dari ${provider.label} terputus sebelum ada data (${e.message}) — coba ulang ${attempt + 1}/${MAX_STREAM_RETRIES}`);
+      if (params.onDelta) {
+        params.onDelta({ type: 'netretry', attempt: attempt + 1, provider: provider.label, detail: e.message.slice(0, 120) });
+      }
+      await abortableSleep(1000, params.signal);
+    }
   }
 }
 
@@ -590,7 +660,7 @@ async function readUntilAlive(res, firstChunkMs, signal) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { reader.cancel(); } catch { /* already closed */ }
+      cancelQuietly(reader);
       resolve(v);
     };
     const timer = setTimeout(() => finish({ ok: false, reason: 'timeout' }), firstChunkMs);

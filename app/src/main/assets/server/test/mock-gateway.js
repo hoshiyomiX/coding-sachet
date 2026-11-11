@@ -25,6 +25,12 @@ const http = require('http');
  * opts.models: model ids served by /v1/models
  * opts.flakyChat:  destroy the socket of the first N chat requests before
  *                  replying (simulates a VPN bring-up connect failure)
+ * opts.cutStream:   destroy the socket of the first N chat requests
+ *                  MID-STREAM — SSE headers first, then (cutStreamText ?
+ *                  one text delta : nothing), then the socket dies after
+ *                  cutStreamDelayMs (default 60). The 2026-11-11 field
+ *                  failure shape: undici "terminated" on the client side
+ *                  (exercises the T-ML33 stream retry / partial path).
  * opts.hangChat:   never answer the first N chat requests — not even
  *                  headers (simulates a black-holed connect under VPN;
  *                  exercises the client's header-phase timeout + retry)
@@ -148,6 +154,22 @@ function startMockGateway(script, opts = {}) {
         }
         if (opts.flakyChat && chatAttempts <= opts.flakyChat) {
           res.socket.destroy();
+          return;
+        }
+        // Mid-stream socket cut (T-ML33): headers out, maybe one text
+        // delta, then the socket dies — an ESTABLISHED stream breaking,
+        // not a connect failure.
+        if (opts.cutStream && chatAttempts <= opts.cutStream) {
+          requests.push(JSON.parse(body));
+          chatAuths.push(req.headers.authorization);
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          res.flushHeaders();
+          if (opts.cutStreamText) {
+            res.write(`data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant', content: opts.cutStreamText }, finish_reason: null }] })}\n\n`);
+          }
+          setTimeout(() => {
+            try { res.socket.destroy(); } catch { /* already gone */ }
+          }, opts.cutStreamDelayMs ?? 60);
           return;
         }
         const parsed = JSON.parse(body);

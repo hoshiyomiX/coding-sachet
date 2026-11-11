@@ -896,3 +896,103 @@ test('chat: workdir di luar sandbox → fallback diam ke workdir default', async
   assert.ok(toolend.output.includes(config.workdir));
   assert.ok(!toolend.output.includes('/etc'));
 });
+
+// ---------- T-ML33: mid-stream socket cuts (the 2026-11-11 field crash) ----------
+// A VPN path hiccup cut an ESTABLISHED SSE stream ("terminated"), the body
+// cleanup floated a rejected cancel() promise, and the unhandledRejection
+// handler answered exit(1) — server dead, turn dead. These pin the fix.
+
+test('T-ML33 agent: stream cut before any data → transparent retry, nothing floats', async (t) => {
+  const gw = await startMockGateway([{ kind: 'text', text: 'pulih' }], { cutStream: 1 });
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+  const { runAgent } = require('../agent');
+
+  // The exact regression guard: a cancel() on the errored body used to
+  // float as an unhandled rejection and kill the process.
+  const unhandled = [];
+  const sniff = (e) => unhandled.push(e);
+  process.on('unhandledRejection', sniff);
+  t.after(() => process.off('unhandledRejection', sniff));
+
+  const added = await runAgent({
+    apiKey: 'sk-test-123', providerId: 'apinex', model: 'x',
+    messages: [{ role: 'user', content: 'hai' }],
+    emit: () => {},
+  });
+  assert.strictEqual(added[added.length - 1].content, 'pulih');
+  assert.strictEqual(gw.chatAttempts, 2); // first cut mid-stream, retry delivered
+  // Give any floating rejection time to surface before judging the guard.
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.strictEqual(unhandled.length, 0);
+});
+
+test('T-ML33 agent: stream cut after partial text → friendly error, NO retry', async (t) => {
+  const gw = await startMockGateway([{ kind: 'text', text: 'tidak pernah sampai' }], {
+    cutStream: 1,
+    cutStreamText: 'sebagian…',
+  });
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+  const { runAgent } = require('../agent');
+
+  await assert.rejects(
+    runAgent({
+      apiKey: 'sk-test-123', providerId: 'apinex', model: 'x',
+      messages: [{ role: 'user', content: 'hai' }],
+      emit: () => {},
+    }),
+    (e) => {
+      assert.match(e.message, /terputus di tengah balasan/);
+      return true;
+    }
+  );
+  // Partial content was already streamed to the user — a retry would
+  // duplicate visible text, so exactly ONE attempt may happen.
+  assert.strictEqual(gw.chatAttempts, 1);
+});
+
+test('T-ML33 server: mid-stream cut before data → retry heals the turn over HTTP', async (t) => {
+  const gw = await startMockGateway([{ kind: 'text', text: 'pulih juga' }], { cutStream: 1 });
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  const events = await collectSse(
+    port, '/api/chat',
+    { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
+    { model: 'test-pro', messages: [{ role: 'user', content: 'hai' }] }
+  );
+  assert.ok(!events.some((e) => e.type === 'error'), 'no error event may surface');
+  assert.ok(events.find((e) => e.type === 'done'), 'turn completes cleanly');
+  assert.ok(events.find((e) => e.type === 'netretry'), 'reconnect hint surfaced');
+  assert.strictEqual(gw.chatAttempts, 2);
+});
+
+test('T-ML33 server: unhandledRejection burst policy — isolated survives, burst is fatal', () => {
+  const { makeUnhandledPolicy } = require('../server');
+  const t0 = 1_000_000;
+
+  // Default wiring: 5 hits inside the 60 s window trip the fuse.
+  const p = makeUnhandledPolicy();
+  assert.strictEqual(p.note(t0), false);
+  assert.strictEqual(p.note(t0 + 1000), false);
+  assert.strictEqual(p.note(t0 + 2000), false);
+  assert.strictEqual(p.note(t0 + 3000), false);
+  assert.strictEqual(p.note(t0 + 4000), true); // 5th inside the window
+
+  // Isolated rejections spaced past the window never burst.
+  const q = makeUnhandledPolicy();
+  for (let i = 0; i < 12; i++) assert.strictEqual(q.note(t0 + i * 61_000), false);
+
+  // Custom wiring sanity.
+  const r = makeUnhandledPolicy({ limit: 2, windowMs: 1000 });
+  assert.strictEqual(r.note(t0), false);
+  assert.strictEqual(r.note(t0 + 500), true);
+});

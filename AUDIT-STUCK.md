@@ -160,3 +160,23 @@ Verifikasi dari perangkat yang menunggu: (1) `git clone` langsung jalan tanpa ap
 ## §10 Addendum T-ML32 — budget guard dihapus (2026-11-11, APK 1.0.34-34)
 
 Atas perintah owner ("Hapus pengaman budget karena tidak perlu. APInex sudah menyediakan token gratis sebanyak 20.000.000 token/day"), seluruh mekanisme budget guard dilepas dari agent: leg pre-flight, leg post-hoc, closure sintesis `stopForBudget`, `estimateCompletionTokens`, dan konstanta `sessionBudgetTokens` di config — run yang sah tidak lagi berhenti di ≈100 rb token/giliran. Yang TETAP: pelacakan usage + meter UI (event `usage` per putaran), pemangkasan `forModel`, kompaksi konteks, `maxTurns` 24, done-tracking jalur mati-server (recoverOrFail 90 dtk), dan kartu yatim "terputus…". Konsekuensi pada poin verifikasi perangkat (3) di §9: tidak lagi relevan — tidak ada batas budget yang bisa ditabrak; sisa poinnya tetap berlaku.
+
+## §11 Addendum T-ML33 — crash ketiga: "terminated" mid-stream + server exit(1) (2026-11-11, APK 1.0.36-36)
+
+Bukti: `upload/logcat-20261111-144405.txt` (app **1.0.35 build 351** = run#35 df274f4). Chat #2 (14:42:58, proyek tesoww, msgs=83) berjalan sehat 12 putaran (est stabil ±15,7 rb tok — kompaksi T-ML29 bekerja), lalu **putaran 13** (mulai 06:43:44,9) mati ±8 dtk kemudian: `chat gagal … 54861ms: terminated` → `unhandled: terminated` → **Server keluar (kode 1)** → fast-path restart 2 dtk (T-ML27 bekerja, sesi utuh). Giliran mati; est token putaran-13 (±15,7 rb) terbuang.
+
+**Konteks jaringan** (jalur VPN aktif): `resolv.conf diperbarui` 06:42:13 — 45 dtk sebelum chat #2, plus 2× `connect retry UND_ERR_SOCKET` (06:28:38, 06:43:24) pada jendela yang sama — jalur ke api.apinex.bond memang fluktuatif hari itu.
+
+**Akar teknis** (dari kode, HEAD df274f4): socket terputus di tengah stream SSE → undici melempar `TypeError: terminated` dari `for await (chunk of res.body)` → tertangkap handler chat (`chat gagal … terminated`, bubble error ke app — sampai sini perilaku benar). NAMUN `finally { try { res.body.cancel() } catch {} }` di agent.js: **`cancel()` pada stream yang SUDAH errored mengembalikan promise yang REJECT dengan error tersimpan** (spesifikasi WHATWG Streams) — try/catch di sekitar panggilannya tidak bisa menangkapnya karena penolakan terjadi asinkron → promise mengambang → `unhandledRejection` → handler server.js langsung `process.exit(1)`. Satu blip jaringan transient = seluruh server mati. Dua baris error pada detik yang sama di log (yang satu tertangkap, yang satu "unhandled", sama-sama berpesan `terminated`) adalah sidik jari mekanisme ini.
+
+**Fix T-ML33** (72/72 test, 4 baru):
+
+| # | Perubahan | Efek |
+|---|---|---|
+| F1 | `cancelQuietly()` — semua pembersihan body/reader (`callGatewayOnce`, `readUntilAlive`) memasang `.catch` pada promise `cancel()` | Regresi promise mengambang tertutup; tidak ada lagi `unhandledRejection` dari pembersihan stream |
+| F2 | Catch khusus SSE mid-stream: `[DONE]` sudah terlihat → putaran tetap dipakai; user-stop → `dibatalkan`; error gateway (`j.error`, diberi tag) diteruskan apa adanya; **belum ada output terlihat** → tag `streamRetry`; sudah ada teks/reasoning tampil → pesan ramah "Koneksi ke X terputus di tengah balasan … kirim pesan lagi" | Error "terminated" polos tak lagi muncul; kasus parsial jelas bagi user |
+| F3 | Wrapper `callGateway` (sekali-jalan `callGatewayOnce`): `streamRetry` → **1× retry transparan** lewat rate-limiter (permintaan nyata), hint `netretry` ke UI, jeda 1 dtk abortable | Potongan stream SEBELUM data apa pun sembuh sendiri — user lihat hint sambung-ulang, bukan giliran mati. Aman karena fragmen tool-call tidak pernah di-emit per-delta (hanya utuh setelah putaran selesai) |
+| F4 | server.js: `unhandledRejection` tidak lagi langsung exit — dicatat + **selamat**; exit(1) hanya bila ledakan ≥5 dalam 60 dtk (`makeUnhandledPolicy`, pure + unit test) | Blip transient tak lagi membunuh server; proses benar-benar rusak tetap dapat restart bersih via supervisor |
+| F5 | Handler level-proses dipasang sekali per proses (guard) | Suite test yang memanggil `start()` berulang tak menumpuk listener |
+
+Sekaligus terverifikasi di lapangan dari dump yang sama: **T-ML32 hidup** — chat #2 berjalan sampai 240.947 token run tanpa berhenti di batas 100 rb (guard sudah tidak ada), `usage ptok/ctok/run` + meter sesi tetap jalan; T-ML29 (kompaksi, est stabil ±15 rb pada msgs=108) juga terkonfirmasi.
