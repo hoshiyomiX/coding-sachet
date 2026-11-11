@@ -139,7 +139,7 @@ Rantai "stuck" yang dilihat owner 19 menit (11:38 → 11:57, tanpa `chat mulai` 
 
 Sekaligus terkonfirmasi dari dump yang sama: **T-ML29 hidup di perangkat** — 33 baris `[agt] usage ptok=… run=…`, `read_lines` dipakai model, kompaksi menjaga ptok (max 14,7 rb di run 105 rb token), dan `dpkg --configure -a` di chat #1 selesai sendiri tanpa kill (56,2 dtk — beruntung, kelas risikonya tetap ada).
 
-## §9 Status implementasi T-ML31 (2026-11-11, APK 1.0.31-31)
+## §9 Status implementasi T-ML31 (2026-11-11, APK 1.0.32-32)
 
 | # | Perubahan | Status |
 |---|---|---|
@@ -153,4 +153,6 @@ Sekaligus terkonfirmasi dari dump yang sama: **T-ML29 hidup di perangkat** — 3
 | BARU-b | agent.js **pre-flight**: `usedTokens + est×1,25 + min(1000, 10% budget)` > batas → berhenti SEBELUM memanggil gateway (putaran & token tak lagi terbuang) | ✅ |
 | P2-6 | Badge model berbayar (allowFree=false) di picker | ⏸ ditunda — bukan kelas stuck |
 
-Test server **68/68** (3 baru: closure post-hoc, pre-flight, maxTurns). Verifikasi dari perangkat yang menunggu: (1) `git clone` langsung jalan tanpa apt; (2) matikan paksa server di tengah turn → sesi lanjut sendiri ≤90 dtk; (3) sesi yang menabrak budget menampilkan pesan "Giliran dihentikan oleh pengaman budget…" dan kartu tool-nya berhenti (tidak berputar).
+Test server **68/68** (3 baru: closure post-hoc, pre-flight, maxTurns) · CI run#31 SUCCESS tapi asset rootfs 75 MB (apt 2.7 runner menulis `pkgcache.bin`+`srcpkgcache.bin` ±99 MB ×2 di bawah `Dir::Cache` — tak terlihat di dry-run lokal karena apt 3.0 sandbox tak menulisnya) → run#32 purge `var/cache/apt/*` → asset bersih 31,5 MB · verifikasi APK **32 PASS/0 FAIL** (sha256 3-way, badging 1.0.32 vCode 321, signer V2, agent/tools/config.js APK==repo, literal dex+js lengkap, **/usr/bin/git + git-core + libcurl-gnutls terbukti di dalam asset rootfs APK**).
+
+Verifikasi dari perangkat yang menunggu: (1) `git clone` langsung jalan tanpa apt; (2) matikan paksa server di tengah turn → sesi lanjut sendiri ≤90 dtk; (3) sesi yang menabrak budget menampilkan pesan "Giliran dihentikan oleh pengaman budget…" dan kartu tool-nya berhenti (tidak berputar); (4) sesi lama yang dulu berputar "berjalan…" kini tampak "terputus…".
