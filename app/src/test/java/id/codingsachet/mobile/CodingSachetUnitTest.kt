@@ -322,9 +322,17 @@ class CodingSachetUnitTest {
     }
 
     @Test
-    fun codingSchemeIsTheUntouchedDefault() {
+    fun codingSchemeIsTheVendorDefaultBaseline() {
         val coding = Schemes.byId("coding")!!
-        assertEquals("", coding.optionsJson)   // gateway defaults
+        // T-ML35: the coding scheme pins the vendor-recommended sampling
+        // baseline explicitly (z.ai GLM-5.3 / NVIDIA bolt-e4b both tune
+        // reasoning models at temperature 1.0 + top_p 0.95) instead of the
+        // old "" (relay-dependent defaults). Persona stays the default
+        // coding-agent prompt.
+        val o = json.parseToJsonElement(coding.optionsJson) as JsonObject
+        assertEquals(2, o.size)
+        assertEquals(1.0, (o["temperature"] as kotlinx.serialization.json.JsonPrimitive).content.toDouble(), 0.0)
+        assertEquals(0.95, (o["top_p"] as kotlinx.serialization.json.JsonPrimitive).content.toDouble(), 0.0)
         assertNull(coding.systemPrompt)        // default coding-agent prompt
         assertEquals("", Schemes.storedPrompt(coding))
         assertEquals("coding", Schemes.DEFAULT_ID)
