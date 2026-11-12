@@ -11,6 +11,7 @@ import id.codingsachet.mobile.ui.IdStrings
 import id.codingsachet.mobile.ui.ProjectNames
 import id.codingsachet.mobile.ui.SachetStrings
 import id.codingsachet.mobile.ui.Schemes
+import id.codingsachet.mobile.ui.canContinueFromHistory
 import id.codingsachet.mobile.ui.formatTokenCount
 import id.codingsachet.mobile.ui.projectDir
 import id.codingsachet.mobile.ui.stringsFor
@@ -374,5 +375,47 @@ class CodingSachetUnitTest {
         assertEquals("123", formatTokenCount(123L))
         assertFalse(formatTokenCount(19_300_000L).contains("jt"))
         assertFalse(formatTokenCount(45_000L).contains("rb"))
+    }
+
+    @Test
+    fun deadRunIsContinuableOnlyWhenHistoryEndsInAToolRound() {
+        // T-ML37 P1-3: the "Lanjutkan" button may only appear when the model
+        // still owes a response — the history ends in a tool result, or in an
+        // assistant round whose results never arrived (an interrupted round
+        // the server heals). Everything else is a plain error.
+        val call = ToolCall(id = "c1", name = "bash")
+        assertTrue(
+            "tool result terakhir = run bisa dilanjutkan",
+            canContinueFromHistory(
+                listOf(
+                    Msg(role = "user", content = "kerja"),
+                    Msg(role = "assistant", content = "", toolCalls = listOf(call)),
+                    Msg(role = "tool", content = "exit=0", toolCallId = "c1", name = "bash"),
+                )
+            )
+        )
+        assertTrue(
+            "ronde terputus tanpa hasil = run bisa dilanjutkan",
+            canContinueFromHistory(
+                listOf(
+                    Msg(role = "user", content = "kerja"),
+                    Msg(role = "assistant", content = "Aku cek dulu—", toolCalls = listOf(call)),
+                )
+            )
+        )
+        assertFalse(
+            "jawaban final sudah tersampaikan = tidak ada yang dilanjutkan",
+            canContinueFromHistory(
+                listOf(
+                    Msg(role = "user", content = "hai"),
+                    Msg(role = "assistant", content = "Sudah selesai."),
+                )
+            )
+        )
+        assertFalse(
+            "pesan user terakhir = run belum mulai",
+            canContinueFromHistory(listOf(Msg(role = "user", content = "hai")))
+        )
+        assertFalse("history kosong", canContinueFromHistory(emptyList()))
     }
 }

@@ -786,12 +786,18 @@ test('chat: black-holed gateway connect → netretry hints, then a fast connect-
   // through a cold VPN tunnel). The chat path must retry with a fresh
   // budget (surfacing 'netretry' events) and fail with a connect-timeout
   // error in seconds, NOT hang silently up to the 5-minute request timer.
+  // The T-ML37 connect LADDER is disabled here (gatewayConnectRetries=0)
+  // so this test keeps pinning the quick in-fetch phase fast; the ladder
+  // itself is pinned by test/resilience.test.js.
   const gw = await startMockGateway([{ kind: 'text', text: 'ok' }], { key: 'nvapi-test-123', hangChat: 99 });
   t.after(() => gw.close());
   const config = useGateways({ nvidia: gw });
   const orig = config.connectTimeoutMs;
   config.connectTimeoutMs = 200;
   t.after(() => { config.connectTimeoutMs = orig; });
+  const origLadder = config.gatewayConnectRetries;
+  config.gatewayConnectRetries = 0;
+  t.after(() => { config.gatewayConnectRetries = origLadder; });
 
   const { runAgent } = require('../agent');
   const events = [];

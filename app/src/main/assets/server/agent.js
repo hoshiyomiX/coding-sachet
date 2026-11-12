@@ -105,6 +105,12 @@ function clampWait(ms) {
 // content exists before headers, so retrying a 429 is always safe.
 const MAX_429_RETRIES = 2;
 
+// Quick connect-phase retries inside ONE gateway call (fetchWithHeaderBudget,
+// sub-second delays): they heal a transient VPN hiccup fast. When even these
+// are exhausted the error is tagged connectRetry and the callGateway LADDER
+// (T-ML37 P0-1) takes over with the owner-ordered 10 × 10 s patience.
+const CONNECT_QUICK_RETRIES = 2;
+
 /** cancel() on an ALREADY-ERRORED stream returns a promise REJECTED with
  *  the stored error (WHATWG Streams spec) — a try/catch around the CALL
  *  itself can never see that. The 2026-11-11 field crash: a mid-stream
@@ -164,9 +170,17 @@ async function callGatewayOnce({ apiKey, providerId, model, messages, tools, opt
           // "no response" field report) heals with a retry instead of a
           // silent spinner up to the 5-minute request timeout. Once headers
           // arrive the stream runs under the global timer alone.
-          { timeoutMs: config.connectTimeoutMs, retries: 2, delays: [500, 1500] },
-          (attemptNo, err) => {
-            if (onDelta) onDelta({ type: 'netretry', attempt: attemptNo, provider: provider.label, detail: netErrorDetail(err).slice(0, 120) });
+          { timeoutMs: config.connectTimeoutMs, retries: CONNECT_QUICK_RETRIES, delays: [500, 1500] },
+          // T-ML37 P0-2: a connect retry is a REAL gateway arrival — the
+          // 2026-11-12 field 429s were self-inflicted (16-17 real arrivals
+          // vs 13-14 counted in the 60 s window before each 429, because
+          // acquire() only ran once per turn). The retry now acquires a
+          // 15 RPM slot of its own before its fetch fires.
+          async (attemptNo, err) => {
+            if (onDelta) onDelta({ type: 'netretry', attempt: attemptNo, max: CONNECT_QUICK_RETRIES + 1, provider: provider.label, detail: netErrorDetail(err).slice(0, 120) });
+            const hint = peekWaitMs(providerId);
+            if (hint > 500 && onDelta) onDelta({ type: 'ratelimit', waitMs: hint });
+            await acquire(providerId, controller.signal);
           }
         );
         if (res.status === 400 && sendUsage) {
@@ -191,13 +205,17 @@ async function callGatewayOnce({ apiKey, providerId, model, messages, tools, opt
           // Named gateway so the user can tell APInex and NIM apart in the
           // error bubble (a field report blamed NIM while the failing
           // request was actually on the APInex provider).
-          throw new Error(
-            `gateway timeout ke ${provider.label} (koneksi ${Math.round(e.connectTimeoutMs / 1000)}s × 3 percobaan — cek jaringan/VPN)`
+          const err = new Error(
+            `gateway timeout ke ${provider.label} (koneksi ${Math.round(e.connectTimeoutMs / 1000)}s × ${CONNECT_QUICK_RETRIES + 1} percobaan — cek jaringan/VPN)`
           );
+          err.connectRetry = true; // T-ML37 P0-1: the wrapper ladder retries this
+          throw err;
         }
         throw new Error(`gateway timeout (${config.requestTimeoutMs / 1000}s)`);
       }
-      throw new Error(`Koneksi ke gateway ${provider.label} gagal: ${netErrorDetail(e)}`);
+      const err = new Error(`Koneksi ke gateway ${provider.label} gagal: ${netErrorDetail(e)}`);
+      err.connectRetry = true; // T-ML37 P0-1: the wrapper ladder retries this
+      throw err;
     }
 
     if (!res.ok) {
@@ -318,27 +336,63 @@ async function callGatewayOnce({ apiKey, providerId, model, messages, tools, opt
 
 // Bounded transparent retries for streams that die before any visible
 // output (T-ML33). One is enough: the 2026-11-11 field failure class is a
-// single VPN-path hiccup, not a sustained outage — a dead path still fails
-// cleanly through the connect-phase retries and the request timer.
+// single VPN-path hiccup, not a sustained outage.
 const MAX_STREAM_RETRIES = 1;
 
-/** Stream-resilient front door: a gateway stream that dies BEFORE anything
- *  visible was emitted gets ONE transparent retry — the user sees a
- *  reconnect hint instead of a dead turn. Retries go through the rate
- *  limiter again (they are real requests) and a user stop during the paced
- *  wait aborts immediately instead of retrying a cancelled turn. */
+/** Stream-resilient front door — TWO retry classes, neither of which can
+ *  duplicate anything the user saw:
+ *
+ *  * streamRetry (T-ML33): the stream died BEFORE any visible output →
+ *    ONE quick retry, 1 s apart.
+ *
+ *  * connectRetry (T-ML37 P0-1, owner order "10x10s retry", 2026-11-12):
+ *    the connect phase exhausted its quick in-fetch retries — a dead
+ *    VPN/radio path. A minimized window kills that path for 15-60 s in
+ *    the field while the quick retries only tolerate ~13 s (turn 89 of
+ *    the 2026-11-12 log: 3 attempts in 13 s, then a 2.47 M-token run
+ *    died without its final answer). The WHOLE gateway call is retried
+ *    up to config.gatewayConnectRetries times, config.gatewayRetryDelayMs
+ *    apart: each round gets a FRESH request timer and goes through the
+ *    15 RPM limiter again (a real arrival, T-ML37 P0-2), so a mid-run
+ *    chat survives minutes of dead path instead of seconds.
+ *
+ *  A user stop during any paced wait aborts immediately instead of
+ *  retrying a cancelled turn. */
 async function callGateway(params) {
-  for (let attempt = 0; ; attempt++) {
+  let streamTries = 0;
+  let connectTries = 0;
+  let firstConnectFailAt = 0;
+  for (;;) {
     try {
       return await callGatewayOnce(params);
     } catch (e) {
-      if (!e || !e.streamRetry || attempt >= MAX_STREAM_RETRIES) throw e;
       const provider = providerById(params.providerId) || config.providers.apinex;
-      log.wrn('agt', `stream dari ${provider.label} terputus sebelum ada data (${e.message}) — coba ulang ${attempt + 1}/${MAX_STREAM_RETRIES}`);
-      if (params.onDelta) {
-        params.onDelta({ type: 'netretry', attempt: attempt + 1, provider: provider.label, detail: e.message.slice(0, 120) });
+      if (e && e.streamRetry && streamTries < MAX_STREAM_RETRIES) {
+        streamTries++;
+        log.wrn('agt', `stream dari ${provider.label} terputus sebelum ada data (${e.message}) — coba ulang ${streamTries}/${MAX_STREAM_RETRIES}`);
+        if (params.onDelta) {
+          params.onDelta({ type: 'netretry', attempt: streamTries, max: MAX_STREAM_RETRIES, provider: provider.label, detail: e.message.slice(0, 120) });
+        }
+        await abortableSleep(1000, params.signal);
+        continue;
       }
-      await abortableSleep(1000, params.signal);
+      if (e && e.connectRetry && connectTries < config.gatewayConnectRetries) {
+        if (connectTries === 0) firstConnectFailAt = Date.now();
+        connectTries++;
+        log.wrn('agt', `gateway ${provider.label} tidak terjangkau (${e.message}) — coba ulang ${connectTries}/${config.gatewayConnectRetries} dalam ${Math.round(config.gatewayRetryDelayMs / 1000)}s`);
+        if (params.onDelta) {
+          params.onDelta({ type: 'netretry', attempt: connectTries, max: config.gatewayConnectRetries, provider: provider.label, detail: e.message.slice(0, 120) });
+        }
+        await abortableSleep(config.gatewayRetryDelayMs, params.signal);
+        continue;
+      }
+      if (e && e.connectRetry && connectTries > 0) {
+        // The ladder is spent and the path is still dead — say so instead
+        // of implying only three attempts were ever made.
+        const totalS = Math.max(1, Math.round((Date.now() - firstConnectFailAt) / 1000));
+        throw new Error(`${e.message} — sudah dicoba ulang ${connectTries}× selama ~${totalS}s, jalur masih mati`);
+      }
+      throw e;
     }
   }
 }

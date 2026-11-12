@@ -76,6 +76,11 @@ async function fetchRetryTimeout(url, opts = {}, { timeoutMs = 20000, retries = 
  * connect-level `fetch failed` is retried with a fresh budget, so the user
  * sees a reconnect hint instead of a silent spinner up to the global
  * request timeout (the NIM "no response" field report).
+ *
+ * `onRetry(attemptNo, err)` fires before each retry's fetch and MAY return
+ * a promise — it is awaited, so a caller can pace the retry through its
+ * own rate limiter before the real HTTP arrival happens (T-ML37 P0-2:
+ * every retry IS a gateway arrival and must hold a 15 RPM slot).
  */
 async function fetchWithHeaderBudget(url, opts = {}, { timeoutMs = 30000, retries = 2, delays = [500, 1500] } = {}, onRetry) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -114,8 +119,8 @@ async function fetchWithHeaderBudget(url, opts = {}, { timeoutMs = 30000, retrie
         }
         throw e;
       }
-      if (onRetry) onRetry(attempt + 1, e);
       log.wrn('net', `connect retry ${attempt + 1}/${retries} ${hostOf(url)}:`, netErrorDetail(e));
+      if (onRetry) await onRetry(attempt + 1, e); // may pace through the caller's rate limiter (T-ML37 P0-2)
       await sleep(delays[Math.min(attempt, delays.length - 1)]);
     }
   }

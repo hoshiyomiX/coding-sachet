@@ -51,6 +51,9 @@ data class LiveTurn(
     /** Set while the agent server retries the gateway connect with a fresh
      *  budget (cold VPN path) — the retry attempt number. */
     val reconnect: Int? = null,
+    /** Total attempts of the retry round in flight (T-ML37): the quick
+     *  in-fetch phase reports 3, the 10 × 10 s connect ladder reports 10. */
+    val reconnectMax: Int? = null,
     /** Which gateway is being retried ("APInex" / "NVIDIA NIM"), when the
      *  agent server names it — null keeps the generic "gateway" wording. */
     val reconnectTo: String? = null,
@@ -58,6 +61,11 @@ data class LiveTurn(
      *  broke because the agent server was killed (exit 137 in the field),
      *  the runtime is restarting it and the turn will continue on its own. */
     val restarting: Boolean = false,
+    /** The run died AFTER completed tool rounds (T-ML37 P1-3) and the
+     *  persisted history ends in a tool round — a "Lanjutkan" button can
+     *  re-issue the stream so the model produces the next round, instead
+     *  of losing the whole run's work over one dead network path. */
+    val canContinue: Boolean = false,
 )
 
 /**
@@ -91,6 +99,10 @@ class ChatEngine(val session: Session) {
     // silently vanishing reads as "the model never replied".
     private var receivedAnything = false
 
+    // Assistant rounds that finished THIS run (T-ML37 P1-3): feeds the
+    // "terputus setelah N putaran" wording when a run dies mid-flight.
+    private var roundsDone = 0
+
     // Set when the server's terminal `done` event arrives (T-ML31 P0-1).
     // The server ALWAYS emits done before closing on a designed exit —
     // a stream that FINs cleanly WITHOUT one means the node process was
@@ -113,6 +125,7 @@ class ChatEngine(val session: Session) {
         persist()
         receivedAnything = false
         receivedDone = false
+        roundsDone = 0
         turnStartedAt = System.currentTimeMillis()
         retryCount = 0
         turnCancelled = false
@@ -210,8 +223,9 @@ class ChatEngine(val session: Session) {
                 // The agent server is retrying the gateway connect with a
                 // fresh budget (cold VPN path) — show it instead of silence.
                 val n = ev["attempt"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
+                val max = ev["max"]?.jsonPrimitive?.content?.toIntOrNull()
                 val to = ev["provider"]?.jsonPrimitive?.contentOrNull
-                live.value = live.value?.copy(reconnect = n, reconnectTo = to?.takeIf { it.isNotBlank() }, waiting = null)
+                live.value = live.value?.copy(reconnect = n, reconnectMax = max, reconnectTo = to?.takeIf { it.isNotBlank() }, waiting = null)
             }
             "ratelimit" -> {
                 // The agent server is waiting out the gateway RPM window
@@ -239,6 +253,7 @@ class ChatEngine(val session: Session) {
             "message" -> {
                 val m = ev["msg"]?.jsonObject ?: return
                 receivedAnything = true
+                roundsDone++
                 session.messages += Msg(
                     role = m.str("role"),
                     content = m.str("content"),
@@ -280,7 +295,21 @@ class ChatEngine(val session: Session) {
             }
             "error" -> {
                 Logx.e("chat", "event error dari server: ${ev.str("message").take(160)}")
-                live.value = live.value?.copy(error = ev.str("message"))
+                // T-ML37 P1-3: a fatal error AFTER completed tool rounds is a
+                // graceful degradation, not a dead end — the persisted history
+                // ends in a tool round, so re-issuing the stream lets the model
+                // produce the next round. The 2026-11-12 field case: a 2.47 M
+                // token run (89 rounds) died on a dead VPN path with the final
+                // answer one round away. That work must not evaporate.
+                val resume = !turnCancelled && canContinueFromHistory(session.messages)
+                val msg = ev.str("message")
+                val text = if (!resume) msg else if (roundsDone > 0)
+                    "Terputus setelah $roundsDone putaran selesai ($msg). " +
+                        "Pekerjaan di penyimpanan tetap aman — tekan Lanjutkan untuk melanjutkan."
+                else
+                    "Koneksi gagal sebelum putaran pertama selesai ($msg). " +
+                        "Tekan Lanjutkan untuk mencoba lagi."
+                live.value = live.value?.copy(error = text, canContinue = resume, waiting = null, reconnect = null)
             }
             "done" -> {
                 // The server's designed terminal event — every planned exit
@@ -402,6 +431,26 @@ class ChatEngine(val session: Session) {
         onTurnFinished?.invoke()
     }
 
+    /** T-ML37 P1-3: resume a run that died mid-flight WITHOUT typing a new
+     *  message. The persisted history already ends with the last tool
+     *  results, so re-issuing the stream makes the model answer them — the
+     *  run continues exactly where it broke. Returns false when there is
+     *  nothing to continue from (or a turn is still in flight). */
+    fun continueRun(): Boolean {
+        if (busy) return false
+        if (!canContinueFromHistory(session.messages)) return false
+        receivedAnything = false
+        receivedDone = false
+        roundsDone = 0
+        turnStartedAt = System.currentTimeMillis()
+        retryCount = 0
+        turnCancelled = false
+        live.value = LiveTurn()
+        Logx.i("chat", "lanjutkan run yang terputus session=${session.id} msgs=${session.messages.size}")
+        startStream(session.model)
+        return true
+    }
+
     fun stop() {
         Logx.i("chat", "stop ditekan — batalkan stream session=${session.id}")
         turnCancelled = true
@@ -448,4 +497,19 @@ class ChatEngine(val session: Session) {
             Ringkas saat mengobrol, teliti saat menulis kode.
         """.trimIndent()
     }
+}
+
+/**
+ * T-ML37 P1-3 (pure, JVM-testable): can a dead run be CONTINUED from this
+ * history? True when the last persisted message is a tool result, or an
+ * assistant round that still awaits its results (an interrupted round the
+ * server heals) — i.e. the model still owes a response to something. A
+ * history ending in a user or plain assistant message has nothing to
+ * resume: the failure is surfaced as a plain error instead.
+ */
+fun canContinueFromHistory(messages: List<Msg>): Boolean {
+    val last = messages.lastOrNull() ?: return false
+    if (last.role == "tool") return true
+    if (last.role == "assistant" && !last.toolCalls.isNullOrEmpty()) return true
+    return false
 }

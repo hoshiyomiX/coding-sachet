@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -527,7 +528,7 @@ fun ChatScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         items(msgs) { m -> MessageBubble(m, toolResults, activeCallIds) }
-                        live?.let { l -> item { LiveBubble(l) } }
+                        live?.let { l -> item { LiveBubble(l, onResume = { engine?.continueRun() }) } }
                     }
                 }
             }
@@ -701,7 +702,7 @@ private fun resultOk(m: Msg): Boolean {
 
 /** The in-flight turn rendered below the history. */
 @Composable
-private fun LiveBubble(l: LiveTurn) {
+private fun LiveBubble(l: LiveTurn, onResume: () -> Unit = {}) {
     val s = LocalStrings.current
     Column(Modifier.fillMaxWidth().widthIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         // Rate-limit wait hint (client-side 15 RPM cap / 429 backoff).
@@ -715,10 +716,12 @@ private fun LiveBubble(l: LiveTurn) {
         }
         // Gateway connect retry hint (cold VPN path, fresh-budget retry).
         // Names the gateway when the server says which one it is retrying —
-        // APInex and NIM failures look identical otherwise.
+        // APInex and NIM failures look identical otherwise. The budget is
+        // dynamic (T-ML37): 3 for the quick in-fetch phase, 10 for the
+        // 10 × 10 s connect ladder.
         l.reconnect?.let {
             Text(
-                "${s.reconnecting} ${l.reconnectTo ?: "gateway"} ($it/3)…",
+                "${s.reconnecting} ${l.reconnectTo ?: "gateway"} ($it/${l.reconnectMax ?: 3})…",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.tertiary,
                 modifier = Modifier.padding(horizontal = 4.dp),
@@ -747,12 +750,25 @@ private fun LiveBubble(l: LiveTurn) {
         l.cards.forEach { ToolCard(it) }
         if (l.error != null) {
             Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.errorContainer) {
-                Text(
-                    l.error!!,
-                    Modifier.padding(10.dp),
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                Column(Modifier.padding(10.dp)) {
+                    Text(
+                        l.error!!,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    // T-ML37 P1-3: the run died after completed tool rounds —
+                    // the history ends in a tool round, so the model still owes
+                    // the next round. One tap re-issues the stream instead of
+                    // losing the whole run's work over a dead network path.
+                    if (l.canContinue && !l.busy) {
+                        Button(
+                            onClick = onResume,
+                            modifier = Modifier.padding(top = 8.dp),
+                        ) {
+                            Text(s.resumeRun)
+                        }
+                    }
+                }
             }
         }
         if (l.busy && l.cards.isEmpty() && l.text.isBlank() && l.thinking.isBlank()) {

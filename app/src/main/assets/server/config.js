@@ -109,6 +109,18 @@ const config = {
   // net.js fetchWithHeaderBudget). Env override is for the test suite only.
   connectTimeoutMs: Number(process.env.SACHET_CONNECT_TIMEOUT_MS || 30000),
 
+  // Gateway connect LADDER (T-ML37 P0-1, owner order "10x10s retry",
+  // 2026-11-12): how many times the stream-resilient wrapper retries a
+  // WHOLE gateway call after the connect phase exhausted its quick
+  // in-fetch retries, and the fixed delay between those rounds. Field
+  // evidence: a minimized window kills the VPN path for 15-60 s while the
+  // quick retries only tolerate ~13 s — the ladder buys minutes of
+  // patience for a mid-run chat (each round gets a FRESH request timer
+  // and goes through the 15 RPM limiter again, P0-2). Env overrides:
+  // test suite only (0 = ladder disabled, pins the pre-T-ML37 behaviour).
+  gatewayConnectRetries: Number(process.env.SACHET_GATEWAY_CONNECT_RETRIES ?? 10),
+  gatewayRetryDelayMs: Number(process.env.SACHET_GATEWAY_RETRY_DELAY_MS || 10000),
+
   // Minimum spacing between fire-and-forget warm-up rounds. The app pushes
   // the system DNS right after the server answers /health — without a
   // spacing floor that second round duplicates every warm-up log line.
