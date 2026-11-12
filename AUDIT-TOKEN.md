@@ -91,3 +91,56 @@ Kesimpulan aritmetika: angka 700 ribu **tidak mungkin** berasal dari dua sesi ya
 - Jendela logcat hanya ±80 detik (insiden-2) dan baris CS insiden-1 sudah terhapus rotasi buffer — rekonstruksi sesi A bergantung panel log in-app pada screenshot (utuh, kebal pruning).
 - Billing APInex per-model (apakah reasoning dihitung, ada minimum per-request, cached tokens) **tidak dapat diverifikasi dari sandbox** (Cloudflare 403 untuk IP datacenter) — ditandai sebagai asumsi; verifikasi dari perangkat nyata.
 - Aktivitas lain pada akun APInex owner di luar HP ini tidak terlihat dari bukti yang ada.
+
+---
+
+## §6 T-ML37 — Audit boros token: run 2.471.974 tok tanpa jawaban akhir (app 1.0.39, dump 09:43)
+
+Sumber: `upload/logcat-20261112-094328.txt` (panel log in-app 300 baris + logcat uid-scoped), chat sesi "tesoww" 09:35:13–09:42:23 (419,9 dtk), model `free/glm-5.3-flash` via APInex, 89 putaran, mati di putaran 89 (blip minimize, lihat T-ML36). Skrip rekonstruksi: `scripts/t-ml37-audit-tokens.py` (di repo sandbox stellar-trail). Angka tervalidasi ulang dengan kode (rekonsiliasi run-counter per putaran cocok persis dengan total per putaran).
+
+### §6.1 Angka terverifikasi (jendela terlihat: putaran 49–88, 40 putaran)
+
+| metrik | nilai |
+|---|---|
+| ptok per putaran | min 27.766 · rata 30.264 · maks 33.728 (drift +150 tok/putaran) |
+| ctok per putaran | 62–152 (rata 78); **rtok = 98,7% dari ctok** (reasoning tersembunyi; konten nyata ≈ 0–1 tok) |
+| komposisi konsumsi | **prompt = 99,74%** (ptok 1.210.557 vs ctok 3.112 pada 40 putaran terlihat) |
+| total run | 2.471.974 tok = **12,4% kuota 20 M/hari** dalam satu chat 7 menit |
+| cache prompt | field `cache=` **tidak pernah muncul sekali pun** di 40 putaran → §4#4 TERJAWAB: relay tidak melaporkan cached_tokens / tidak ada prefix cache yang aktif |
+| estimasi vs aktual | rasio ptok/est = 1,76–1,95 (rata **1,86**) → tokenizer efektif glm pada konten kode+ID = **2,15 chars/token**, bukan 4,00 |
+| tool calls (40/40 terlihat) | **semuanya bash baca**: `sed -n`, `cat -n`, `grep` — `read_lines` **tidak pernah dipakai**; total keluaran 196.742 ch; terbesar `cat -n` file utuh 15.309 ch |
+| bentuk history | msgs 411→489 (+2/putaran); ≥313 pesan pertama berasal dari histori sesi SEBELUM run ini; est duduk di 15,4–17,8 K (ambang kompaksi 16 K) |
+| hasil akhir | 40 putaran terlihat SEMUA `finish=tool_calls content=0ch` — **2,47 jt tok menghasilkan nol kalimat jawaban** (kerja file di disk tetap utuh) |
+
+### §6.2 Akar boros (terbukti dari bukti, terurut kontribusi)
+
+1. **Kalibrasi estimator meleset 1,86× (dominan)** — `contextCompactTokens=16000` dinilai `estimateTokens()` dengan asumsi 4 chars/token; tokenizer glm-5.3-flash pada konten kode+Indonesia efektifnya 2,15 chars/token. Akibat: ambang 16 K "estimasi" = **29,6 K token aktual** — konteks dibiarkan duduk di 28–34 K aktual per putaran dan dikirim ulang penuh tiap putaran. Kompaksi T-ML29 BEKERJA (est terpatri di ambang, lipatan terjadi t60/t65/t76), tapi ambangnya sendiri salah skala.
+2. **Lingkar setan jendela-baca ↔ baca-ulang** — model menjelajah kode dengan `sed -n`/`cat -n` berrentang 110–160 baris (5–7 K ch) dan `cat` file utuh (15,3 K ch), tapi `forModel()` memangkas keluaran jadi head 2 K + tail 2 K → **tengah rentang yang diminta model disembunyikan** → model meminta ulang bagian lain, tiap permintaan = +1 putaran = +30 K ptok. Dilengkapi: (a) kompaksi melipat hasil baca lama jadi satu baris → model kehilangan bacaannya dan membaca ulang; (b) SYSTEM_PROMPT hanya menyebut 4 tool (`bash, read_file, write_file, list_dir`) padahal terdaftar 5 — **`read_lines` tidak pernah diperkenalkan ke model** meski marker pangkasannya sendiri menyuruh "pakai read_lines"; (c) tidak ada peta proyek → jelajah sed/cat yang berkelana.
+3. **Pesan assistant lama tidak pernah dipangkas** — `compactOldTools()` hanya melipat `role:'tool'`. Tiap putaran menambah pesan assistant ber-args perintah (~150–300 ch) yang menumpuk selamanya → drift +150 tok/putaran terlihat di data; pada run panjang ini ≈ 200+ pesan assistant hidup di konteks.
+4. **Histori sesi lintas-kirim tak berbatas** — run ini dimulai dengan ≥313 pesan histori sesi "tesoww" dari chat sebelumnya (msgs=411 di putaran 49); seluruhnya ikut dinilai dan dikirim setiap putaran. Bersama #3, inilah bola salju yang membuat konteks dasar sudah ~28 K sebelum run ini menambah apa pun.
+
+Komponen tetap minor (untuk lengkap): skema 5 tool = 2.085 ch ≈ 970 tok aktual + system prompt 620 ch ≈ 290 tok ≈ 4% dari ptok per putaran.
+
+### §6.3 Matematika & kontrafaktual (89 putaran)
+
+- Aktual: **2.471.974 tok** (99,7% sisi prompt).
+- Kontrafaktual A — hanya kalibrasi ambang (konteks duduk di ~16 K aktual): 89 × 16 K ≈ **1.424.000 tok (−42%)**. Perubahan satu baris di `estimateTokens()` (divisor 4 → 2) + penyesuaian test.
+- Kontrafaktual B — A + setengah ronde baca (read_lines dipakai, tidak ada pangkasan tengah yang memaksa baca ulang): 45 × 16 K ≈ **720.000 tok (−71%)**.
+- Catatan caching: tanpa prefix cache (§6.1), satu-satunya tuas adalah mengecilkan konteks; bila suatu saat relay mengaktifkan caching, lipatan yang MEMUTASI pesan lama justru menggagalkan cache prefix — kalibrasi A (ambang turun) memperkecil frekuensi lipatan dan tetap kompatibel.
+
+### §6.4 Rekomendasi (menunggu order owner; tidak ada yang otomatis diimplementasi T-ML37)
+
+1. **(P0) Kalibrasi estimator**: `estimateTokens()` divisor 4 → **2** (konservatif vs 2,15 terukur) — ambang 16 K estimasi ≈ 16 K aktual. Efek −42%/run seperti kontrafaktual A. Satu baris + test.
+2. **(P0) Putus lingkar baca-ulang**: (a) sebut `read_lines` di SYSTEM_PROMPT ChatEngine (5 tool, bukan 4); (b) naikkan `contextCompactKeep` 3 → 6 untuk hasil baca, ATAU lipat dengan ringkasan 1–2 baris ("file X baris 90–175 sudah dibaca") alih-alih satu baris generik; (c) opsional: baris peta proyek (output `list_dir` ringkas) di system prompt sesi berproyek.
+3. **(P1) Lipat pesan assistant ber-tool_calls lama** jadi satu baris (mis. `[putaran N: bash sed …]`) — mematikan drift +150 tok/putaran.
+4. **(P1) Riset prefix-cache APInex** dari perangkat (dokumentasi relay; uji `cached_tokens` pada model lain) — bila aktif, desain lipatan harus append-only-friendly.
+5. **(P2) Batas histori sesi lintas-kirim**: ringkas/ pangkas histori sesi lama saat wire history melewati ambang (residu 313 pesan sesi "tesoww" ikut terbayar tiap putaran run baru).
+
+### §6.5 Status rekomendasi §4 lama (diverifikasi lapangan oleh dump ini)
+
+- §4#1 usage tracking + angka utuh: **HIDUP** (`[agt] usage` + meter sesi terlihat di log).
+- §4#2 jendela head/tail + read_lines: **HIDUP** (marker pangkasan muncul di beban model) — tapi lihat §6.2#2: read_lines tidak pernah DIPAKAI model.
+- §4#3 kompaksi: **HIDUP** (est terpatri di ambang) — tapi ambang salah skala (§6.2#1).
+- §4#4 caching: **TERJAWAB — tidak ada** (cache= nol kali di 40 putaran).
+- §4#5 reasoning=Nnch: **HIDUP** (`reasoning=0nch` di baris gateway selesai).
+- §4#6 budget guard: **DIHAPUS owner** (T-ML32) — dicatat sebagai keputusan, bukan utang.
