@@ -310,22 +310,50 @@ function syntaxGate(abs, content) {
   });
 }
 
+// ---------- TODO checklist parsing (T-ML39 protocol, T-ML40 tool) ----------
+
+/** Parse checklist items ("- [ ]" / "- [x]", asterisk bullets too) from
+ *  RENCANA.md text. Pure, shared by the agent-loop enforcement
+ *  (readTodoUnchecked) and the todo tool. Returns [{n, line, checked,
+ *  text}] with 1-based numbers in file order. */
+const TODO_LINE_RE = /^\s*[-*]\s+\[( |x|X)\]\s*(.*)$/;
+
+function todoItemsFromText(text) {
+  const out = [];
+  String(text).split('\n').forEach((l, idx) => {
+    const m = l.match(TODO_LINE_RE);
+    if (m) out.push({ n: out.length + 1, line: idx, checked: m[1].toLowerCase() === 'x', text: (m[2] || '').trim() });
+  });
+  return out;
+}
+
+/** One compact numbered listing of the plan (todo tool output). */
+function renderTodoItems(items) {
+  if (!items.length) return 'RENCANA.md belum punya langkah bercentang.';
+  return items.map((it) => `${it.n}. ${it.checked ? '[x]' : '[ ]'} ${it.text || '(tanpa teks)'}`).join('\n');
+}
+
 // ---------- tool registry exposed to the model ----------
 
 /** Build the tool registry for a run (T-ML28). The bash tool's cwd — and
  *  the workdir the model is told about — follow the session's project
  *  folder when one was pinned, else the server default. The output windows
- *  and read_lines are the token economy (T-ML29). */
+ *  and read_lines are the token economy (T-ML29); the todo tool is the
+ *  sanctioned way to tick RENCANA.md (T-ML40 — the 2026-11-14 field run
+ *  burned 5 putaran trying sed/python3 on it before falling back to
+ *  read+write). Descriptions are Indonesian (T-ML40 language pass): the
+ *  system prompt and personas are Indonesian, and one language keeps the
+ *  model's own output consistent too. */
 function toolsFor(workdir) {
   const wd = (typeof workdir === 'string' && safeNewPath(workdir)) || config.workdir;
   return [
     {
       name: 'bash',
-      description: `Run a shell command inside the Ubuntu sandbox (workdir ${wd}). Use it for git, grep, find, installing packages with apt, running builds and tests. You receive the head and tail of the output (~4 KB total); the full output is kept on record — narrow the command (grep, tail, head) when you need the middle.`,
+      description: `Jalankan perintah shell di sandbox Ubuntu (folder kerja ${wd}). Untuk git, grep, find, instalasi apt, build, dan test. Output dipangkas jadi kepala+ekor (~4 KB) — persempit perintah (grep, tail, head) bila butuh bagian tengah. Gabungkan beberapa perintah independen dengan && atau ; dalam satu panggilan.`,
       parameters: {
         type: 'object',
         properties: {
-          command: { type: 'string', description: 'The bash command to run' },
+          command: { type: 'string', description: 'Perintah bash yang dijalankan' },
         },
         required: ['command'],
       },
@@ -338,11 +366,11 @@ function toolsFor(workdir) {
     },
     {
       name: 'read_file',
-      description: 'Read a text file (source code, config, notes). For big files you receive the head and tail (~4 KB total) — use read_lines to page through the rest.',
+      description: 'Baca file teks (kode, konfigurasi, catatan). File besar dipangkas jadi kepala+ekor (~4 KB) — lanjutkan bagian tengahnya dengan read_lines.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Absolute path of the file' },
+          path: { type: 'string', description: 'Path absolut file' },
         },
         required: ['path'],
       },
@@ -354,13 +382,13 @@ function toolsFor(workdir) {
     },
     {
       name: 'read_lines',
-      description: 'Read a line range of a text file with line numbers — the way to see the MIDDLE of a file whose read_file was windowed, or to page through big files.',
+      description: 'Baca rentang baris file teks lengkap dengan nomor baris — cara melihat TENGAH file yang dipangkas jendela read_file, atau menjelajah file besar per bagian.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Absolute path of the file' },
-          from: { type: 'number', description: 'First line to read, 1-based (default 1)' },
-          count: { type: 'number', description: 'How many lines (default 120, max 400)' },
+          path: { type: 'string', description: 'Path absolut file' },
+          from: { type: 'number', description: 'Baris pertama, 1-based (default 1)' },
+          count: { type: 'number', description: 'Jumlah baris (default 120, maks 400)' },
         },
         required: ['path'],
       },
@@ -385,12 +413,12 @@ function toolsFor(workdir) {
     },
     {
       name: 'write_file',
-      description: 'Create or overwrite a text file. Parent directories are created automatically. A syntax gate runs automatically after every write (.js/.mjs/.cjs via node --check, .sh/.bash via bash -n, .json parsed in-process) — if it reports a failure, fix the file before doing anything else.',
+      description: 'Buat atau timpa file teks (direktori induk dibuat otomatis). Gerbang sintaks berjalan otomatis setelah tiap tulis (.js/.mjs/.cjs via node --check, .sh/.bash via bash -n, .json diparse in-process) — bila gagal, perbaiki file itu dulu sebelum lanjut apa pun.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Absolute path of the file' },
-          content: { type: 'string', description: 'Full file content' },
+          path: { type: 'string', description: 'Path absolut file' },
+          content: { type: 'string', description: 'Isi file lengkap' },
         },
         required: ['path', 'content'],
       },
@@ -420,12 +448,12 @@ Perbaiki file ini sebelum melanjutkan pekerjaan lain.`,
     },
     {
       name: 'list_dir',
-      description: 'List a directory tree (bounded depth). Use it to explore the project before editing.',
+      description: 'Lihat isi folder (pohon terbatas kedalaman) — untuk mengenali struktur proyek sebelum mengedit.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Absolute path of the directory' },
-          depth: { type: 'number', description: 'Depth to walk (default 2, max 4)' },
+          path: { type: 'string', description: 'Path absolut folder' },
+          depth: { type: 'number', description: 'Kedalaman penelusuran (default 2, maks 4)' },
         },
         required: ['path'],
       },
@@ -438,6 +466,72 @@ Perbaiki file ini sebelum melanjutkan pekerjaan lain.`,
         };
       },
     },
+    {
+      // T-ML40: the sanctioned RENCANA.md editor. Field evidence
+      // 2026-11-14 (putaran 14-18, 56,3 K tok = 37,6% dari run): the model
+      // tried sed (regex + kurung = gagal), python3 (TIDAK ADA di rootfs),
+      // which (exit≠0), then recovered via read_file+write_file. One tool
+      // call now does what took five rounds.
+      name: 'todo',
+      description: 'Baca atau perbarui daftar centang RENCANA.md (rencana kerja). Aksi "baca" menampilkan langkah bernomor; "centang" menandai langkah selesai; "coret" membatalkan langkah yang jadi tak relevan (wajib alasan). Bisa beberapa nomor sekaligus — jangan edit RENCANA.md dengan sed/python.',
+      parameters: {
+        type: 'object',
+        properties: {
+          aksi: { type: 'string', enum: ['baca', 'centang', 'coret'], description: 'Tindakan pada RENCANA.md' },
+          nomor: {
+            type: 'array',
+            items: { type: 'number' },
+            description: 'Nomor langkah yang diubah (lihat dari aksi "baca")',
+          },
+          alasan: { type: 'string', description: 'Alasan membatalkan langkah (wajib untuk aksi "coret")' },
+        },
+        required: ['aksi'],
+      },
+      run: async (args) => {
+        const aksi = args.aksi;
+        const file = path.join(wd, 'RENCANA.md');
+        const r = readFile(file);
+        if (!r.ok) return { ok: false, error: 'RENCANA.md belum ada di folder kerja — tulis dulu dengan write_file.' };
+        const lines = String(r.content).split('\n');
+        const items = todoItemsFromText(r.content);
+        if (aksi === 'baca') {
+          return { ok: true, output: renderTodoItems(items) };
+        }
+        if (aksi !== 'centang' && aksi !== 'coret') {
+          return { ok: false, error: 'aksi harus "baca", "centang", atau "coret".' };
+        }
+        const raw = Array.isArray(args.nomor) ? args.nomor : [args.nomor];
+        const nums = [...new Set(raw.map((v) => Math.floor(Number(v))).filter(Number.isFinite))];
+        if (!nums.length) return { ok: false, error: 'berikan nomor langkah pada parameter nomor (lihat daftarnya dengan aksi "baca").' };
+        const bad = nums.filter((v) => v < 1 || v > items.length);
+        if (bad.length) {
+          return { ok: false, error: `nomor di luar daftar: ${bad.join(', ')} — RENCANA.md punya ${items.length} langkah (lihat aksi "baca").` };
+        }
+        const alasan = typeof args.alasan === 'string' ? args.alasan.trim() : '';
+        if (aksi === 'coret' && !alasan) {
+          return { ok: false, error: 'aksi "coret" wajib menyertakan alasan.' };
+        }
+        for (const v of nums) {
+          const it = items[v - 1];
+          const line = lines[it.line];
+          if (aksi === 'centang') {
+            lines[it.line] = line.replace(/\[ \]/, '[x]');
+          } else if (!/^\s*[-*]\s+\[x\]\s*~~/.test(line)) {
+            const prefix = (line.match(/^\s*[-*]\s+/) || ['- '])[0];
+            lines[it.line] = `${prefix}[x] ~~${it.text}~~ (dibatalkan: ${alasan})`;
+          }
+        }
+        const content = lines.join('\n');
+        const w = writeFile(file, content);
+        if (!w.ok) return w;
+        const after = todoItemsFromText(content);
+        const label = aksi === 'centang' ? 'dicentang' : 'dicoret';
+        return {
+          ok: true,
+          output: `langkah ${nums.join(', ')} ${label}. RENCANA.md kini:\n${renderTodoItems(after)}`,
+        };
+      },
+    },
   ];
 }
 
@@ -445,4 +539,4 @@ const tools = toolsFor(config.workdir);
 
 const toolByName = Object.fromEntries(tools.map((t) => [t.name, t]));
 
-module.exports = { tools, toolsFor, toolByName, safePath, safeNewPath, resolveWorkdir, listDir, readFile, writeFile, runBash, lockHint, syntaxGate, SYNTAX_GATE_BY_EXT };
+module.exports = { tools, toolsFor, toolByName, safePath, safeNewPath, resolveWorkdir, listDir, readFile, writeFile, runBash, lockHint, syntaxGate, SYNTAX_GATE_BY_EXT, todoItemsFromText, renderTodoItems };

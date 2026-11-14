@@ -5,7 +5,8 @@
 
 const { config, providerById } = require('./config');
 const path = require('path');
-const { toolsFor, resolveWorkdir, readFile } = require('./tools');
+const fs = require('fs');
+const { toolsFor, resolveWorkdir, readFile, todoItemsFromText } = require('./tools');
 const { fetchWithRetry, fetchWithHeaderBudget, netErrorDetail } = require('./net');
 const { acquire, peekWaitMs, pauseFor, abortableSleep } = require('./ratelimit');
 const log = require('./log');
@@ -469,6 +470,61 @@ function compactOldTools(openai, folded, thresholdTokens, keep) {
   }
 }
 
+/** T-ML40 baseline elision (audit §6.7): shrink every tool result OLDER
+ *  than the newest `keep` to a short head summary, on EVERY round — the
+ *  16 K threshold alone never fired on mid-length runs (field session
+ *  2026-11-14: 19 putaran × full-history resend = 98,5% prompt tokens).
+ *  Results smaller than contextElideMinChars stay untouched (eliding a
+ *  13-char "exit=0" into a 200-char marker would COST tokens). Idempotent
+ *  via the `elided` index set; only the gateway-bound copy changes — the
+ *  app history keeps everything. */
+function elideOldTools(openai, elided, keep) {
+  keep = Math.max(1, keep | 0);
+  const toolIdx = [];
+  openai.forEach((m, i) => { if (m.role === 'tool') toolIdx.push(i); });
+  const candidates = toolIdx.slice(0, Math.max(0, toolIdx.length - keep));
+  for (const i of candidates) {
+    if (elided.has(i)) continue;
+    const m = openai[i];
+    const original = String(m.content || '');
+    if (original.length <= config.contextElideMinChars) continue;
+    elided.add(i);
+    const head = original.slice(0, config.contextElideHeadChars).replace(/\s+/g, ' ').trim();
+    m.content = `[${m.name || 'tool'} dipangkas hemat token — asli ${original.length}ch] ${head}…`;
+  }
+}
+
+/** T-ML40 (audit §6.4 R3, the +150 tok/putaran drift): once ALL of an
+ *  assistant round's tool results are elided, its tool_call arguments
+ *  stop earning their keep too — each old round kept ~150-300 ch of
+ *  command JSON alive forever. Compacted to a VALID-JSON {"ringkas":…}
+ *  wrapper (strict gateways must never see a truncated JSON string);
+ *  the id/name pairing stays intact, so history healing is unaffected.
+ *  Idempotent via the `done` index set. */
+function compactOldAssistantArgs(openai, elided, done) {
+  for (let a = 0; a < openai.length; a++) {
+    const m = openai[a];
+    if (m.role !== 'assistant' || !Array.isArray(m.tool_calls) || !m.tool_calls.length) continue;
+    if (done.has(a)) continue;
+    let j = a + 1;
+    let saw = false;
+    let allElided = true;
+    while (j < openai.length && openai[j].role === 'tool') {
+      saw = true;
+      if (!elided.has(j)) { allElided = false; break; }
+      j++;
+    }
+    if (!saw || !allElided) continue;
+    done.add(a);
+    for (const c of m.tool_calls) {
+      const args = c.function && c.function.arguments;
+      if (typeof args === 'string' && args.length > 140) {
+        c.function.arguments = JSON.stringify({ ringkas: args.slice(0, 100) });
+      }
+    }
+  }
+}
+
 /** T-ML39 TODO protocol: the plan file the coding agent is instructed to
  *  keep in its workdir (owner order sesi 27: protocol = TODO file —
  *  "agent menulis daftar langkah ke file kerja di awal, mencentang tiap
@@ -476,7 +532,11 @@ function compactOldTools(openai, folded, thresholdTokens, keep) {
  *  ("- [x]") and struck-through skips count as resolved; only "- [ ]"
  *  lines are outstanding. */
 const TODO_FILENAME = 'RENCANA.md';
-const TODO_UNCHECKED_RE = /^\s*[-*]\s+\[ \]\s*(\S.*)?$/;
+
+/** T-ML40 persistent project memory: the cross-session facts file in the
+ *  session workdir. Injected into the system prompt at run start, nudged
+ *  (once) at the end of long runs that never touched it. */
+const MEMORY_FILENAME = 'MEMORI.md';
 
 /** Read the workdir's RENCANA.md and return its unchecked step lines.
  *  Pure read: { exists:false } when absent or unreadable — enforcement
@@ -485,12 +545,35 @@ function readTodoUnchecked(workdir) {
   if (typeof workdir !== 'string' || !workdir) return { exists: false, unchecked: [] };
   const r = readFile(path.join(workdir, TODO_FILENAME));
   if (!r.ok) return { exists: false, unchecked: [] };
-  const unchecked = String(r.content || '')
-    .split('\n')
-    .map((l) => l.match(TODO_UNCHECKED_RE))
-    .filter(Boolean)
-    .map((m) => (m[1] || '(tanpa teks)').trim());
+  const unchecked = todoItemsFromText(r.content)
+    .filter((it) => !it.checked)
+    .map((it) => it.text || '(tanpa teks)');
   return { exists: true, unchecked };
+}
+
+/** Head of the workdir's MEMORI.md (capped), or null when absent/empty —
+ *  the cross-session context the next run in the same folder starts from
+ *  (T-ML40: "persistent memory"). Exported for tests. */
+function readProjectMemory(workdir) {
+  if (typeof workdir !== 'string' || !workdir) return null;
+  const r = readFile(path.join(workdir, config.memoryFilename));
+  if (!r.ok || r.binary) return null;
+  const text = String(r.content || '').trim();
+  if (!text) return null;
+  return text.length > config.memoryInjectMaxChars
+    ? text.slice(0, config.memoryInjectMaxChars) + '\n…(dipangkas — baca MEMORI.md utuh dengan read_lines)'
+    : text;
+}
+
+/** True when MEMORI.md is missing or was not written during THIS run —
+ *  the memory nudge fires at most once per run, wire-only, mirroring the
+ *  todo-nudge. Exported for tests. */
+function memoryStale(workdir, runStartMs) {
+  if (typeof workdir !== 'string' || !workdir) return false;
+  try {
+    const st = fs.statSync(path.join(workdir, config.memoryFilename));
+    return st.mtimeMs < runStartMs;
+  } catch { return true; } // missing file → stale
 }
 
 function toOpenAiMessages(messages) {
@@ -554,8 +637,8 @@ function toOpenAiMessages(messages) {
  * list of new messages lets the app extend its persisted history.
  */
 async function runAgent({ apiKey, providerId, model, messages, options, signal, emit, systemPrompt, workdir }) {
+  const runStartMs = Date.now();
   const openai = toOpenAiMessages(messages);
-  if (systemPrompt) openai.unshift({ role: 'system', content: systemPrompt });
 
   // Per-session project folder (T-ML28: "one project per folder"): the
   // bash tool's cwd — and the workdir the model is told about — follow the
@@ -563,7 +646,21 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
   // or missing values keep the server default; a chat never fails over it.
   const wd = resolveWorkdir(workdir);
   if (wd) log.inf('agt', `workdir sesi: ${wd}`);
-  const runTools = toolsFor(wd || config.workdir);
+  const runWorkdir = wd || config.workdir;
+
+  // T-ML40 persistent project memory: the head of MEMORI.md rides the
+  // system prompt, so the next run in the same folder starts from the
+  // facts the previous one wrote (structure, decisions, gotchas) instead
+  // of re-exploring from zero (field 2026-11-14: turns 2-5 = 17,2 K tok
+  // of pure re-discovery).
+  const memory = readProjectMemory(runWorkdir);
+  if (memory) {
+    log.inf('agt', `memori proyek dimuat: MEMORI.md ${memory.length}ch`);
+    systemPrompt = `${systemPrompt || ''}\n\nINGATAN PROYEK (MEMORI.md, ditulis sesi sebelumnya di folder kerja ini):\n${memory}\n(Akhir ingatan — perbarui MEMORI.md bila fakta sudah berubah.)`;
+  }
+  if (systemPrompt) openai.unshift({ role: 'system', content: systemPrompt });
+
+  const runTools = toolsFor(runWorkdir);
   const runToolByName = Object.fromEntries(runTools.map((t) => [t.name, t]));
   const openaiTools = runTools.map((t) => ({
     type: 'function',
@@ -573,6 +670,7 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
   const added = [];   // messages the app should persist
   let turn = 0;
   let todoNudges = 0; // T-ML39: TODO reminders already spent this run
+  let memoryNudges = 0; // T-ML40: MEMORI.md reminders already spent this run
 
   // Token economy (T-ML29): gateway-reported usage of every round feeds
   // the per-run usage events the app displays. There is NO budget stop
@@ -580,6 +678,8 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
   // the 100 k/turn guard only cut healthy long runs).
   let usedTokens = 0;
   const folded = new Set(); // indexes of openai entries already compacted
+  const elided = new Set(); // T-ML40: indexes already baseline-elided
+  const argsDone = new Set(); // T-ML40: assistant rounds whose args are compacted
 
   // NO turn ceiling (T-ML34, owner order: "hapus semua limit pada agent
   // terkecuali 15 RPM" — field evidence 2026-11-11 21:23: a healthy run
@@ -594,9 +694,14 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
     emit({ type: 'turn', n: turn });
     log.dbg('agt', `putaran ${turn}`);
 
-    // Fold old tool results once the prompt estimate passes the threshold
-    // (fix #3) — before the request, so round 1 of a long RESENT history
-    // gets the same protection as a long fresh run.
+    // Token economy, two tiers (T-ML29 + T-ML40 §6.7): baseline elision
+    // shrinks every tool result older than the newest keep to a head
+    // summary on EVERY round; the threshold fold above 16 K remains the
+    // second line of defense for extreme runs. Both run before the
+    // request, so round 1 of a long RESENT history gets the same
+    // protection as a long fresh run.
+    elideOldTools(openai, elided, config.contextCompactKeep);
+    compactOldAssistantArgs(openai, elided, argsDone);
     compactOldTools(openai, folded, config.contextCompactTokens, config.contextCompactKeep);
 
     const gwT0 = Date.now();
@@ -650,7 +755,7 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
       // a user-role message on the WIRE ONLY (never in `added` — the app
       // history stays exactly what the human and the model produced).
       if (todoNudges < config.todoNudgeMax) {
-        const todo = readTodoUnchecked(wd || config.workdir);
+        const todo = readTodoUnchecked(runWorkdir);
         if (todo.exists && todo.unchecked.length > 0) {
           todoNudges++;
           log.inf('agt', `todo-nudge ${todoNudges}/${config.todoNudgeMax}: ${todo.unchecked.length} langkah belum dicentang`);
@@ -661,11 +766,27 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
             content: '[pengingat harness] RENCANA.md masih memiliki ' +
               `${todo.unchecked.length} langkah belum dicentang:\n` +
               todo.unchecked.map((l) => `- ${l}`).join('\n') +
-              '\nSelesaikan langkah tersebut, atau coret dengan alasan bila sudah tidak relevan ' +
-              `(ubah "- [ ]" menjadi "- [x]" lalu tulis alasannya), lalu berikan jawaban akhirmu.`,
+              '\nTandai dengan tool todo (aksi "centang", atau "coret" bila jadi tak relevan), ' +
+              'lalu berikan jawaban akhirmu.',
           });
           continue;
         }
+      }
+      // T-ML40 memory enforcement: a long run that never touched
+      // MEMORI.md gets ONE wire-only reminder to write the cross-session
+      // facts down — same shape and guarantees as the todo-nudge.
+      if (memoryNudges < config.memoryNudgeMax && turn >= config.memoryNudgeMinTurns && memoryStale(runWorkdir, runStartMs)) {
+        memoryNudges++;
+        log.inf('agt', `memory-nudge ${memoryNudges}/${config.memoryNudgeMax}: MEMORI.md belum ditulis run ini`);
+        emit({ type: 'memorynudge', n: memoryNudges, max: config.memoryNudgeMax });
+        openai.push({ role: 'assistant', content: t.content || '' });
+        openai.push({
+          role: 'user',
+          content: '[pengingat harness] Run ini sudah ' + turn + ' putaran. Tulis atau perbarui MEMORI.md di folder kerja ' +
+            'dengan fakta yang berguna untuk sesi berikutnya (struktur proyek, keputusan, perintah verifikasi, ' +
+            'jebakan yang ditemui) — pakai write_file, ringkas saja — lalu berikan jawaban akhirmu.',
+        });
+        continue;
       }
       emit({ type: 'done', turns: turn });
       return added;
@@ -880,12 +1001,12 @@ async function verifyModels({ apiKey, providerId, models, signal, emit }) {
           ...(alive === false && e ? { reason: `health=${e.health}` } : {}),
         });
       }
-      log.inf('agt', `verify katalog ${providerId}: ${ok} hidup / ${dead} mati / ${unknown} tak dikenal`);
+      log.inf('agt', `verifikasi katalog ${providerId}: ${ok} hidup / ${dead} mati / ${unknown} tak ada di katalog`);
       emit({ type: 'done', ok, dead, unknown });
       return;
     } catch (e) {
       if (e && e.name === 'AbortError') throw e;
-      log.wrn('agt', `verify katalog ${providerId} gagal (${e.message}) — lanjut probe per model`);
+      log.wrn('agt', `verifikasi katalog ${providerId} gagal (${e.message}) — lanjut probe per model`);
     }
   }
 
@@ -920,10 +1041,10 @@ async function verifyModels({ apiKey, providerId, models, signal, emit }) {
     // ok:null (429/…) must stay free:null — "cannot tell", not "not free".
     const free = providerId === 'nvidia' ? (r.ok === true ? true : null) : null;
     emit({ type: 'result', model: m, ok: r.ok, free, ms: Date.now() - t0, ...(r.reason ? { reason: r.reason } : {}) });
-    log.dbg('agt', `verify ${providerId} ${m}: ${r.ok === true ? 'OK' : r.ok === false ? 'MATI' : 'TAK PASTI'} ${r.reason ? `(${r.reason})` : ''} ${Date.now() - t0}ms`);
+    log.dbg('agt', `verifikasi ${providerId} ${m}: ${r.ok === true ? 'OK' : r.ok === false ? 'MATI' : 'TAK PASTI'} ${r.reason ? `(${r.reason})` : ''} ${Date.now() - t0}ms`);
   }
-  log.inf('agt', `verify probe ${providerId}: ${ok} hidup / ${dead} mati / ${unknown} tak pasti`);
+  log.inf('agt', `verifikasi probe ${providerId}: ${ok} hidup / ${dead} mati / ${unknown} tak pasti`);
   emit({ type: 'done', ok, dead, unknown });
 }
 
-module.exports = { runAgent, callGateway, toOpenAiMessages, sanitizeOptions, buildBody, safeJson, verifyModels, probeModel, forModel, estimateTokens, compactOldTools, readTodoUnchecked, TODO_FILENAME };
+module.exports = { runAgent, callGateway, toOpenAiMessages, sanitizeOptions, buildBody, safeJson, verifyModels, probeModel, forModel, estimateTokens, compactOldTools, elideOldTools, compactOldAssistantArgs, readTodoUnchecked, readProjectMemory, memoryStale, TODO_FILENAME, MEMORY_FILENAME };

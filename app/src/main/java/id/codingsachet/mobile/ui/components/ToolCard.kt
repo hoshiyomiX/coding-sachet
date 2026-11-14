@@ -42,6 +42,7 @@ private fun ToolBadge(name: String) {
         name == "read_file" -> "R" to MaterialTheme.colorScheme.secondary
         name == "write_file" -> "W" to sachetSuccess()
         name == "list_dir" -> "L" to MaterialTheme.colorScheme.tertiary
+        name == "todo" -> "C" to sachetSuccess()
         else -> "T" to MaterialTheme.colorScheme.secondary
     }
     Box(
@@ -57,6 +58,7 @@ private fun toolLabel(name: String, s: id.codingsachet.mobile.ui.SachetStrings):
     "read_file" -> s.toolRead
     "write_file" -> s.toolWrite
     "list_dir" -> s.toolList
+    "todo" -> s.toolTodo
     else -> name
 }
 
@@ -66,6 +68,7 @@ private fun summarize(card: ToolCardUi): String = when (card.name) {
     "read_file" -> firstJsonField(card.args, "path") ?: ""
     "write_file" -> firstJsonField(card.args, "path") ?: ""
     "list_dir" -> firstJsonField(card.args, "path") ?: ""
+    "todo" -> firstJsonField(card.args, "aksi") ?: ""
     else -> card.args.take(60)
 }.take(72)
 

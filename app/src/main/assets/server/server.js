@@ -259,17 +259,17 @@ async function route(req, res) {
     const cacheKey = `${providerId}|${provider.baseUrl}|${key}`;
     const hit = modelsCache.get(cacheKey);
     if (hit && Date.now() - hit.at < MODELS_CACHE_TTL) {
-      log.dbg('srv', `models ${providerId} cache ${hit.ids.length} model`);
+      log.dbg('srv', `daftar model ${providerId} dari cache: ${hit.ids.length} model`);
       return sendJson(res, 200, { models: hit.ids, cached: true });
     }
     const t0 = Date.now();
     try {
       const ids = await fetchModels(key, provider);
       modelsCache.set(cacheKey, { at: Date.now(), ids });
-      log.inf('srv', `models ${providerId} OK ${ids.length} model ${Date.now() - t0}ms`);
+      log.inf('srv', `daftar model ${providerId} OK: ${ids.length} model ${Date.now() - t0}ms`);
       return sendJson(res, 200, { models: ids });
     } catch (e) {
-      log.err('srv', `models ${providerId} gagal ${Date.now() - t0}ms:`, e.message);
+      log.err('srv', `daftar model ${providerId} gagal ${Date.now() - t0}ms:`, e.message);
       return sendJson(res, 502, { error: e.message });
     }
   }
@@ -368,7 +368,7 @@ async function route(req, res) {
         return sendJson(res, 502, { error: e.message });
       }
     }
-    log.inf('srv', `verify ${providerId} mulai ${models.length} model`);
+    log.inf('srv', `verifikasi ${providerId}: mulai ${models.length} model`);
     const vT0 = Date.now();
 
     res.writeHead(200, {
@@ -389,8 +389,8 @@ async function route(req, res) {
     } catch (e) {
       // A user cancel (sheet closed / cancel button) aborts the sweep — a
       // normal exit, not a failure; results collected so far stay valid.
-      if (e.message === 'dibatalkan') log.dbg('srv', `verify dibatalkan user ${providerId} ${Date.now() - vT0}ms`);
-      else log.err('srv', `verify gagal ${providerId} ${Date.now() - vT0}ms:`, e.message);
+      if (e.message === 'dibatalkan') log.dbg('srv', `verifikasi dibatalkan user ${providerId} ${Date.now() - vT0}ms`);
+      else log.err('srv', `verifikasi gagal ${providerId} ${Date.now() - vT0}ms:`, e.message);
       emit({ type: 'error', message: e.message || String(e) });
       emit({ type: 'done' });
     } finally {
@@ -417,7 +417,7 @@ async function route(req, res) {
     if (!fresh) {
       const hit = quotaCache.get(cacheKey);
       if (hit && Date.now() - hit.at < QUOTA_CACHE_TTL) {
-        log.dbg('srv', `quota ${providerId} cache`);
+        log.dbg('srv', `kuota ${providerId} dari cache`);
         return sendJson(res, 200, { ...hit.payload, cached: true });
       }
     }
@@ -425,10 +425,10 @@ async function route(req, res) {
     try {
       const payload = await fetchQuota(key, provider);
       quotaCache.set(cacheKey, { at: Date.now(), payload });
-      log.inf('srv', `quota ${providerId} ${payload.source} ${Date.now() - qT0}ms`);
+      log.inf('srv', `kuota ${providerId} (${payload.source}) ${Date.now() - qT0}ms`);
       return sendJson(res, 200, payload);
     } catch (e) {
-      log.wrn('srv', `quota ${providerId} gagal ${Date.now() - qT0}ms:`, e.message);
+      log.wrn('srv', `kuota ${providerId} gagal ${Date.now() - qT0}ms:`, e.message);
       return sendJson(res, 502, { error: e.message });
     }
   }

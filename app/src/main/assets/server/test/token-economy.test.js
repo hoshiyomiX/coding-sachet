@@ -247,6 +247,12 @@ test('batas maxTurns DIHAPUS (T-ML34): putaran berjalan tanpa batas', async (t) 
   const oldRpm = config.providers.apinex.rpmLimit;
   config.providers.apinex.rpmLimit = 1000;
   t.after(() => { config.providers.apinex.rpmLimit = oldRpm; });
+  // T-ML40: a 31-putaran run would otherwise earn the MEMORI.md nudge —
+  // that bounded reminder has its own tests (project-memory.test.js);
+  // this test pins ONLY the turn ceiling, so keep it out of the picture.
+  const oldMemNudge = config.memoryNudgeMax;
+  config.memoryNudgeMax = 0;
+  t.after(() => { config.memoryNudgeMax = oldMemNudge; });
 
   const events = [];
   const added = await agent.runAgent({

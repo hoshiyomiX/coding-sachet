@@ -155,3 +155,51 @@ Owner: "Hasil coding dari APK Coding-Sachet tidak optimal & aimless, karena tida
 - **TAMBAHAN T-ML39 (di luar R1–R5, order sesi 27): TODO-file protocol + syntax harness** — RENCANA.md bercentang diajarkan di SYSTEM_PROMPT untuk kerja multi-langkah; enforcement di agent.js (todo-nudge: jawaban akhir ditolak selama ada langkah belum tercentang, pengingat wire-only maks 2× — model keras kepala tak pernah mengunci run, batas 15 RPM tetap satu-satunya limit); kontrak jawaban akhir (apa yang dikerjakan / file yang disentuh / cara verifikasi); gerbang sintaks otomatis pasca write_file (node --check .js/.mjs/.cjs, bash -n .sh/.bash, JSON in-process; file rusak = tool GAGAL + instruksi perbaiki-dulu).
 - **R3 / R4 / R5: TETAP MENUNGGU ORDER OWNER** (lihat §6.4).
 - **Verifikasi**: test server 83/83 (76 basis + 7 baru; KOREKSI KEDUA kelas hitungan: "75/75" worklog T-ML37 aktualnya 76 — runner menghitung entri file `test/mock-gateway.js` karena `node --test` mengeksekusi semua file di dalam direktori test/, selisih +1 historis kini dipecahkan) · app unit test 25 (+1 kontrak prompt) · CI run#42 gagal di unit test (skema menulis tanpa roster — diperbaiki run#43) · **run#43 SUCCESS → APK 1.0.43-43, t-ml39-verify-apk.py 63 PASS/0 FAIL** (sha 3-way, badging 431, signer V2, 6 file server APK==repo byte-identical, literal baru lengkap, prompt 4-tool lama ABSEN dari dex, regresi T-ML37/34/33/32 + rootfs utuh).
+
+## §6.7 T-ML40 — Audit sesi lapangan 149.739 tok (app 1.0.43, dump 13:25) + optimasi hemat-konteks
+
+Owner (sesi 28, 2026-11-14): "#1 eksekusi terminal, baca file, lihat isi folder, tulis file, read_lines, dll. semua itu spam dan tidak efficient + inconsistent bahasa & grammar. #2 token awal 25.000.000 berkurang 149.739 dengan hanya git clone sebuah repo. Optimize workflow/protocol agar tetap hemat token, fokus konteks, dan persistent memory. Target benchmark setara claude opus." Sumber: `upload/logcat-20261114-132521.txt` (panel log in-app + logcat uid-scoped) + screenshot 132532. Skrip rekonstruksi: `scripts/t-ml40-token-math.py` (repo sandbox stellar-trail). Skenario: clone `hoshiyomiX/coding-sachet` → eksplorasi struktur → jalankan test server → ringkas, model `free/deepseek-v4-pro-0813` via APInex.
+
+### §6.7.1 Angka terverifikasi (19 putaran, 90,6 dtk)
+
+| metrik | nilai |
+|---|---|
+| total run | **149.739 tok** (0,60% kuota 25 jt) — Σ ptok 147.429 + Σ ctok 2.310 (98,5% sisi prompt) |
+| pertumbuhan konteks | est 979 → 14.266 tok (msgs 2→38) — **kompaksi TIDAK PERNAH jalan** (ambang 16K tak pernah tersentuh) |
+| tokenizer model ini | ptok/est per-run = 0,91 → deepseek-v4-pro efektif ~2,2-2,4 ch/tok pada konten kode+ID (estimator /2 tetap konservatif, arah aman) |
+| ritme tool | 17 tool call / 19 putaran — **selalu 1 tool call per putaran** (batching tidak pernah diajarkan); 4 di antaranya GAGAL |
+| output terbesar | `node --test` suite penuh 41.793 ch (dijendelakan 4,3 K oleh forModel) |
+
+### §6.7.2 Atribusi pemborosan (ptok+ctok per zona; skrip §t-ml40-token-math)
+
+| zona putaran | apa yang terjadi | tok | % |
+|---|---|---|---|
+| 14-16 + 17-18 | **Mencentang 3 item RENCANA.md**: sed (GAGAL — kurung/regex), python3 (GAGAL — TIDAK ADA di rootfs), which (GAGAL), lalu pemulihan read_file+write_file — **5 putaran untuk 1 aksi** | 56.302 | **37,6%** |
+| 2-5 | eksplorasi beruntun satu-per-satu: `ls -la && find` → read_file 11.743 ch → list_dir → find lagi | 17.179 | 11,5% |
+| 12-13 | pasca todo-nudge: read_lines RENCANA + grep settings.gradle | 18.560 | 12,4% |
+| 9-10 | test diulang: 1 file lalu suite penuh lagi (duplikat verifikasi) | 16.663 | 11,1% |
+| 6-7 + 8 | tulis RENCANA + ls test + suite pertama GAGAL 15,2 dtk | 18.005 | 12,0% |
+| sisanya | putaran 1 + jawaban akhir ×2 + nudge | 23.030 | 15,4% |
+
+Akar teknis: (a) histori penuh dikirim ulang tiap putaran tanpa elisi (est naik monoton 979→14.266 — ambang kompaksi 16K dari T-ML29 hanya menyala pada run PANJANG); (b) tidak ada kontrak lingkungan (python3 tidak ada → 3 putaran mati); (c) tidak ada jalur resmi edit RENCANA.md (sed/python = jebakan); (d) prompt tidak mengajarkan batching → eksplorasi remeh-remeh per putaran; (e) inkonsistensi bahasa: tab "Project tree", kata log "quota/verify/models OK", deskripsi 5 tool ber-Inggris di tengah persona Indonesia.
+
+### §6.7.3 yang diimplementasikan T-ML40 (semua ter-tes, 102/102)
+
+1. **R3 ELISI BASELINE (agent.js `elideOldTools` + `compactOldAssistantArgs`)** — pada SETIAP putaran, hasil tool lebih tua dari 6 terakhir dipangkas jadi ringkasan kepala 160 ch + penanda (hasil ≤400 ch dibiarkan — marker lebih mahal dari isinya); args tool_call assistant yang seluruh hasilnya terelisi dibungkus `{"ringkas":…}` (JSON tetap valid utk gateway ketat; pasangan id/hasil tak disentuh). Ambang 16K tetap sebagai lapis kedua. Histori app + UI TIDAK terpangkas (elisi hanya di salinan gateway; histori sesi lama yang dikirim ulang juga terlindungi sejak putaran 1).
+2. **TOOL `todo` (tools.js)** — editor resmi RENCANA.md: aksi `baca`/`centang`/`coret`(+alasan) per nomor, sekali jalan untuk banyak nomor. Membunuh kelas 5-putaran-untuk-mencentang (37,6% dari run lapangan).
+3. **KONTRAK LINGKUNGAN + BATCHING di SYSTEM_PROMPT (ChatEngine.kt)** — "python TIDAK tersedia bawaan; pakai node"; "gabungkan perintah independen dalam SATU panggilan bash (&&/;) atau beberapa tool call dalam satu balasan"; path relatif `cd repo && …`; roster 6 tool (todo masuk, 3 persona ikut).
+4. **MEMORI.md PERSISTENT MEMORY (agent.js)** — kepala file (maks 1.200 ch) diinjeksi ke system prompt di awal run di folder kerja yang sama (fokus konteks: sesi berikutnya tidak menjelajah dari nol — zona 2-5 = 17,2 K tok); run ≥5 putaran yang tidak menyentuh MEMORI.md dapat SATU pengingat wire-only (pola todo-nudge, `memoryNudgeMax=1`, tidak pernah mengunci run).
+5. **LANGUAGE PASS** — tab "Project tree"→"Struktur proyek", "Preview JSON"→"Pratinjau JSON", label baru "Rencana kerja" + badge C untuk tool todo (Strings.kt/ToolCard.kt, ID+EN); log server `quota→kuota`, `verify→verifikasi`, `models OK→daftar model`, `tak dikenal→tak ada di katalog` (server.js/agent.js); deskripsi 6 tool kini berbahasa Indonesia konsisten dengan persona.
+
+### §6.7.4 Proyeksi & benchmark target (kelas Opus)
+
+Simulasi pada urutan putaran run lapangan yang sama (skrip t-ml40-token-math, rasio ptok/est aktual 0,91): elisi saja **−38%** (149.739 → ~92.900); elisi + tool todo (putaran 14-18 → 1) **−56%** (~66.100, 15 putaran). Belum dihitung: batching eksplorasi (zona 2-5 bisa 4→2 putaran), dedup test (−1 putaran), injeksi MEMORI.md pada sesi ulang (zona eksplorasi ±0) — dan biaya baru +150-300 tok/putaran (skema tool ke-6 + prompt +300 ch).
+
+**BENCHMARK B1 (dapat diulang di perangkat)** — skenario identik §6.7 (clone repo → pahami struktur → `node --test` → ringkas arsitektur), folder proyek segar:
+- Baseline 1.0.43/44: **149.739 tok · 19 putaran · 90,6 dtk · 4 tool GAGAL**.
+- Target 1.0.45: **≤ 75.000 tok · ≤ 14 putaran · 0 tool GAGAL** (ambang lolos), stretch ≤ 60.000 tok.
+- Bar kualitas kelas-Opus (di luar token): RENCANA.md ada & tercentang via tool todo; jawaban akhir membawa kontrak verifikasi (perintah+hasil); MEMORI.md tertulis; eksplorasi digabung (bukan satu `ls` per putaran).
+- Sesi kedua di folder yang sama (uji persistent memory): target eksplorasi ≤2 putaran berkat injeksi MEMORI.md.
+- Pengukuran: meter "Pemakaian sesi" (integer utuh) + panel log in-app.
+
+**Status R lama**: R3 SELESAI (elisi + args, diperluas dari rencana satu-baris §6.4#3); R5 TERCAKUP SEBAGIAN (elisi melindungi juga histori sesi lama yang dikirim ulang sejak putaran 1; pemangkasan teks assistant lama belum); R4 TETAP MENUNGGU (riset prefix-cache APInex dari perangkat — cache= 0× juga di run ini). Verifikasi T-ML40: test server **102/102** (83 basis + 19 baru: context-elide 6 + todo-tool 5 + project-memory 8) · app unit test +5 asersi kontrak prompt · CI #45.

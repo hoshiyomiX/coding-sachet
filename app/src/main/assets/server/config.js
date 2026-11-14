@@ -161,12 +161,38 @@ const config = {
   // calibration below, the compact threshold finally matches reality.
   contextCompactKeep: Number(process.env.SACHET_CONTEXT_COMPACT_KEEP || 6),
 
+  // T-ML40 baseline elision (audit §6.7, owner order sesi 28: "hemat
+  // token, fokus konteks"): the 16 K threshold above only fired on LONG
+  // runs — the 2026-11-14 field session (19 putaran, 149.739 tok) sat at
+  // est 14,3 K and never compacted, so EVERY round resent the whole
+  // history (98,5% of the run was prompt tokens). Elision now runs on
+  // EVERY round: tool results older than the newest contextCompactKeep
+  // are shrunk to a short head summary (contextElideHeadChars) as soon
+  // as they are bigger than contextElideMinChars — tiny outputs (exit
+  // codes, one-liners) stay untouched, they are already cheap. The
+  // 16 K threshold remains as the second tier (folds even the kept
+  // window to one-liners). Env overrides: test suite only.
+  contextElideHeadChars: Number(process.env.SACHET_CONTEXT_ELIDE_HEAD_CHARS || 160),
+  contextElideMinChars: Number(process.env.SACHET_CONTEXT_ELIDE_MIN_CHARS || 400),
+
   // T-ML39 TODO-protocol enforcement: how many times the agent loop may
   // bounce a "finished" answer back because RENCANA.md still has
   // unchecked steps. Bounded so a stubborn model can never trap the run
   // (owner order: no limits except 15 RPM — this is a prompt-side nudge,
   // not a turn ceiling; after the budget the answer is accepted).
   todoNudgeMax: Number(process.env.SACHET_TODO_NUDGE_MAX ?? 2),
+
+  // T-ML40 persistent project memory (owner order sesi 28): MEMORI.md in
+  // the session workdir survives across chats in the same folder. Its
+  // head (memoryInjectMaxChars) is injected into the system prompt at
+  // run start; a long run (≥ memoryNudgeMinTurns) that never touched the
+  // file gets ONE wire-only reminder to write it before the final answer
+  // — the todo-nudge pattern, bounded by memoryNudgeMax. Env overrides:
+  // test suite only.
+  memoryFilename: 'MEMORI.md',
+  memoryInjectMaxChars: Number(process.env.SACHET_MEMORY_INJECT_MAX_CHARS || 1200),
+  memoryNudgeMax: Number(process.env.SACHET_MEMORY_NUDGE_MAX ?? 1),
+  memoryNudgeMinTurns: Number(process.env.SACHET_MEMORY_NUDGE_MIN_TURNS || 5),
 
   // T-ML39 syntax harness: the write_file tool auto-gates .js/.mjs/.cjs
   // (node --check), .sh/.bash (bash -n) and .json (in-process parse)

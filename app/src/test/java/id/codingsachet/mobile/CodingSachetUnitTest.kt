@@ -424,26 +424,43 @@ class CodingSachetUnitTest {
     fun defaultCodingPromptPinsWorkflowContract() {
         // T-ML39 (owner order sesi 27 — hasil coding "aimless, tanpa
         // workflow/protocol/harness"): the default coding prompt must carry
-        // the TODO-file protocol (RENCANA.md), the FULL 5-tool roster
+        // the TODO-file protocol (RENCANA.md), the FULL tool roster
         // (read_lines was never mentioned before — AUDIT-TOKEN §6.2#2,
         // 40/40 field reads used bash cat/sed), the syntax-gate contract,
         // and the definition-of-done answer format. The server side
         // (agent.js todo-nudge + tools.js syntaxGate) enforces what this
         // text promises.
+        // T-ML40 (owner order sesi 28 — analisa log 149.739 tok): the
+        // roster grew to 6 (todo = the sanctioned RENCANA.md editor), the
+        // environment contract must state python is NOT bundled (3 dead
+        // turns tried python3), batching must be taught (exploration
+        // one-by-one = spam), and MEMORI.md carries the cross-session
+        // memory the server injects.
         val p = ChatEngine.SYSTEM_PROMPT
         assertTrue("read_lines harus disebut (audit R2a)", p.contains("read_lines"))
-        listOf("bash", "read_file", "write_file", "list_dir").forEach {
+        listOf("bash", "read_file", "write_file", "list_dir", "todo").forEach {
             assertTrue("tool $it harus disebut di prompt default", p.contains(it))
         }
         assertTrue("protokol RENCANA.md harus ada", p.contains("RENCANA.md"))
         assertTrue("daftar centang harus diajarkan", p.contains("- [ ]") && p.contains("- [x]"))
         assertTrue("kontrak gerbang sintaks harus ada", p.contains("gerbang sintaks"))
         assertTrue("definition-of-done harus ada", p.contains("JAWABAN AKHIR"))
-        // Persona schemes list the full tool roster too (T-ML39 sweep).
+        // T-ML40: kontrak lingkungan — python TIDAK tersedia bawaan.
+        assertTrue("kontrak lingkungan python harus ada", p.contains("python TIDAK tersedia"))
+        // T-ML40: disiplin batching (anti-spam tool call satu-per-satu).
+        assertTrue("disiplin batching harus diajarkan", p.contains("SATU"))
+        // T-ML40: memori lintas sesi.
+        assertTrue("protokol MEMORI.md harus ada", p.contains("MEMORI.md"))
+        // Persona schemes list the full tool roster too (T-ML39 sweep,
+        // T-ML40: roster 6 tool).
         Schemes.ALL.filter { it.systemPrompt != null }.forEach {
             assertTrue(
                 "skema ${it.id} tak menyebut read_lines",
                 it.systemPrompt!!.contains("read_lines")
+            )
+            assertTrue(
+                "skema ${it.id} tak menyebut todo",
+                it.systemPrompt!!.contains("todo")
             )
         }
     }

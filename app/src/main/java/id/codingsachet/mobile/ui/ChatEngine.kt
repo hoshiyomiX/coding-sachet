@@ -487,35 +487,50 @@ class ChatEngine(val session: Session) {
     private fun JsonObject.boolean(key: String): Boolean = this[key]?.jsonPrimitive?.content == "true"
 
     companion object {
-        // T-ML39 (owner order sesi 27: hasil coding "aimless, tanpa workflow/
-        // protocol/harness"): the default coding prompt now carries the
-        // TODO-file protocol (RENCANA.md), the full 5-tool roster (read_lines
-        // was NEVER mentioned before — 40/40 field reads used bash cat/sed,
-        // AUDIT-TOKEN §6.2#2), the syntax-gate contract and the
+        // T-ML39 (owner order sesi 27: hasil coding "aimless, tanpa
+        // workflow/protocol/harness"): the default coding prompt carries the
+        // TODO-file protocol (RENCANA.md), the syntax-gate contract and the
         // definition-of-done answer format. The server enforces the plan
         // (agent.js todo-nudge) and the gate (tools.js syntaxGate) — this
         // text tells the model the rules they follow.
+        // T-ML40 (owner order sesi 28: "hemat token, fokus konteks,
+        // persistent memory", analisa log 149.739 tok): environment
+        // contract (python TIDAK ada — 3 putaran mati mencoba python3),
+        // batching discipline (eksplorasi satu-per-satu = spam), the todo
+        // tool as the ONLY sanctioned RENCANA.md editor (5 putaran /
+        // 56,3 K tok terbakar untuk mencentang 3 item via sed/python3),
+        // and the MEMORI.md cross-session protocol (server injects its
+        // head at run start and nudges once at the end of long runs).
         val SYSTEM_PROMPT = """
             Kamu adalah agent coding yang berjalan di Ubuntu 24.04 (proot) pada HP pengguna.
-            Folder kerja utama: /sdcard/coding-sachet di penyimpanan bersama HP (jika tidak
-            tersedia, /root/work). Pastikan dengan pwd sebelum membuat file proyek.
+            Folder kerja: folder proyek sesi ini (path lengkap ada di deskripsi tool bash),
+            atau /sdcard/coding-sachet bila tanpa proyek.
+            Lingkungan: node, bash, dan git tersedia; python TIDAK tersedia secara bawaan —
+            pakai node untuk skrip, atau instal python via apt bila memang perlu.
 
-            TOOLS: bash, read_file, read_lines, write_file, list_dir.
+            TOOLS: bash, read_file, read_lines, write_file, list_dir, todo.
             - Baca file dengan read_file / read_lines (bukan cat/sed via bash) — read_lines
-              memberi rentang baris bernomor dan tidak terpotong jendela output.
-            - Jelajahi proyek dengan list_dir sebelum mengedit.
+              memberi rentang baris bernomor tanpa terpotong jendela output.
+            - Hemat putaran: gabungkan perintah eksplorasi yang independen dalam SATU
+              panggilan bash (&& atau ;) atau beberapa tool call dalam satu balasan.
+            - bash selalu mulai dari folder kerja — pakai path relatif (cd repo && ...).
 
             CARA KERJA (WAJIB untuk pekerjaan multi-langkah):
             1. Tulis rencana dulu ke RENCANA.md di folder kerja: tujuan singkat + langkah
                bernomor sebagai daftar centang "- [ ]". Tugas kecil satu-langkah boleh
                langsung dikerjakan tanpa rencana.
-            2. Kerjakan langkah satu per satu, centang "- [x]" setelah selesai (tulis ulang
-               RENCANA.md atau pakai bash sed). Langkah yang jadi tidak relevan tetap
-               dicentang lalu dicoret dengan alasan singkat.
+            2. Kerjakan langkah satu per satu, lalu tandai dengan tool todo (aksi
+               "centang", atau "coret" + alasan bila jadi tak relevan) — jangan edit
+               RENCANA.md dengan sed/python.
             3. Sebelum menulis ulang file yang sudah ada, baca dulu isinya.
             4. Setiap write_file otomatis melewati gerbang sintaks (node --check / bash -n /
                parse JSON) — bila gagal, perbaiki file itu dulu sebelum lanjut apa pun.
             5. Verifikasi hasil dengan menjalankan kodenya (bash), bukan sekadar menulis.
+
+            MEMORI PROYEK: di akhir pekerjaan multi-langkah, tulis/perbarui MEMORI.md di
+            folder kerja — fakta yang berguna lintas sesi (struktur proyek, keputusan,
+            perintah verifikasi, jebakan yang ditemui). Sesi berikutnya di folder yang sama
+            membacanya otomatis, jadi tidak perlu menjelajah dari nol.
 
             JAWABAN AKHIR harus menyebutkan ringkas: apa yang dikerjakan, file mana saja
             yang disentuh, dan bagaimana kamu memverifikasinya (perintah + hasilnya).
