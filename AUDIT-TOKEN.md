@@ -144,3 +144,14 @@ Komponen tetap minor (untuk lengkap): skema 5 tool = 2.085 ch ≈ 970 tok aktual
 - §4#4 caching: **TERJAWAB — tidak ada** (cache= nol kali di 40 putaran).
 - §4#5 reasoning=Nnch: **HIDUP** (`reasoning=0nch` di baris gateway selesai).
 - §4#6 budget guard: **DIHAPUS owner** (T-ML32) — dicatat sebagai keputusan, bukan utang.
+
+### §6.6 Status tindak lanjut (T-ML39, owner order sesi 27 — 2026-11-14)
+
+Owner: "Hasil coding dari APK Coding-Sachet tidak optimal & aimless, karena tidak memiliki workflow, protocol, harness, dll." — jawaban klarifikasi: implement langsung; pain utama aimless + tanpa verifikasi + boros token; harness = gerbang sintaks; protocol = TODO file; budget prompt bebas.
+
+- **R1 KALIBRASI ESTIMATOR: SELESAI** — `estimateTokens()` divisor 4 → 2 (agent.js); ambang kompaksi 16K estimasi kini ≈ 16K token nyata (dulunya ≈ 29,6K). Kontrafaktual A: −42%/run.
+- **R2a read_lines DI PROMPT: SELESAI** — SYSTEM_PROMPT ChatEngine menyebut 5 tool lengkap + arahan eksplisit "baca file dengan read_file / read_lines (bukan cat/sed via bash)"; 3 skema persona ikut diperbarui (menulis kini juga menyebut roster lengkap).
+- **R2b contextCompactKeep: SELESAI** — 3 → 6 (config.js): hasil baca bertahan 2× lebih lama di konteks, memutus lingkar baca-ulang (§6.2#2).
+- **TAMBAHAN T-ML39 (di luar R1–R5, order sesi 27): TODO-file protocol + syntax harness** — RENCANA.md bercentang diajarkan di SYSTEM_PROMPT untuk kerja multi-langkah; enforcement di agent.js (todo-nudge: jawaban akhir ditolak selama ada langkah belum tercentang, pengingat wire-only maks 2× — model keras kepala tak pernah mengunci run, batas 15 RPM tetap satu-satunya limit); kontrak jawaban akhir (apa yang dikerjakan / file yang disentuh / cara verifikasi); gerbang sintaks otomatis pasca write_file (node --check .js/.mjs/.cjs, bash -n .sh/.bash, JSON in-process; file rusak = tool GAGAL + instruksi perbaiki-dulu).
+- **R3 / R4 / R5: TETAP MENUNGGU ORDER OWNER** (lihat §6.4).
+- **Verifikasi**: test server 83/83 (76 basis + 7 baru; KOREKSI KEDUA kelas hitungan: "75/75" worklog T-ML37 aktualnya 76 — runner menghitung entri file `test/mock-gateway.js` karena `node --test` mengeksekusi semua file di dalam direktori test/, selisih +1 historis kini dipecahkan) · app unit test 25 (+1 kontrak prompt) · CI run#42 gagal di unit test (skema menulis tanpa roster — diperbaiki run#43) · **run#43 SUCCESS → APK 1.0.43-43, t-ml39-verify-apk.py 63 PASS/0 FAIL** (sha 3-way, badging 431, signer V2, 6 file server APK==repo byte-identical, literal baru lengkap, prompt 4-tool lama ABSEN dari dex, regresi T-ML37/34/33/32 + rootfs utuh).
