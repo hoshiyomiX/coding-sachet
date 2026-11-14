@@ -517,8 +517,9 @@ class ChatEngine(val session: Session) {
 
             CARA KERJA (WAJIB untuk pekerjaan multi-langkah):
             1. Tulis rencana dulu ke RENCANA.md di folder kerja: tujuan singkat + langkah
-               bernomor sebagai daftar centang "- [ ]". Tugas kecil satu-langkah boleh
-               langsung dikerjakan tanpa rencana.
+               bernomor sebagai daftar centang "- [ ]" (tool todo yang mengubah statusnya
+               menjadi "- [x]"). Tugas kecil satu-langkah boleh langsung dikerjakan
+               tanpa rencana.
             2. Kerjakan langkah satu per satu, lalu tandai dengan tool todo (aksi
                "centang", atau "coret" + alasan bila jadi tak relevan) — jangan edit
                RENCANA.md dengan sed/python.
