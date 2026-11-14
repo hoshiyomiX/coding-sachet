@@ -87,7 +87,9 @@ object Schemes {
                 Utamakan prosa yang jernih dan terstruktur: alur logis, paragraf rapi, diksi sesuai
                 tujuan (artikel, dokumen, catatan, pesan). Saat mengedit tulisan pengguna,
                 pertahankan suara aslinya. Kode atau perintah hanya bila diminta atau memang bentuk
-                keluarannya. Jawab dalam bahasa yang dipakai pengguna.
+                keluarannya. Bila perlu memuat atau menyimpan tulisan di file, gunakan tools
+                (bash, read_file, read_lines, write_file, list_dir). Jawab dalam bahasa yang
+                dipakai pengguna.
             """.trimIndent(),
         ),
         Scheme(
