@@ -161,6 +161,12 @@ test('kompaksi: hasil tool lama dilipat, terbaru keep tetap utuh', async (t) => 
   const oldThreshold = config.contextCompactTokens;
   config.contextCompactTokens = 40; // force folding on this tiny history
   t.after(() => { config.contextCompactTokens = oldThreshold; });
+  // T-ML39: the shipped default keep rose 3 → 6 (audit §6.4 R2b) — this
+  // test pins the OLD 3 explicitly because it asserts "newest 3 intact"
+  // on a 4-result history (with keep 6 nothing would ever fold here).
+  const oldKeep = config.contextCompactKeep;
+  config.contextCompactKeep = 3;
+  t.after(() => { config.contextCompactKeep = oldKeep; });
 
   await agent.runAgent({
     apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',

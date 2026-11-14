@@ -154,7 +154,26 @@ const config = {
   // still tracked and displayed.
   toolModelBudgetChars: Number(process.env.SACHET_TOOL_MODEL_BUDGET_CHARS || 4096),
   contextCompactTokens: Number(process.env.SACHET_CONTEXT_COMPACT_TOKENS || 16000),
-  contextCompactKeep: Number(process.env.SACHET_CONTEXT_COMPACT_KEEP || 3),
+  // T-ML39 (audit §6.4 R2b, owner order sesi 27): 3 → 6 — read results
+  // now survive compaction twice as long, breaking the window↔re-read
+  // loop (40/40 field reads were bash cat/sed whose middles the 4 KB
+  // window cut, forcing re-reads). Together with the estimator
+  // calibration below, the compact threshold finally matches reality.
+  contextCompactKeep: Number(process.env.SACHET_CONTEXT_COMPACT_KEEP || 6),
+
+  // T-ML39 TODO-protocol enforcement: how many times the agent loop may
+  // bounce a "finished" answer back because RENCANA.md still has
+  // unchecked steps. Bounded so a stubborn model can never trap the run
+  // (owner order: no limits except 15 RPM — this is a prompt-side nudge,
+  // not a turn ceiling; after the budget the answer is accepted).
+  todoNudgeMax: Number(process.env.SACHET_TODO_NUDGE_MAX ?? 2),
+
+  // T-ML39 syntax harness: the write_file tool auto-gates .js/.mjs/.cjs
+  // (node --check), .sh/.bash (bash -n) and .json (in-process parse)
+  // after every write. Files larger than this skip the gate (spawn cost,
+  // not every write deserves one); the check itself gets this timeout.
+  syntaxGateMaxBytes: 512 * 1024,
+  syntaxGateTimeoutMs: Number(process.env.SACHET_SYNTAX_GATE_TIMEOUT_MS || 10000),
 
   // File API sandbox: paths must resolve under one of these roots.
   allowedRoots: [HOME, '/tmp', '/sdcard', '/storage/emulated/0', ...extraRoots],

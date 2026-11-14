@@ -250,6 +250,66 @@ function lockHint(output) {
   return output + '\n(catatan: ada proses apt/dpkg lain yang masih memegang lock — tunggu beberapa detik lalu coba lagi, JANGAN jalankan instalasi baru secara paralel)';
 }
 
+// ---------- syntax harness (T-ML39, owner order sesi 27) ----------
+// "node --check / bash -n / JSON.parse otomatis tiap edit file": every
+// write_file the model makes is gated by extension — the tool result the
+// model sees carries the verdict, so a syntax-broken file can never be
+// silently accepted mid-run. Zero-dependency: node is the guest runtime
+// itself (process.execPath), bash is the same /bin/bash the bash tool
+// uses, JSON is parsed in-process (no spawn at all).
+
+const SYNTAX_GATE_BY_EXT = {
+  '.js': 'node', '.mjs': 'node', '.cjs': 'node',
+  '.sh': 'bash', '.bash': 'bash',
+  '.json': 'json',
+};
+
+/** Gate one written file. Resolves {ok,label} on a verdict,
+ *  {skipped:reason} when no gate applies (unknown ext / too large /
+ *  timeout / spawn failure) — a skipped gate never fails a write. */
+function syntaxGate(abs, content) {
+  return new Promise((resolve) => {
+    const kind = SYNTAX_GATE_BY_EXT[path.extname(abs).toLowerCase()];
+    if (!kind) { resolve({ skipped: 'tipe file tanpa gerbang sintaks' }); return; }
+    if (Buffer.byteLength(content, 'utf8') > config.syntaxGateMaxBytes) {
+      resolve({ skipped: 'file terlalu besar untuk gerbang sintaks' });
+      return;
+    }
+    if (kind === 'json') {
+      try { JSON.parse(content); resolve({ ok: true, label: 'JSON valid' }); }
+      catch (e) { resolve({ ok: false, label: 'JSON tidak valid', error: e.message }); }
+      return;
+    }
+    const argv = kind === 'node'
+      ? [process.execPath, ['--check', abs]]
+      : ['/bin/bash', ['-n', abs]];
+    const child = spawn(argv[0], argv[1], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let err = '';
+    let killed = false;
+    const timer = setTimeout(() => {
+      killed = true;
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }, config.syntaxGateTimeoutMs);
+    child.stderr.on('data', (c) => { err += c; });
+    child.stdout.on('data', () => {}); // drain so the pipe never blocks
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ skipped: `gerbang tak bisa jalan: ${e.message}` });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (killed) { resolve({ skipped: 'gerbang sintaks timeout' }); return; }
+      const label = kind === 'node' ? 'node --check' : 'bash -n';
+      if (code === 0) resolve({ ok: true, label: `${label} OK` });
+      else resolve({
+        ok: false,
+        label: `${label} GAGAL`,
+        error: err.trim().split('\n').slice(0, 8).join('\n').slice(0, 2000) || `(exit ${code})`,
+      });
+    });
+  });
+}
+
 // ---------- tool registry exposed to the model ----------
 
 /** Build the tool registry for a run (T-ML28). The bash tool's cwd — and
@@ -325,7 +385,7 @@ function toolsFor(workdir) {
     },
     {
       name: 'write_file',
-      description: 'Create or overwrite a text file. Parent directories are created automatically.',
+      description: 'Create or overwrite a text file. Parent directories are created automatically. A syntax gate runs automatically after every write (.js/.mjs/.cjs via node --check, .sh/.bash via bash -n, .json parsed in-process) — if it reports a failure, fix the file before doing anything else.',
       parameters: {
         type: 'object',
         properties: {
@@ -334,7 +394,29 @@ function toolsFor(workdir) {
         },
         required: ['path', 'content'],
       },
-      run: async (args) => writeFile(args.path, args.content),
+      run: async (args) => {
+        const r = writeFile(args.path, args.content);
+        if (!r.ok) return r;
+        const gate = await syntaxGate(r.path, args.content);
+        if (gate.skipped) {
+          return { ok: true, path: r.path, bytes: r.bytes, output: `file ditulis (${r.bytes} byte) · gerbang sintaks dilewati (${gate.skipped})` };
+        }
+        if (gate.ok) {
+          return { ok: true, path: r.path, bytes: r.bytes, output: `file ditulis (${r.bytes} byte) · sintaks OK (${gate.label})` };
+        }
+        // The file IS on disk — the harness verdict makes the defect loud
+        // instead of silently accepted (ok:false → the agent log and the
+        // tool card both show GAGAL, and the model is told to fix it now).
+        return {
+          ok: false,
+          path: r.path,
+          bytes: r.bytes,
+          error: 'sintaks tidak valid',
+          output: `file DITULIS (${r.bytes} byte) tapi gerbang sintaks ${gate.label}:
+${gate.error}
+Perbaiki file ini sebelum melanjutkan pekerjaan lain.`,
+        };
+      },
     },
     {
       name: 'list_dir',
@@ -363,4 +445,4 @@ const tools = toolsFor(config.workdir);
 
 const toolByName = Object.fromEntries(tools.map((t) => [t.name, t]));
 
-module.exports = { tools, toolsFor, toolByName, safePath, safeNewPath, resolveWorkdir, listDir, readFile, writeFile, runBash, lockHint };
+module.exports = { tools, toolsFor, toolByName, safePath, safeNewPath, resolveWorkdir, listDir, readFile, writeFile, runBash, lockHint, syntaxGate, SYNTAX_GATE_BY_EXT };

@@ -4,7 +4,8 @@
 // tool calls the model asks for.
 
 const { config, providerById } = require('./config');
-const { toolsFor, resolveWorkdir } = require('./tools');
+const path = require('path');
+const { toolsFor, resolveWorkdir, readFile } = require('./tools');
 const { fetchWithRetry, fetchWithHeaderBudget, netErrorDetail } = require('./net');
 const { acquire, peekWaitMs, pauseFor, abortableSleep } = require('./ratelimit');
 const log = require('./log');
@@ -429,8 +430,12 @@ function forModel(text) {
     text.slice(-tail);
 }
 
-/** Rough token estimate of the wire messages (~4 chars per token) — used
- *  by the compaction threshold. */
+/** Rough token estimate of the wire messages. T-ML39 (audit §6.4 R1,
+ *  owner order sesi 27): divisor 4 → 2 — the field-measured ratio on
+ *  glm-5.3-flash code+ID content is 2.15 chars/token (1.86× off the old
+ *  assumption), so the old /4 made the 16 K compact threshold fire at
+ *  ~29.6 K REAL tokens and the context sat at 28-34 K per round. /2 is
+ *  the conservative calibration: 16 K estimated ≈ 16 K actual. */
 function estimateTokens(msgs) {
   let ch = 0;
   for (const m of msgs) {
@@ -442,7 +447,7 @@ function estimateTokens(msgs) {
       }
     }
   }
-  return Math.ceil(ch / 4);
+  return Math.ceil(ch / 2);
 }
 
 /** Fold OLD tool results (all but the newest `keep`) into one-line
@@ -462,6 +467,30 @@ function compactOldTools(openai, folded, thresholdTokens, keep) {
     folded.add(target);
     m.content = `[output ${m.name || 'tool'} dipangkas hemat token — asli ${m.content.length}ch]`;
   }
+}
+
+/** T-ML39 TODO protocol: the plan file the coding agent is instructed to
+ *  keep in its workdir (owner order sesi 27: protocol = TODO file —
+ *  "agent menulis daftar langkah ke file kerja di awal, mencentang tiap
+ *  langkah, harness menagih item yang belum dicentang"). Checked lines
+ *  ("- [x]") and struck-through skips count as resolved; only "- [ ]"
+ *  lines are outstanding. */
+const TODO_FILENAME = 'RENCANA.md';
+const TODO_UNCHECKED_RE = /^\s*[-*]\s+\[ \]\s*(\S.*)?$/;
+
+/** Read the workdir's RENCANA.md and return its unchecked step lines.
+ *  Pure read: { exists:false } when absent or unreadable — enforcement
+ *  never turns a missing plan into an error. Exported for tests. */
+function readTodoUnchecked(workdir) {
+  if (typeof workdir !== 'string' || !workdir) return { exists: false, unchecked: [] };
+  const r = readFile(path.join(workdir, TODO_FILENAME));
+  if (!r.ok) return { exists: false, unchecked: [] };
+  const unchecked = String(r.content || '')
+    .split('\n')
+    .map((l) => l.match(TODO_UNCHECKED_RE))
+    .filter(Boolean)
+    .map((m) => (m[1] || '(tanpa teks)').trim());
+  return { exists: true, unchecked };
 }
 
 function toOpenAiMessages(messages) {
@@ -543,6 +572,7 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
 
   const added = [];   // messages the app should persist
   let turn = 0;
+  let todoNudges = 0; // T-ML39: TODO reminders already spent this run
 
   // Token economy (T-ML29): gateway-reported usage of every round feeds
   // the per-run usage events the app displays. There is NO budget stop
@@ -613,6 +643,30 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
     }
 
     if (!wantsTools) {
+      // T-ML39 TODO enforcement: a finished-looking answer bounces back
+      // while RENCANA.md still has unchecked steps — the harness "menagih"
+      // the plan the model itself wrote. Bounded by config.todoNudgeMax
+      // (a stubborn model can never trap the run); the reminder rides as
+      // a user-role message on the WIRE ONLY (never in `added` — the app
+      // history stays exactly what the human and the model produced).
+      if (todoNudges < config.todoNudgeMax) {
+        const todo = readTodoUnchecked(wd || config.workdir);
+        if (todo.exists && todo.unchecked.length > 0) {
+          todoNudges++;
+          log.inf('agt', `todo-nudge ${todoNudges}/${config.todoNudgeMax}: ${todo.unchecked.length} langkah belum dicentang`);
+          emit({ type: 'todonudge', n: todoNudges, max: config.todoNudgeMax, remaining: todo.unchecked.length });
+          openai.push({ role: 'assistant', content: t.content || '' });
+          openai.push({
+            role: 'user',
+            content: '[pengingat harness] RENCANA.md masih memiliki ' +
+              `${todo.unchecked.length} langkah belum dicentang:\n` +
+              todo.unchecked.map((l) => `- ${l}`).join('\n') +
+              '\nSelesaikan langkah tersebut, atau coret dengan alasan bila sudah tidak relevan ' +
+              `(ubah "- [ ]" menjadi "- [x]" lalu tulis alasannya), lalu berikan jawaban akhirmu.`,
+          });
+          continue;
+        }
+      }
       emit({ type: 'done', turns: turn });
       return added;
     }
@@ -872,4 +926,4 @@ async function verifyModels({ apiKey, providerId, models, signal, emit }) {
   emit({ type: 'done', ok, dead, unknown });
 }
 
-module.exports = { runAgent, callGateway, toOpenAiMessages, sanitizeOptions, buildBody, safeJson, verifyModels, probeModel, forModel, estimateTokens, compactOldTools };
+module.exports = { runAgent, callGateway, toOpenAiMessages, sanitizeOptions, buildBody, safeJson, verifyModels, probeModel, forModel, estimateTokens, compactOldTools, readTodoUnchecked, TODO_FILENAME };

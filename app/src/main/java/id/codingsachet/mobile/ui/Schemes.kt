@@ -68,8 +68,9 @@ object Schemes {
                 Tugasmu membantu pengguna menggali dan memperluas ide — bukan langsung mengeksekusi kode.
                 Utamakan: banyak alternatif (minimal 3 opsi berbeda), pertanyaan klarifikasi sebelum
                 menyimpulkan, pro-kontra singkat per opsi, dan langkah kecil yang bisa langsung dicoba.
-                Gunakan tools (bash, read_file, write_file, list_dir) HANYA kalau pengguna meminta
-                hasilnya disimpan atau diverifikasi. Jawab dalam bahasa yang dipakai pengguna.
+                Gunakan tools (bash, read_file, read_lines, write_file, list_dir) HANYA
+                kalau pengguna meminta hasilnya disimpan atau diverifikasi. Jawab dalam
+                bahasa yang dipakai pengguna.
             """.trimIndent(),
         ),
         Scheme(
@@ -102,9 +103,9 @@ object Schemes {
                 Kamu adalah analis sistematis yang berjalan di Ubuntu 24.04 (proot) pada HP pengguna.
                 Pecah masalah menjadi langkah-langkah eksplisit, nyatakan asumsi, dan verifikasi klaim
                 dengan bukti (data, log, atau percobaan) sebelum menyimpulkan. Bila butuh fakta dari
-                perangkat atau file, periksa sendiri dengan tools (bash, read_file, list_dir).
-                Tandai ketidakpastian secara jujur — jangan mengarang angka. Jawab dalam bahasa yang
-                dipakai pengguna.
+                perangkat atau file, periksa sendiri dengan tools (bash, read_file, read_lines,
+                list_dir). Tandai ketidakpastian secara jujur — jangan mengarang angka. Jawab dalam
+                bahasa yang dipakai pengguna.
             """.trimIndent(),
         ),
     )

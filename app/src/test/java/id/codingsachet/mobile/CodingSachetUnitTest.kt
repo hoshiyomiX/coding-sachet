@@ -6,6 +6,7 @@ import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
 import id.codingsachet.mobile.data.ToolCall
 import id.codingsachet.mobile.runtime.DumpFormat
+import id.codingsachet.mobile.ui.ChatEngine
 import id.codingsachet.mobile.ui.EnStrings
 import id.codingsachet.mobile.ui.IdStrings
 import id.codingsachet.mobile.ui.ProjectNames
@@ -417,5 +418,33 @@ class CodingSachetUnitTest {
             canContinueFromHistory(listOf(Msg(role = "user", content = "hai")))
         )
         assertFalse("history kosong", canContinueFromHistory(emptyList()))
+    }
+
+    @Test
+    fun defaultCodingPromptPinsWorkflowContract() {
+        // T-ML39 (owner order sesi 27 — hasil coding "aimless, tanpa
+        // workflow/protocol/harness"): the default coding prompt must carry
+        // the TODO-file protocol (RENCANA.md), the FULL 5-tool roster
+        // (read_lines was never mentioned before — AUDIT-TOKEN §6.2#2,
+        // 40/40 field reads used bash cat/sed), the syntax-gate contract,
+        // and the definition-of-done answer format. The server side
+        // (agent.js todo-nudge + tools.js syntaxGate) enforces what this
+        // text promises.
+        val p = ChatEngine.SYSTEM_PROMPT
+        assertTrue("read_lines harus disebut (audit R2a)", p.contains("read_lines"))
+        listOf("bash", "read_file", "write_file", "list_dir").forEach {
+            assertTrue("tool $it harus disebut di prompt default", p.contains(it))
+        }
+        assertTrue("protokol RENCANA.md harus ada", p.contains("RENCANA.md"))
+        assertTrue("daftar centang harus diajarkan", p.contains("- [ ]") && p.contains("- [x]"))
+        assertTrue("kontrak gerbang sintaks harus ada", p.contains("gerbang sintaks"))
+        assertTrue("definition-of-done harus ada", p.contains("JAWABAN AKHIR"))
+        // Persona schemes list the full tool roster too (T-ML39 sweep).
+        Schemes.ALL.filter { it.systemPrompt != null }.forEach {
+            assertTrue(
+                "skema ${it.id} tak menyebut read_lines",
+                it.systemPrompt!!.contains("read_lines")
+            )
+        }
     }
 }
