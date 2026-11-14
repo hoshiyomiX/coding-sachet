@@ -464,4 +464,36 @@ class CodingSachetUnitTest {
             )
         }
     }
+
+    @Test
+    fun promptPinsTml41Contracts() {
+        // T-ML41 (owner order sesi 28 "optimisasi lanjutan"): (1) MEMORI.md
+        // memakai format grep-first — satu fakta per baris ber-anchor [tag]
+        // dengan tag baku, agar sesi berikutnya bisa grep satu tag alih-alih
+        // membaca ulang seluruh file; (2) bahasa jawaban dinamis mengikuti
+        // bahasa pesan pengguna terakhir, dan pesan harness berbahasa
+        // Indonesia dinyatakan BUKAN sinyal bahasa.
+        val p = ChatEngine.SYSTEM_PROMPT
+        assertTrue(
+            "format MEMORI.md grep-first harus diajarkan",
+            p.contains("SATU fakta per baris") && p.contains("grep")
+        )
+        listOf("[struktur]", "[keputusan]", "[uji]", "[jebakan]", "[fakta]", "[status]").forEach {
+            assertTrue("anchor tag $it harus ada di kontrak MEMORI", p.contains(it))
+        }
+        assertTrue(
+            "kontrak bahasa dinamis harus ada",
+            p.contains("BAHASA JAWABAN (dinamis)")
+        )
+        assertTrue(
+            "harness bukan sinyal bahasa harus dinyatakan",
+            p.contains("BUKAN sinyal bahasa")
+        )
+        Schemes.ALL.filter { it.systemPrompt != null }.forEach {
+            assertTrue(
+                "skema ${it.id} tak mematok bahasa dinamis",
+                it.systemPrompt!!.contains("BAHASA JAWABAN (dinamis)")
+            )
+        }
+    }
 }

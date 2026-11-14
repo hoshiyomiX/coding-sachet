@@ -194,6 +194,15 @@ const config = {
   memoryNudgeMax: Number(process.env.SACHET_MEMORY_NUDGE_MAX ?? 1),
   memoryNudgeMinTurns: Number(process.env.SACHET_MEMORY_NUDGE_MIN_TURNS || 5),
 
+  // T-ML41 (#3, owner order sesi 28 "optimisasi lanjutan"): how many times
+  // the agent loop may bounce a finish_reason=length answer back with a
+  // wire-only "lanjutkan dari titik terputus" so a token-limit-cut answer
+  // assembles itself instead of ending mid-sentence. Bounded so a model
+  // that re-truncates without progress can never trap the run; a bounce
+  // only happens when the round produced real content. Env override:
+  // test suite only.
+  lengthContinueMax: Number(process.env.SACHET_LENGTH_CONTINUE_MAX ?? 3),
+
   // T-ML39 syntax harness: the write_file tool auto-gates .js/.mjs/.cjs
   // (node --check), .sh/.bash (bash -n) and .json (in-process parse)
   // after every write. Files larger than this skip the gate (spawn cost,

@@ -323,7 +323,7 @@ async function callGatewayOnce({ apiKey, providerId, model, messages, tools, opt
         err.streamRetry = true;
         throw err;
       }
-      throw new Error(`Koneksi ke ${provider.label} terputus di tengah balasan (${e.message}) — sebagian balasan tidak sempat tersimpan, kirim pesan lagi untuk melanjutkan`);
+      throw new Error(`Koneksi ke ${provider.label} terputus di tengah balasan (${e.message}) — sebagian balasan tidak sempat tersimpan; tekan Lanjutkan untuk melanjutkan pekerjaan ini`);
     } finally {
       cancelQuietly(res.body);
     }
@@ -576,6 +576,19 @@ function memoryStale(workdir, runStartMs) {
   } catch { return true; } // missing file → stale
 }
 
+/** T-ML41 (#3, owner order "rekam latest todo dan lanjut task todo
+ *  berikutnya"): does this wire history end MID-RUN — the exact shape the
+ *  app's continueRun() re-issues after a lost connection, a killed
+ *  server or a truncated session (last persisted message = a tool result,
+ *  or an assistant round still awaiting its results)? Mirror of the
+ *  app-side canContinueFromHistory (ChatEngine.kt). Exported for tests. */
+function resumableHistory(messages) {
+  const last = Array.isArray(messages) ? messages[messages.length - 1] : null;
+  if (!last) return false;
+  if (last.role === 'tool') return true;
+  return last.role === 'assistant' && Array.isArray(last.toolCalls) && last.toolCalls.length > 0;
+}
+
 function toOpenAiMessages(messages) {
   const out = [];
   for (let i = 0; i < messages.length; i++) {
@@ -656,9 +669,40 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
   const memory = readProjectMemory(runWorkdir);
   if (memory) {
     log.inf('agt', `memori proyek dimuat: MEMORI.md ${memory.length}ch`);
-    systemPrompt = `${systemPrompt || ''}\n\nINGATAN PROYEK (MEMORI.md, ditulis sesi sebelumnya di folder kerja ini):\n${memory}\n(Akhir ingatan — perbarui MEMORI.md bila fakta sudah berubah.)`;
+    systemPrompt = `${systemPrompt || ''}\n\nINGATAN PROYEK (MEMORI.md, ditulis sesi sebelumnya di folder kerja ini — format grep-first: satu fakta per baris ber-anchor [tag]):\n${memory}\n(Akhir ingatan — perbarui MEMORI.md bila fakta sudah berubah; pertahankan format satu-fakta-per-baris ber-tag agar mudah digrep.)`;
   }
   if (systemPrompt) openai.unshift({ role: 'system', content: systemPrompt });
+
+  // T-ML41 (#3): a re-issued interrupted run (the app's Lanjutkan button
+  // re-sends the history WITHOUT a new user message) gets a wire-only
+  // anchor to the plan's next unchecked step — the model resumes the NEXT
+  // todo instead of wandering or restarting finished work. RENCANA.md is
+  // the recorded latest todo state (the todo tool keeps it current while
+  // the model works). Wire-only: never in `added`, so the app history
+  // stays exactly what the human and the model produced.
+  if (resumableHistory(messages)) {
+    const resumeTodo = readTodoUnchecked(runWorkdir);
+    if (resumeTodo.exists && resumeTodo.unchecked.length > 0) {
+      log.inf('agt', `resume run terputus: RENCANA.md menunjuk ${resumeTodo.unchecked.length} langkah belum dicentang`);
+      openai.push({
+        role: 'user',
+        content: '[lanjutan harness] Run sebelumnya terputus di tengah pekerjaan — pekerjaan ' +
+          'yang sudah tersimpan tetap aman. Menurut RENCANA.md, langkah yang belum selesai:\n' +
+          resumeTodo.unchecked.map((l) => `- ${l}`).join('\n') +
+          '\nLanjutkan dari langkah pertama yang belum dicentang — jangan ulangi langkah yang ' +
+          'sudah [x]; bila ragu sebuah langkah sebenarnya sudah dikerjakan, verifikasi cepat lalu ' +
+          'centang dengan tool todo.',
+      });
+    } else if (resumeTodo.exists) {
+      log.inf('agt', 'resume run terputus: semua langkah RENCANA.md sudah dicentang — minta jawaban akhir');
+      openai.push({
+        role: 'user',
+        content: '[lanjutan harness] Run sebelumnya terputus di tengah pekerjaan. Semua langkah ' +
+          'RENCANA.md sudah dicentang — sampaikan jawaban akhirmu sekarang (ringkas: yang ' +
+          'dikerjakan, file yang disentuh, cara verifikasi).',
+      });
+    }
+  }
 
   const runTools = toolsFor(runWorkdir);
   const runToolByName = Object.fromEntries(runTools.map((t) => [t.name, t]));
@@ -680,6 +724,7 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
   const folded = new Set(); // indexes of openai entries already compacted
   const elided = new Set(); // T-ML40: indexes already baseline-elided
   const argsDone = new Set(); // T-ML40: assistant rounds whose args are compacted
+  let lengthBounces = 0; // T-ML41: finish=length continuations spent this run
 
   // NO turn ceiling (T-ML34, owner order: "hapus semua limit pada agent
   // terkecuali 15 RPM" — field evidence 2026-11-11 21:23: a healthy run
@@ -748,6 +793,23 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
     }
 
     if (!wantsTools) {
+      // T-ML41 (#3): finish_reason=length means the answer was CUT by the
+      // output-token limit, not finished — bounce it back wire-only so the
+      // model continues PERSIS from the cut point and the answer assembles
+      // itself piece by piece. Bounded by config.lengthContinueMax, and only
+      // when this round produced real content (a reasoning-only truncation
+      // would re-truncate identically forever — surface that as final).
+      if (t.finishReason === 'length' && lengthBounces < config.lengthContinueMax && t.content.trim()) {
+        lengthBounces++;
+        log.inf('agt', `jawaban terpotong batas token (finish=length) — minta lanjutan ${lengthBounces}/${config.lengthContinueMax}`);
+        openai.push({ role: 'assistant', content: t.content });
+        openai.push({
+          role: 'user',
+          content: '[lanjutan harness] Balasanmu terpotong oleh batas panjang keluaran. Lanjutkan ' +
+            'PERSIS dari titik terputus — jangan ulangi bagian yang sudah tertulis, jangan mulai dari awal.',
+        });
+        continue;
+      }
       // T-ML39 TODO enforcement: a finished-looking answer bounces back
       // while RENCANA.md still has unchecked steps — the harness "menagih"
       // the plan the model itself wrote. Bounded by config.todoNudgeMax
@@ -783,8 +845,9 @@ async function runAgent({ apiKey, providerId, model, messages, options, signal, 
         openai.push({
           role: 'user',
           content: '[pengingat harness] Run ini sudah ' + turn + ' putaran. Tulis atau perbarui MEMORI.md di folder kerja ' +
-            'dengan fakta yang berguna untuk sesi berikutnya (struktur proyek, keputusan, perintah verifikasi, ' +
-            'jebakan yang ditemui) — pakai write_file, ringkas saja — lalu berikan jawaban akhirmu.',
+            'dengan fakta yang berguna untuk sesi berikutnya — format grep-first: SATU fakta per baris ' +
+            'diawali anchor tag ([struktur] [keputusan] [uji] [jebakan] [fakta] [status]), maks ~200 ' +
+            'karakter per baris, tanpa tabel/paragraf — pakai write_file, lalu berikan jawaban akhirmu.',
         });
         continue;
       }
@@ -1047,4 +1110,4 @@ async function verifyModels({ apiKey, providerId, models, signal, emit }) {
   emit({ type: 'done', ok, dead, unknown });
 }
 
-module.exports = { runAgent, callGateway, toOpenAiMessages, sanitizeOptions, buildBody, safeJson, verifyModels, probeModel, forModel, estimateTokens, compactOldTools, elideOldTools, compactOldAssistantArgs, readTodoUnchecked, readProjectMemory, memoryStale, TODO_FILENAME, MEMORY_FILENAME };
+module.exports = { runAgent, callGateway, toOpenAiMessages, sanitizeOptions, buildBody, safeJson, verifyModels, probeModel, forModel, estimateTokens, compactOldTools, elideOldTools, compactOldAssistantArgs, readTodoUnchecked, readProjectMemory, memoryStale, resumableHistory, TODO_FILENAME, MEMORY_FILENAME };

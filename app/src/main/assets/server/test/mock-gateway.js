@@ -251,7 +251,9 @@ function startMockGateway(script, opts = {}) {
           send({ choices: [{ delta: { role: 'assistant', reasoning_content: 'berpikir sejenak…' }, finish_reason: null }] });
           send({ choices: [{ delta: { content: t.slice(0, Math.ceil(t.length / 2)) }, finish_reason: null }] });
           send({ choices: [{ delta: { content: t.slice(Math.ceil(t.length / 2)) }, finish_reason: null }] });
-          send({ choices: [{ delta: {}, finish_reason: 'stop' }] });
+          // T-ML41: a scripted reply may end 'length' (output-token cut)
+          // instead of 'stop' — exercises the agent's truncation continue.
+          send({ choices: [{ delta: {}, finish_reason: reply.finish || 'stop' }] });
         }
         // The usage chunk a stream_options.include_usage gateway sends
         // as the LAST data event (empty choices, T-ML29).

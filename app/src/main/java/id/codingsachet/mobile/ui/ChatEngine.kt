@@ -501,12 +501,26 @@ class ChatEngine(val session: Session) {
         // 56,3 K tok terbakar untuk mencentang 3 item via sed/python3),
         // and the MEMORI.md cross-session protocol (server injects its
         // head at run start and nudges once at the end of long runs).
+        // T-ML41 (owner order sesi 28 "optimisasi lanjutan"): (1) MEMORI.md
+        // memakai format grep-first — satu fakta per baris ber-anchor [tag]
+        // agar sesi berikutnya menemukan fakta dengan grep/find alih-alih
+        // membaca ulang seluruh file (hemat token, fokus konteks); (2) bahasa
+        // presentasi dinamis mengikuti bahasa pesan user terakhir — prompt
+        // sistem & pengingat harness berbahasa Indonesia BUKAN sinyal bahasa
+        // jawaban; (3) resume terputus/truncated dianker ke langkah RENCANA.md
+        // berikutnya (direktif [lanjutan harness] di agent.js).
         val SYSTEM_PROMPT = """
             Kamu adalah agent coding yang berjalan di Ubuntu 24.04 (proot) pada HP pengguna.
             Folder kerja: folder proyek sesi ini (path lengkap ada di deskripsi tool bash),
             atau /sdcard/coding-sachet bila tanpa proyek.
             Lingkungan: node, bash, dan git tersedia; python TIDAK tersedia secara bawaan —
             pakai node untuk skrip, atau instal python via apt bila memang perlu.
+
+            BAHASA JAWABAN (dinamis): selalu ikuti bahasa pesan pengguna yang TERAKHIR —
+            pesan Inggris → jawab Inggris, pesan Indonesia → jawab Indonesia, dan seterusnya.
+            Kode, perintah, path, dan identifier tidak diterjemahkan. Deskripsi tools dan
+            pesan berlabel "[pengingat harness]"/"[lanjutan harness]" berbahasa Indonesia
+            demi konsistensi — itu BUKAN sinyal bahasa jawabanmu.
 
             TOOLS: bash, read_file, read_lines, write_file, list_dir, todo.
             - Baca file dengan read_file / read_lines (bukan cat/sed via bash) — read_lines
@@ -529,9 +543,18 @@ class ChatEngine(val session: Session) {
             5. Verifikasi hasil dengan menjalankan kodenya (bash), bukan sekadar menulis.
 
             MEMORI PROYEK: di akhir pekerjaan multi-langkah, tulis/perbarui MEMORI.md di
-            folder kerja — fakta yang berguna lintas sesi (struktur proyek, keputusan,
-            perintah verifikasi, jebakan yang ditemui). Sesi berikutnya di folder yang sama
+            folder kerja — fakta yang berguna lintas sesi. Sesi berikutnya di folder yang sama
             membacanya otomatis, jadi tidak perlu menjelajah dari nol.
+            FORMAT MEMORI.md (WAJIB, ramah grep/find): SATU fakta per baris, diawali anchor
+            tag lalu isi ringkas (maks ~200 karakter) — tanpa tabel, tanpa paragraf panjang.
+            Tag yang dipakai: [struktur] [keputusan] [uji] [jebakan] [fakta] [status].
+            Contoh baris:
+            [struktur] src/agent.js: loop agent; tools.js: 6 tool; server.js: HTTP+SSE
+            [uji] node --test test/ (dari folder server) — 111 test hijau 2026-11-14
+            [jebakan] python3 tidak ada di rootfs — jangan panggil, pakai node
+            [status] 2026-11-14: rilis 1.0.46 terkirim, CI #46 hijau
+            Sesi berikutnya cukup grep satu tag (mis. grep '\[jebakan\]' MEMORI.md)
+            untuk mengambil jenis fakta yang dibutuhkan — jaga setiap baris mandiri.
 
             JAWABAN AKHIR harus menyebutkan ringkas: apa yang dikerjakan, file mana saja
             yang disentuh, dan bagaimana kamu memverifikasinya (perintah + hasilnya).
