@@ -8,6 +8,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -80,6 +81,7 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.awaitCancellation
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -576,7 +578,16 @@ private sealed class QuotaState {
  *  (gateway-reported via stream_options.include_usage, any provider),
  *  APInex remaining quota on the right. Both counts are the ACTUAL number
  *  (formatTokenCount, id-ID grouping — 19300000 → "19.300.000", T-ML28 #2),
- *  never an abbreviation — the old "±20,0 jt" rounding hid ±100k. */
+ *  never an abbreviation — the old "±20,0 jt" rounding hid ±100k.
+ *
+ *  T-ML43 fix (text cropped): the chips used to carry their padding on the
+ *  Surface modifier — i.e. OUTSIDE the pill background — so the text sat
+ *  flush against the 16dp rounded ends and the first/last glyph was cut by
+ *  the pill clip; and in a plain Row a long session chip starved the quota
+ *  chip ("Pemakaian sesi" + "Sisa token" > row width on 360dp screens),
+ *  cropping its text too. Now the padding lives INSIDE the pill and the
+ *  row is a FlowRow: chips keep their natural width and the quota chip
+ *  wraps to its own line instead of being crushed. */
 @Composable
 private fun TokenMeterRow(
     sessionTokens: Long,
@@ -586,31 +597,35 @@ private fun TokenMeterRow(
 ) {
     val showSession = sessionTokens > 0
     if (!showSession && !(showQuota && quotaState !is QuotaState.Idle)) return
-    Row(
+    FlowRow(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         if (showSession) {
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier.heightIn(min = 32.dp).padding(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier.heightIn(min = 32.dp),
             ) {
                 Text(
                     "${LocalStrings.current.sessionUsageLabel}: ${formatTokenCount(sessionTokens)}",
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
-        Spacer(Modifier.weight(1f))
         if (showQuota) QuotaChip(state = quotaState, onRefresh = onRefreshQuota)
     }
 }
 
 /** The APInex remaining-quota chip — a Surface only; the enclosing row owns
- *  alignment. Emits nothing while Idle. */
+ *  alignment. Emits nothing while Idle. Tappable to refresh.
+ *  T-ML43: padding INSIDE the pill, ripple clipped to the pill shape (clip
+ *  before clickable), ellipsis as the ultra-narrow safety net. */
 @Composable
 private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
     val s = LocalStrings.current
@@ -625,21 +640,24 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
         }
         is QuotaState.Failed -> "—"
     }
+    val chipShape = RoundedCornerShape(16.dp)
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = chipShape,
         color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier
             .heightIn(min = 32.dp)
+            .clip(chipShape)
             .clickable(onClick = onRefresh)
-            .semantics { contentDescription = "${s.quotaLabel}: $value" }
-            .padding(horizontal = 12.dp, vertical = 4.dp),
+            .semantics { contentDescription = "${s.quotaLabel}: $value" },
     ) {
         Text(
             "${s.quotaLabel}: $value",
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
             style = MaterialTheme.typography.labelMedium,
             color = if (state is QuotaState.Failed) MaterialTheme.colorScheme.error
             else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
