@@ -43,7 +43,9 @@ test "$(node "${STAGE}/bundle/rpc-entry.js" --version 2>/dev/null)" = "${PI_VERS
   || { echo "FATAL: --version tidak cocok ${PI_VERSION}" >&2; exit 1; }
 
 mkdir -p "${OUT_DIR}"
-tar -C "${STAGE}" -cJf "${OUT_TAR}" bundle package.json
+# xz -9e (T-ML46): tar -cJf default preset 6 → -9e menghemat ~3-4% lagi.
+# Dekoder XZ Java app sudah menangani dict 64MB (rootfs -9e sejak 1.0.31).
+tar -C "${STAGE}" -cf - bundle package.json | xz -9e -T0 > "${OUT_TAR}"
 (cd "${OUT_DIR}" && sha256sum pi-bundle.tar.xz > PI-BUNDLE.sha256)
 
 echo "[vendor] ${PI_PACKAGE} → ${OUT_TAR}"

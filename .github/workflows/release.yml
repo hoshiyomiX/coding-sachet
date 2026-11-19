@@ -66,6 +66,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Install cross binutils (strip biner node per-arch)
+        # T-ML46: bin/node resmi TIDAK stripped (debug_info ~36MB). Strip
+        # lintas-arch butuh binutils target; x86_64 pakai strip sistem.
+        run: sudo apt-get install -y -qq binutils-aarch64-linux-gnu binutils-arm-linux-gnueabihf
+
       - name: Kotlin unit tests
         # App-logic tests (providers, wire format, localization parity) run
         # BEFORE any APK is assembled — a red test must fail the build early.
@@ -174,15 +179,49 @@ jobs:
             rm -rf "$ROOTFS"/var/lib/apt/lists/*
             [ -x "$ROOTFS/usr/bin/git" ] || { echo "FATAL: /usr/bin/git tidak ada di rootfs"; exit 1; }
             [ -d "$ROOTFS/usr/lib/git-core" ] || { echo "FATAL: /usr/lib/git-core hilang"; exit 1; }
+            # Prune rootfs (T-ML46, 31MB -> 22MB): pohon full-perl bawaan
+            # closure git (usr/lib/<t>/perl + usr/share/perl, ~50MB mentah)
+            # dihapus — ubuntu-base terbukti berjalan penuh hanya dengan
+            # perl-base (strict.pm dkk. tetap ada; one-liner perl aman).
+            # git inti murni C; hanya subperintah perl-nya (send-email, svn,
+            # add --interactive) yang ikut mati — kelas risiko sama dengan
+            # python3 yang memang tak pernah dibundel. doc/man/locale/include
+            # dibuang: tidak ada yang membacanya di headless guest.
+            rm -rf "$ROOTFS"/usr/lib/*/perl \
+                   "$ROOTFS"/usr/share/perl \
+                   "$ROOTFS"/usr/share/doc \
+                   "$ROOTFS"/usr/share/man \
+                   "$ROOTFS"/usr/share/locale \
+                   "$ROOTFS"/usr/include
+            [ -f "$ROOTFS"/usr/lib/*/perl-base/strict.pm ] || { echo "FATAL: perl-base strict.pm hilang"; exit 1; }
             # Ultra compression: rootfs (dengan git) repacked ke xz -9e,
             # kepemilikan dipaksa root:root seperti tarball asli ubuntu-base.
             tar -C "$ROOTFS" -cf - --owner=0 --group=0 . | xz -9e -T0 > app/src/main/assets/env/ubuntu-rootfs.tar.xz
             rm -rf "$ROOTFS"
+            # Node runtime ramping (T-ML46, 33MB -> 26MB): unduh tarball
+            # resmi (sha terpin), lalu (1) strip --strip-unneeded bin/node —
+            # hanya seksi non-alloc (debug/symtab) yang hilang; BuildID,
+            # PT_LOAD, dan NEEDED terbukti identik; (2) buang include/
+            # (header C), lib/ (npm + corepack — server nol-npm & bundle Pi
+            # self-contained), share/ (doc/man), dan symlink npm/npx.
+            # RuntimeController hanya butuh bin/node di /usr/local/bin.
             NODE_URL="https://nodejs.org/dist/v$NODEVER/node-v$NODEVER-linux-$NODEARCH.tar.xz"
             for i in 1 2 3; do
-              curl -sSL --retry 3 -o app/src/main/assets/env/node-runtime.tar.xz "$NODE_URL" && break || { echo "retry node ($i)"; sleep 5; }
+              curl -sSL --retry 3 -o /tmp/node-official.tar.xz "$NODE_URL" && break || { echo "retry node ($i)"; sleep 5; }
             done
-            echo "$(node_sha "$NODEVER" "$NODEARCH")  app/src/main/assets/env/node-runtime.tar.xz" | sha256sum -c -
+            echo "$(node_sha "$NODEVER" "$NODEARCH")  /tmp/node-official.tar.xz" | sha256sum -c -
+            rm -rf /tmp/node-x && mkdir -p /tmp/node-x
+            tar -xJf /tmp/node-official.tar.xz -C /tmp/node-x
+            ND="/tmp/node-x/node-v$NODEVER-linux-$NODEARCH"
+            [ -x "$ND/bin/node" ] || { echo "FATAL: bin/node hilang dari tarball resmi"; exit 1; }
+            case "$NODEARCH" in
+              arm64)  STRIP_BIN="aarch64-linux-gnu-strip" ;;
+              armv7l) STRIP_BIN="arm-linux-gnueabihf-strip" ;;
+              x64)    STRIP_BIN="strip" ;;
+            esac
+            "$STRIP_BIN" --strip-unneeded "$ND/bin/node"
+            rm -rf "$ND/include" "$ND/lib" "$ND/share" "$ND/bin/npm" "$ND/bin/npx"
+            tar -C /tmp/node-x -cf - "node-v$NODEVER-linux-$NODEARCH" | xz -9e -T0 > app/src/main/assets/env/node-runtime.tar.xz
             ls -l app/src/main/assets/env/
 
             VC=$(( N * 10 + IDX ))
@@ -211,12 +250,26 @@ jobs:
           done
           # The rootfs asset shipped inside every release APK must carry git
           # (T-ML31 P0-3) — prove it from the artifact itself, not from the
-          # build log.
+          # build log. T-ML46 also proves the slimming contract: perl-base
+          # intact, full-perl/doc trees absent, node tar stripped to bin/node.
           for APK in coding-sachet-1.0.*.apk; do
-            unzip -p "$APK" assets/env/ubuntu-rootfs.tar.xz \
-              | xz -dc | tar -tf - | grep -q '^\./usr/bin/git$' \
+            RLIST=$(unzip -p "$APK" assets/env/ubuntu-rootfs.tar.xz | xz -dc | tar -tf -)
+            grep -q '^\./usr/bin/git$' <<<"$RLIST" \
               || { echo "FATAL: rootfs di $APK tanpa /usr/bin/git"; exit 1; }
-            echo "$APK: /usr/bin/git terbukti di dalam rootfs"
+            grep -qE '^\./usr/lib/[^/]+/perl-base/strict\.pm$' <<<"$RLIST" \
+              || { echo "FATAL: perl-base strict.pm hilang dari $APK"; exit 1; }
+            grep -qE '^\./usr/lib/git-core/git$' <<<"$RLIST" \
+              || { echo "FATAL: git-core hilang dari $APK"; exit 1; }
+            if grep -qE '^\./usr/(lib/[^/]+/perl|share/perl|share/doc|share/man)/' <<<"$RLIST"; then
+              echo "FATAL: pohon full-perl/doc masih ada di rootfs $APK"; exit 1
+            fi
+            NLIST=$(unzip -p "$APK" assets/env/node-runtime.tar.xz | xz -dc | tar -tf -)
+            grep -qE '^node-v[^/]+-linux-[^/]+/bin/node$' <<<"$NLIST" \
+              || { echo "FATAL: bin/node hilang dari $APK"; exit 1; }
+            if grep -qE '^node-v[^/]+/(lib|include|share)/' <<<"$NLIST"; then
+              echo "FATAL: payload npm/include/doc masih ada di node tar $APK"; exit 1
+            fi
+            echo "$APK: rootfs ramping terverifikasi (git + perl-base utuh, $(wc -l <<<"$RLIST") entri; node tar $(wc -l <<<"$NLIST") entri)"
           done
 
       - name: Prepare release files

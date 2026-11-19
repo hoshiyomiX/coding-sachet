@@ -28,6 +28,9 @@ android {
         versionName = (project.findProperty("appVersionName") as String?) ?: "1.0.0"
         // One APK per ABI: CI drives a build pass per ABI via -Pabi.
         ndk { abiFilters += (project.findProperty("abi") as String?) ?: "arm64-v8a" }
+        // Locale filter (T-ML46): app is id (default) + en — drop the
+        // translations androidx/compose/okhttp ship for other languages.
+        resourceConfigurations += listOf("en", "id")
         // Gateway base URLs (both OpenAI-compatible). Overridable only for
         // local experiments.
         buildConfigField("String", "APINEX_BASE_URL", "\"https://api.apinex.bond/v1\"")
