@@ -73,6 +73,12 @@ android {
         // xz-compressed: storing them uncompressed in the APK avoids double
         // compression and lets AssetManager.openFd() report their length.
         noCompress += "xz"
+        // T-ML47: the node --test suite under assets/server/test/ runs in CI
+        // only — it must never ship inside the APK (~86 KB of JS). Appended
+        // to the AGP default pattern; <dir>test prunes any directory named
+        // "test" during the asset merge (verified absent in built APKs).
+        ignoreAssetsPattern =
+            "!.svn:!.git:!.ds_store:!*.scc:.*:<dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~:<dir>test"
     }
 
     compileOptions {

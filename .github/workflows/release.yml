@@ -105,10 +105,16 @@ jobs:
           echo "$MATRIX" | while IFS='|' read -r ABI TRIPLET NODEVER NODEARCH IDX; do
             [ -n "$ABI" ] || continue
             case "$ABI" in
-              arm64-v8a)    UB_ARCH=arm64 ;;
-              armeabi-v7a)  UB_ARCH=armhf ;;
-              x86_64)       UB_ARCH=amd64 ;;
+              arm64-v8a)    UB_ARCH=arm64 ; BCJ=arm64 ;;
+              armeabi-v7a)  UB_ARCH=armhf ; BCJ=armthumb ;;
+              x86_64)       UB_ARCH=amd64 ; BCJ=x86 ;;
             esac
+            # T-ML47: xz filter chain = arch-specific BCJ branch filter +
+            # LZMA2 9e. BCJ pre-transforms branch instructions so LZMA2
+            # matches them: ~4-5% smaller than plain -9e on the arm64 ELF
+            # payloads, decoded fine by the app's org.tukaani:xz 1.10
+            # (ARM64Options) — verified byte-identical against system xz.
+            XZFILT="${BCJ} lzma2:preset=9e,dict=64MiB"
             echo "===== ABI $ABI (rootfs $UB_ARCH, node v$NODEVER-$NODEARCH, idx $IDX) ====="
             mkdir -p app/src/main/assets/env
             UB_PATH="ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-$UB_ARCH.tar.gz"
@@ -179,24 +185,123 @@ jobs:
             rm -rf "$ROOTFS"/var/lib/apt/lists/*
             [ -x "$ROOTFS/usr/bin/git" ] || { echo "FATAL: /usr/bin/git tidak ada di rootfs"; exit 1; }
             [ -d "$ROOTFS/usr/lib/git-core" ] || { echo "FATAL: /usr/lib/git-core hilang"; exit 1; }
-            # Prune rootfs (T-ML46, 31MB -> 22MB): pohon full-perl bawaan
-            # closure git (usr/lib/<t>/perl + usr/share/perl, ~50MB mentah)
-            # dihapus — ubuntu-base terbukti berjalan penuh hanya dengan
-            # perl-base (strict.pm dkk. tetap ada; one-liner perl aman).
-            # git inti murni C; hanya subperintah perl-nya (send-email, svn,
-            # add --interactive) yang ikut mati — kelas risiko sama dengan
-            # python3 yang memang tak pernah dibundel. doc/man/locale/include
-            # dibuang: tidak ada yang membacanya di headless guest.
-            rm -rf "$ROOTFS"/usr/lib/*/perl \
+            # Prune rootfs (T-ML46, 31MB -> 22MB; T-ML47, 22MB -> 13.5MB):
+            # T-ML46 dropped the full-perl tree (usr/lib/<t>/perl,
+            # usr/share/perl, ~50MB raw) plus doc/man/locale/include.
+            # T-ML47 goes further — perl-base itself is now gone too:
+            # only git's exotic subcommands (send-email, svn, add
+            # --interactive) ever needed it, same risk class as python3
+            # which was never bundled. Also dropped: glibc gconv charset
+            # tables (~20MB — the guest stack is UTF-8-native), apt+dpkg+gpgv
+            # (guest never installs packages), usr/sbin (fsck/shadow/getty —
+            # meaningless under proot; ldconfig kept), PAM+systemd+udev and
+            # all libs with zero remaining ELF users (verified by NEEDED
+            # closure scan), libssl/ossl-modules (coreutils only need
+            # libcrypto's default provider), terminfo trimmed to headless
+            # essentials, git-shell/localedef/tic/lsblk orphans.
+            # KEPT on purpose: procps (ps/top/pgrep — agent debugging) via
+            # libproc2 -> libsystemd -> libgcrypt chain, and libcurl's
+            # libldap/libsasl2 (NEEDED entries must resolve or curl won't
+            # load at all).
+            rm -rf "$ROOTFS"/usr/lib/*/gconv \
+                   "$ROOTFS"/usr/lib/*/perl \
+                   "$ROOTFS"/usr/lib/*/perl-base \
                    "$ROOTFS"/usr/share/perl \
+                   "$ROOTFS"/usr/share/perl5 \
                    "$ROOTFS"/usr/share/doc \
                    "$ROOTFS"/usr/share/man \
                    "$ROOTFS"/usr/share/locale \
                    "$ROOTFS"/usr/include
-            [ -f "$ROOTFS"/usr/lib/*/perl-base/strict.pm ] || { echo "FATAL: perl-base strict.pm hilang"; exit 1; }
-            # Ultra compression: rootfs (dengan git) repacked ke xz -9e,
-            # kepemilikan dipaksa root:root seperti tarball asli ubuntu-base.
-            tar -C "$ROOTFS" -cf - --owner=0 --group=0 . | xz -9e -T0 > app/src/main/assets/env/ubuntu-rootfs.tar.xz
+            rm -f  "$ROOTFS"/usr/bin/perl* \
+                   "$ROOTFS"/usr/bin/apt* \
+                   "$ROOTFS"/usr/bin/dpkg* \
+                   "$ROOTFS"/usr/bin/gpgv \
+                   "$ROOTFS"/usr/bin/git-shell \
+                   "$ROOTFS"/usr/bin/localedef \
+                   "$ROOTFS"/usr/bin/tic \
+                   "$ROOTFS"/usr/bin/lsblk \
+                   "$ROOTFS"/usr/bin/su \
+                   "$ROOTFS"/usr/bin/login \
+                   "$ROOTFS"/usr/bin/passwd \
+                   "$ROOTFS"/usr/bin/chsh \
+                   "$ROOTFS"/usr/bin/chfn \
+                   "$ROOTFS"/usr/bin/lslogins \
+                   "$ROOTFS"/usr/bin/logger \
+                   "$ROOTFS"/usr/bin/w \
+                   "$ROOTFS"/usr/bin/findmnt
+            rm -rf "$ROOTFS"/usr/lib/apt \
+                   "$ROOTFS"/usr/lib/dpkg \
+                   "$ROOTFS"/var/lib/dpkg \
+                   "$ROOTFS"/usr/lib/*/security \
+                   "$ROOTFS"/usr/lib/*/sasl2 \
+                   "$ROOTFS"/usr/lib/systemd \
+                   "$ROOTFS"/usr/lib/udev \
+                   "$ROOTFS"/usr/lib/*/ossl-modules \
+                   "$ROOTFS"/usr/lib/*/engines-3 \
+                   "$ROOTFS"/usr/share/ca-certificates \
+                   "$ROOTFS"/usr/share/tabset \
+                   "$ROOTFS"/usr/share/misc \
+                   "$ROOTFS"/usr/share/pixmaps \
+                   "$ROOTFS"/usr/share/polkit-1 \
+                   "$ROOTFS"/usr/share/sensible-utils \
+                   "$ROOTFS"/usr/share/util-linux \
+                   "$ROOTFS"/usr/share/staff-group-for-usr-local \
+                   "$ROOTFS"/usr/share/pam* \
+                   "$ROOTFS"/usr/share/profile.md5sums
+            rm -f  "$ROOTFS"/usr/lib/*/libperl.so* \
+                   "$ROOTFS"/usr/lib/*/libapt-pkg.so* \
+                   "$ROOTFS"/usr/lib/*/libapt-private.so* \
+                   "$ROOTFS"/usr/lib/*/libpam*.so* \
+                   "$ROOTFS"/usr/lib/*/libudev*.so* \
+                   "$ROOTFS"/usr/lib/*/libbsd.so* \
+                   "$ROOTFS"/usr/lib/*/libmd.so* \
+                   "$ROOTFS"/usr/lib/*/libevent*.so* \
+                   "$ROOTFS"/usr/lib/*/libdb-5.3.so \
+                   "$ROOTFS"/usr/lib/*/libssl.so.3 \
+                   "$ROOTFS"/usr/lib/*/libassuan.so*
+            # DELIBERATELY KEPT (closure scan T-ML47): libgcrypt +
+            # libgpg-error (libsystemd needs them), libsystemd (ps/top/pgrep
+            # via libproc2), libldap + liblber + libsasl2 (libcurl-gnutls
+            # NEEDED entries — unresolved sonames would stop curl from
+            # loading at all), libcrypto (Ubuntu 24.04 coreutils *sum/sort
+            # link it). Removing any of these breaks the guest stack.
+            # usr/sbin: everything there is meaningless under proot (block
+            # devices, fsck, shadow/user management, getty) — keep ldconfig
+            # only.
+            find "$ROOTFS"/usr/sbin -mindepth 1 -maxdepth 1 \
+              ! -name 'ldconfig' ! -name 'ldconfig.real' -exec rm -rf {} +
+            # Purge EVERYTHING apt left behind: the downloaded .debs, the
+            # lock, and above all pkgcache.bin/srcpkgcache.bin — the runner's
+            # apt 2.7 builds those ~99 MB binary caches inside Dir::Cache
+            # (run #31 shipped them: rootfs asset 75 MB instead of ~30 MB).
+            # The pristine archives/partial skeleton is recreated after.
+            # dpkg state goes too (T-ML47): no dpkg binary survives, the
+            # guest cannot install packages anyway.
+            rm -rf "$ROOTFS"/var/lib/dpkg
+            rm -rf "$ROOTFS"/var/cache/apt/*
+            mkdir -p "$ROOTFS"/var/cache/apt/archives/partial
+            rm -rf "$ROOTFS"/var/lib/apt/lists/*
+            # terminfo: keep only terminal families a headless guest meets.
+            find "$ROOTFS"/usr/share/terminfo -mindepth 2 -type f \
+              ! -name xterm ! -name xterm-256color ! -name xterm-color \
+              ! -name linux ! -name screen ! -name screen-256color \
+              ! -name vt100 ! -name vt102 ! -name vt220 ! -name ansi ! -name dumb \
+              ! -name rxvt ! -name rxvt-unicode-256color \
+              -delete
+            find "$ROOTFS"/usr/share/terminfo -depth -type d -empty -delete
+            # git deb ships usr/bin/git and git-core/git as ONE inode;
+            # dpkg-deb -x breaks the hardlink and the tar stored the 4MB
+            # payload twice. Re-link before archiving (T-ML47).
+            ln -f "$ROOTFS"/usr/lib/git-core/git "$ROOTFS"/usr/bin/git
+            [ -x "$ROOTFS/usr/bin/git" ] || { echo "FATAL: /usr/bin/git tidak ada di rootfs"; exit 1; }
+            [ -d "$ROOTFS/usr/lib/git-core" ] || { echo "FATAL: /usr/lib/git-core hilang"; exit 1; }
+            [ -f "$ROOTFS"/usr/lib/*/libsystemd.so.0 ] || { echo "FATAL: libsystemd (untuk ps/top) hilang"; exit 1; }
+            [ -f "$ROOTFS"/usr/lib/*/libldap.so.2 ] || { echo "FATAL: libldap (untuk libcurl) hilang"; exit 1; }
+            # Ultra compression (T-ML47): rootfs (dengan git) repacked ke
+            # xz BCJ+LZMA2-9e, kepemilikan dipaksa root:root seperti tarball
+            # asli ubuntu-base.
+            tar -C "$ROOTFS" -cf - --owner=0 --group=0 . \
+              | xz -T0 --filters="$XZFILT" > app/src/main/assets/env/ubuntu-rootfs.tar.xz
             rm -rf "$ROOTFS"
             # Node runtime ramping (T-ML46, 33MB -> 26MB): unduh tarball
             # resmi (sha terpin), lalu (1) strip --strip-unneeded bin/node —
@@ -221,7 +326,12 @@ jobs:
             esac
             "$STRIP_BIN" --strip-unneeded "$ND/bin/node"
             rm -rf "$ND/include" "$ND/lib" "$ND/share" "$ND/bin/npm" "$ND/bin/npx"
-            tar -C /tmp/node-x -cf - "node-v$NODEVER-linux-$NODEARCH" | xz -9e -T0 > app/src/main/assets/env/node-runtime.tar.xz
+            # T-ML47: CHANGELOG.md + README.md are dead weight in a headless
+            # runtime tar (LICENSE stays); compress with the same per-arch
+            # BCJ+LZMA2-9e chain as the rootfs.
+            rm -f "$ND/CHANGELOG.md" "$ND/README.md"
+            tar -C /tmp/node-x -cf - "node-v$NODEVER-linux-$NODEARCH" \
+              | xz -T0 --filters="$XZFILT" > app/src/main/assets/env/node-runtime.tar.xz
             ls -l app/src/main/assets/env/
 
             VC=$(( N * 10 + IDX ))
@@ -250,18 +360,29 @@ jobs:
           done
           # The rootfs asset shipped inside every release APK must carry git
           # (T-ML31 P0-3) — prove it from the artifact itself, not from the
-          # build log. T-ML46 also proves the slimming contract: perl-base
-          # intact, full-perl/doc trees absent, node tar stripped to bin/node.
+          # build log. T-ML47 proves the DEEP slim contract from the built
+          # APK: perl (incl. perl-base) / gconv / apt / dpkg / systemd /
+          # udev / share-fat trees ABSENT; the closure-critical libs
+          # (libsystemd for ps/top, libldap+libsasl2 for libcurl, libgcrypt,
+          # libcrypto, libcurl-gnutls) PRESENT; usr/sbin trimmed to
+          # ldconfig; node tar stripped to bin/node + LICENSE (no docs).
           for APK in coding-sachet-1.0.*.apk; do
             RLIST=$(unzip -p "$APK" assets/env/ubuntu-rootfs.tar.xz | xz -dc | tar -tf -)
             grep -q '^\./usr/bin/git$' <<<"$RLIST" \
               || { echo "FATAL: rootfs di $APK tanpa /usr/bin/git"; exit 1; }
-            grep -qE '^\./usr/lib/[^/]+/perl-base/strict\.pm$' <<<"$RLIST" \
-              || { echo "FATAL: perl-base strict.pm hilang dari $APK"; exit 1; }
             grep -qE '^\./usr/lib/git-core/git$' <<<"$RLIST" \
               || { echo "FATAL: git-core hilang dari $APK"; exit 1; }
-            if grep -qE '^\./usr/(lib/[^/]+/perl|share/perl|share/doc|share/man)/' <<<"$RLIST"; then
-              echo "FATAL: pohon full-perl/doc masih ada di rootfs $APK"; exit 1
+            grep -qE '^\./usr/bin/(ps|bash)$' <<<"$RLIST" \
+              || { echo "FATAL: ps/bash hilang dari $APK"; exit 1; }
+            for KEEP in libsystemd.so.0 libldap.so.2 libsasl2.so.2 libgcrypt.so.20 libcrypto.so.3 libcurl-gnutls.so.4; do
+              grep -qE "^\./usr/lib/[^/]+/$KEEP" <<<"$RLIST" \
+                || { echo "FATAL: $KEEP hilang dari $APK (closure-critical)"; exit 1; }
+            done
+            if grep -qE '^\./usr/(lib/[^/]+/(perl|perl-base|gconv)|share/(perl|perl5|doc|man|locale)|lib/(apt|dpkg|systemd|udev)|share/ca-certificates)/' <<<"$RLIST"; then
+              echo "FATAL: pohon gemuk T-ML47 masih ada di rootfs $APK"; exit 1
+            fi
+            if grep -E '^\./usr/sbin/.' <<<"$RLIST" | grep -qvE 'ldconfig'; then
+              echo "FATAL: usr/sbin belum ramping di $APK"; exit 1
             fi
             NLIST=$(unzip -p "$APK" assets/env/node-runtime.tar.xz | xz -dc | tar -tf -)
             grep -qE '^node-v[^/]+-linux-[^/]+/bin/node$' <<<"$NLIST" \
@@ -269,7 +390,10 @@ jobs:
             if grep -qE '^node-v[^/]+/(lib|include|share)/' <<<"$NLIST"; then
               echo "FATAL: payload npm/include/doc masih ada di node tar $APK"; exit 1
             fi
-            echo "$APK: rootfs ramping terverifikasi (git + perl-base utuh, $(wc -l <<<"$RLIST") entri; node tar $(wc -l <<<"$NLIST") entri)"
+            if grep -qE '^node-v[^/]+/(CHANGELOG|README)' <<<"$NLIST"; then
+              echo "FATAL: CHANGELOG/README masih ada di node tar $APK"; exit 1
+            fi
+            echo "$APK: rootfs ramping T-ML47 terverifikasi (git+ps+closure libs utuh, $(wc -l <<<"$RLIST") entri; node tar $(wc -l <<<"$NLIST") entri)"
           done
 
       - name: Prepare release files
