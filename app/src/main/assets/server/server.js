@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const { config, providerById, HOME } = require('./config');
 const { runAgent, verifyModels } = require('./agent');
+const { runPiChat, piBundleAvailable } = require('./pi-bridge');
 const { safePath, listDir, readFile, writeFile } = require('./tools');
 const { fetchWithRetry, fetchRetryTimeout, netErrorDetail } = require('./net');
 const log = require('./log');
@@ -241,6 +242,8 @@ async function route(req, res) {
     return sendJson(res, 200, {
       ok: true, service: 'sachet-agent', version: config.version,
       node: process.version, workdir: config.workdir,
+      engine: config.engine,
+      piBundle: piBundleAvailable(),
       providers: Object.fromEntries(
         Object.entries(config.providers).map(([id, p]) => [id, p.baseUrl])
       ),
@@ -291,7 +294,7 @@ async function route(req, res) {
       return sendJson(res, 400, { error: 'model dan messages wajib' });
     }
 
-    log.inf('srv', `chat mulai ${providerId} ${body.model} msgs=${body.messages.length}${typeof body.workdir === 'string' && body.workdir ? ` workdir=${body.workdir.slice(0, 160)}` : ''}`);
+    log.inf('srv', `chat mulai ${providerId} ${body.model} engine=${config.engine} msgs=${body.messages.length}${typeof body.workdir === 'string' && body.workdir ? ` workdir=${body.workdir.slice(0, 160)}` : ''}`);
     const chatT0 = Date.now();
     let chatTurns = 0;
 
@@ -311,24 +314,41 @@ async function route(req, res) {
     req.on('close', () => abort.abort());
 
     try {
-      const added = await runAgent({
-        apiKey: key,
-        providerId,
-        model: body.model,
-        messages: body.messages,
-        systemPrompt: body.systemPrompt,
-        // OpenAI-compatible request options (Settings → Konfigurasi JSON):
-        // sanitized inside the agent; reserved keys can never pass.
-        options: body.options,
-        // Per-session project folder (T-ML28: one project per folder). The
-        // agent validates it against the sandbox and creates it when absent;
-        // invalid values silently fall back to the server's default workdir.
-        workdir: typeof body.workdir === 'string' ? body.workdir.slice(0, 512) : undefined,
-        signal: abort.signal,
-        emit,
-      });
+      // T-ML45: pemilihan engine. Pi hanya jalan bila bundle tersedia di
+      // rootfs — bila tidak (aset gagal diekstrak), jatuh ke legacy dengan
+      // log keras: chat tetap jalan, tapi PoC-nya bohong kalau didiamkan.
+      const usePi = config.engine === 'pi';
+      if (usePi && !piBundleAvailable()) {
+        log.err('srv', `engine=pi tapi bundle Pi tidak ditemukan — FALLBACK ke engine legacy (periksa ekstraksi ${process.env.SACHET_PI_BUNDLE_DIR || '/opt/sachet/pi-bundle'})`);
+      }
+      const added = usePi && piBundleAvailable()
+        ? await runPiChat({
+            apiKey: key,
+            providerId,
+            model: body.model,
+            messages: body.messages,
+            workdir: typeof body.workdir === 'string' ? body.workdir.slice(0, 512) : undefined,
+            signal: abort.signal,
+            emit,
+          })
+        : await runAgent({
+            apiKey: key,
+            providerId,
+            model: body.model,
+            messages: body.messages,
+            systemPrompt: body.systemPrompt,
+            // OpenAI-compatible request options (Settings → Konfigurasi JSON):
+            // sanitized inside the agent; reserved keys can never pass.
+            options: body.options,
+            // Per-session project folder (T-ML28: one project per folder). The
+            // agent validates it against the sandbox and creates it when absent;
+            // invalid values silently fall back to the server's default workdir.
+            workdir: typeof body.workdir === 'string' ? body.workdir.slice(0, 512) : undefined,
+            signal: abort.signal,
+            emit,
+          });
       chatTurns = added.filter((m) => m.role === 'assistant').length;
-      log.inf('srv', `chat selesai ${providerId} ${body.model} turns=${chatTurns} msgs+${added.length} ${Date.now() - chatT0}ms`);
+      log.inf('srv', `chat selesai ${providerId} ${body.model} engine=${usePi && piBundleAvailable() ? 'pi' : 'legacy'} turns=${chatTurns} msgs+${added.length} ${Date.now() - chatT0}ms`);
     } catch (e) {
       // A user stop (stop button / screen close) aborts the run — that is a
       // normal exit, not a failure; keep the error channel for real faults.

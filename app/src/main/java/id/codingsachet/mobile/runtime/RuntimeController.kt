@@ -57,11 +57,15 @@ class RuntimeController(
 
         const val NODE_GUEST = "/usr/local/bin/node"
         const val SERVER_JS_GUEST = "/opt/sachet/server.js"
+        // T-ML45 PoC: bundle RPC Pi Coding Agent (arch-neutral, murni JS)
+        // diekstrak dari APK ke sini; pi-bridge.js mem.spawn-nya per sesi.
+        const val PI_BUNDLE_ASSET = "pi/pi-bundle.tar.xz"
+        const val PI_BUNDLE_GUEST = "/opt/sachet/pi-bundle"
         // EVERY file the server requires at boot must be listed here: the
         // updater only copies these into the rootfs. T-ML11 incident: net.js
         // shipped inside the APK but was missing from this list, so the
         // 1.0.6 update crashed the server with MODULE_NOT_FOUND.
-        val SERVER_FILES = listOf("config.js", "agent.js", "tools.js", "server.js", "net.js", "ratelimit.js", "log.js")
+        val SERVER_FILES = listOf("config.js", "agent.js", "tools.js", "server.js", "net.js", "ratelimit.js", "log.js", "pi-bridge.js")
 
         // The pinned Node builds need libatomic.so.1, which the minimal
         // ubuntu-base rootfs does not ship (verified per-arch via readelf
@@ -140,6 +144,7 @@ class RuntimeController(
             if (!paths.nodeBin.exists()) installNode()
 
             writeServerFiles()
+            installPiBundle()
             ensureRuntimeLibs()
             smokeTest()
 
@@ -216,6 +221,32 @@ class RuntimeController(
             runCatching { ensureRuntimeLibs() }
                 .onFailure { logLine("Gagal memperbarui runtime libs: ${it.message}") }
         }
+        // Bundle Pi ikut diperbarui/di-heal tiap boot murah: hanya bila
+        // marker versi tidak cocok atau rpc-entry hilang (T-ML45).
+        runCatching { ensurePiBundle() }
+            .onFailure { logLine("Gagal memasang bundle Pi: ${it.message}") }
+    }
+
+    /** Extract the pinned Pi RPC bundle into the guest rootfs (T-ML45).
+     *  1,6 MB terkompresi → ~9,5 MB murni JS — sekali per versi app. */
+    private fun installPiBundle() {
+        step("Memasang engine Pi (PoC)", null)
+        extractAsset(PI_BUNDLE_ASSET, paths.host(PI_BUNDLE_GUEST)) { _, _ -> }
+        writePiMarker()
+        logLine("Bundle Pi Coding Agent terpasang di $PI_BUNDLE_GUEST")
+    }
+
+    private fun ensurePiBundle() {
+        val entry = paths.host("$PI_BUNDLE_GUEST/bundle/rpc-entry.js")
+        val marker = paths.host("$PI_BUNDLE_GUEST/.version-${BuildConfig.VERSION_CODE}")
+        if (entry.isFile && marker.isFile) return
+        installPiBundle()
+    }
+
+    private fun writePiMarker() {
+        val dir = paths.host(PI_BUNDLE_GUEST)
+        dir.listFiles()?.filter { it.name.startsWith(".version-") }?.forEach { it.delete() }
+        File(dir, ".version-${BuildConfig.VERSION_CODE}").writeText("pi")
     }
 
     /** Copy the shared libraries bundled in the APK into the guest rootfs. */
@@ -325,6 +356,8 @@ class RuntimeController(
                 cwd = "/root",
                 extraEnv = buildMap {
                     put("SACHET_PORT", prefs.serverPort.toString())
+                    // T-ML45: pilihan engine agent untuk /api/chat.
+                    put("SACHET_ENGINE", if (prefs.enginePi) "pi" else "legacy")
                     if (rootMode) put("SACHET_EXTRA_ROOTS", "/,/device")
                 },
             )

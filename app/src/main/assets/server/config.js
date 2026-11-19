@@ -84,6 +84,13 @@ const config = {
   providers,
   defaultProvider: 'apinex',
 
+  // T-ML45 Fase 0 (PoC Pi Coding Agent): engine agent yang melayani
+  // /api/chat. "legacy" = loop agent.js yang lama (default); "pi" =
+  // pi-bridge.js (bundle RPC Pi sebagai child process). Ditetapkan app
+  // lewat env saat boot server — Settings → toggle engine. Rute lain
+  // (models/quota/verify/fs) TIDAK berubah: semuanya gateway-direct.
+  engine: process.env.SACHET_ENGINE === 'pi' ? 'pi' : 'legacy',
+
   port: Number(process.env.SACHET_PORT || 8765),
   host: '127.0.0.1',
 

@@ -82,6 +82,7 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
     var checking by remember { mutableStateOf(false) }
     var keepAwake by remember { mutableStateOf(Graph.prefs.keepAwake) }
     var noSeccomp by remember { mutableStateOf(Graph.prefs.noSeccomp) }
+    var enginePi by remember { mutableStateOf(Graph.prefs.enginePi) }
     var rootAccess by remember { mutableStateOf(Graph.prefs.rootAccess) }
     var showReset by remember { mutableStateOf(false) }
     var installingTools by remember { mutableStateOf(false) }
@@ -217,6 +218,18 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                 onChange = {
                     noSeccomp = it
                     Graph.prefs.noSeccomp = it
+                },
+            )
+            // T-ML45 PoC: pilihan engine agent. Aktif = /api/chat dilayani
+            // Pi Coding Agent (pi-bridge.js); mati = loop agent lama.
+            // Nilai dibaca server saat BOOT — restart server setelah ganti.
+            SwitchRow(
+                label = s.enginePi,
+                hint = s.enginePiHint,
+                checked = enginePi,
+                onChange = {
+                    enginePi = it
+                    Graph.prefs.enginePi = it
                 },
             )
             // Only offered when a su binary is present — toggling it on a

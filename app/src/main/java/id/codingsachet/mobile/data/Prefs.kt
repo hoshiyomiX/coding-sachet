@@ -61,6 +61,13 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("noSeccomp", false)
         set(v) = sp.edit().putBoolean("noSeccomp", v).apply()
 
+    /** T-ML45 PoC: jalankan /api/chat lewat engine Pi Coding Agent
+     *  (pi-bridge.js + bundle RPC) alih-alih loop agent lama. Dibaca server
+     *  saat boot lewat env SACHET_ENGINE — ganti nilai lalu restart server. */
+    var enginePi: Boolean
+        get() = sp.getBoolean("enginePi", false)
+        set(v) = sp.edit().putBoolean("enginePi", v).apply()
+
     /** Rooted phones: run the server via su and expose /device in the
      *  file explorer. Only honored when a su binary is actually present. */
     var rootAccess: Boolean
