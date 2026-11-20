@@ -921,10 +921,22 @@ function safeJson(s) {
 
 const abortErr = () => Object.assign(new Error('dibatalkan'), { name: 'AbortError' });
 
+/** Officially free = the gateway's OWN free tier, bukan allowFree.
+ *  Docs apinex.bond/developers/models: model free/* memakai jatah harian
+ *  (allowance) dan tidak mengisi dompet; semua model lain = pay-as-you-go
+ *  dari topup USD. T-ML48 (2026-11-19): allowFree kini true untuk SEMUA 22
+ *  model premium ($0.04-$1/1M) dan false untuk 8 model free/ — sinyal itu
+ *  bukan penanda gratis; klasifikasi intrinsik (prefix free/ atau
+ *  provider "Free") satu-satunya sumber resmi. */
+const isCatalogueFree = (e) => !!e && (
+  e.provider === 'Free' ||
+  (typeof e.id === 'string' && e.id.startsWith('free/'))
+);
+
 /** Fetch + parse the APInex public catalogue
  *  (apinex.bond/api/public/models): ONE unauthenticated GET returning
- *  per-model health + allowFree — the relay's own liveness truth, zero
- *  chat tokens spent. */
+ *  per-model health + the intrinsic free tier — the relay's own liveness
+ *  truth, zero chat tokens spent. */
 async function fetchPublicCatalogue(provider, signal) {
   const res = await fetchWithRetry(
     provider.publicCatalogUrl,
@@ -1036,10 +1048,10 @@ async function probeModel({ apiKey, provider, model, signal }) {
 
 /** Live verification sweep (T-ML26): decide for every model id whether it
  *  actually answers RIGHT NOW, emitting progress events. APInex takes the
- *  public-catalogue fast path (health → dot, allowFree → free badge, no
- *  tokens); every other provider (and APInex when the catalogue is
- *  unreachable) probes each model, paced by the SAME 15 RPM bucket as real
- *  chats so a sweep can never starve the user's own messages.
+ *  public-catalogue fast path (health → dot, intrinsic free tier → free
+ *  badge, no tokens); every other provider (and APInex when the catalogue
+ *  is unreachable) probes each model, paced by the SAME 15 RPM bucket as
+ *  real chats so a sweep can never starve the user's own messages.
  *  Events: {type:'start',total} → {type:'result',model,ok,free,ms,reason?}
  *  → {type:'done',ok,dead,unknown}. ok/free are null = cannot tell. */
 async function verifyModels({ apiKey, providerId, models, signal, emit }) {
@@ -1060,7 +1072,7 @@ async function verifyModels({ apiKey, providerId, models, signal, emit }) {
         if (alive === true) ok++; else if (alive === false) dead++; else unknown++;
         emit({
           type: 'result', model: m, ok: alive, ms: 0,
-          free: e ? e.allowFree === true : null,
+          free: e ? isCatalogueFree(e) : null,
           ...(alive === false && e ? { reason: `health=${e.health}` } : {}),
         });
       }

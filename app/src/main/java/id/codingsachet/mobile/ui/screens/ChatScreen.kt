@@ -864,9 +864,10 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // "Free" = the gateway's free/ tier + the live sweep's free
-                // flag (allowFree catalogue on APInex; answering models on
-                // NIM are free to use).
+                // "Free" = the gateway's intrinsic free tier. T-ML48: the
+                // sweep's free flag is only trusted for providers WITHOUT a
+                // prefix (NIM) — see ModelStatus.isFree; the APInex
+                // allowFree catalogue flag is no longer a free indicator.
                 FilterChip(
                     selected = freeOnly,
                     onClick = { freeOnly = !freeOnly },
@@ -874,7 +875,7 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                 )
                 val loaded = models
                 if (loaded != null) {
-                    val n = loaded.count { !freeOnly || provider.isFreeByPrefix(it) || status[it]?.free == true }
+                    val n = loaded.count { !freeOnly || ModelStatus.isFree(provider, it) }
                     Text("$n / ${loaded.size} · ${provider.label}", style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -930,14 +931,14 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                         }
                     )
                     val filtered = sorted.filter {
-                        (!freeOnly || provider.isFreeByPrefix(it) || status[it]?.free == true) &&
+                        (!freeOnly || ModelStatus.isFree(provider, it)) &&
                             it.contains(query, ignoreCase = true)
                     }
                     items(filtered) { m ->
                         ModelRow(
                             model = m,
                             state = status[m]?.state ?: ModelStatus.State.UNKNOWN,
-                            free = provider.isFreeByPrefix(m) || status[m]?.free == true,
+                            free = ModelStatus.isFree(provider, m),
                             current = current,
                             onPick = { onPick(m) },
                         )

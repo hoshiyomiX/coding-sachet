@@ -5,7 +5,9 @@
 //   * NIM probe path: alive via first SSE chunk / 404 dead / first-chunk
 //     timeout dead / a single pre-headers hang marked dead while the
 //     sweep continues / two connect failures in a row abort with an error
-//   * APInex catalogue fast path: health → dot, allowFree → free, zero
+//   * APInex catalogue fast path: health → dot, intrinsic free tier
+//     (free/ prefix | provider "Free") → free badge — NOT allowFree
+//     (T-ML48: allowFree kini true utk semua model premium), zero
 //     chat requests; unknown catalogue ids come back ok:null
 //   * catalogue unreachable → falls back to the probe path
 //   * route guards: missing key 401, unknown provider 400, no list passed
@@ -156,14 +158,22 @@ test('verify: dua kegagalan connect berturut-turut = jalur gateway mati, sweep b
   assert.ok(events.some((e) => e.type === 'done'), 'done tetap dikirim');
 });
 
-test('verify: APInex jalur cepat katalog publik — health jadi dot, allowFree jadi free, TANPA chat', async (t) => {
+test('verify: APInex jalur cepat katalog publik — health jadi dot, tier intrinsik jadi free (bukan allowFree), TANPA chat', async (t) => {
+  // T-ML48: allowFree di katalog hidup kini true untuk SEMUA model premium
+  // dan false untuk 8 model free/ — free badge HARUS dibaca dari tier
+  // intrinsik (prefix free/ atau provider "Free"), seperti kasus nyata
+  // 2026-11-19 di bawah (claude-x premium allowFree=true → BUKAN free).
   const gw = await startMockGateway([], {
     key: KEY,
-    models: ['free/a', 'b', 'c'],
+    models: ['free/a', 'b', 'c', 'claude-x', 'saja-free-tanpa-prefix'],
     catalogue: [
       { id: 'free/a', health: 'live', allowFree: true },
       { id: 'b', health: 'live', allowFree: false },
       { id: 'c', health: 'dead', allowFree: true },
+      // kasus nyata T-ML48: premium + allowFree=true (semantik katalog baru)
+      { id: 'claude-x', health: 'live', allowFree: true, provider: 'Claude', dollarsPer1M: 0.5 },
+      // kasus nyata: klasifikasi provider "Free" tanpa prefix free/
+      { id: 'saja-free-tanpa-prefix', health: 'live', allowFree: true, provider: 'Free', dollarsPer1M: 0 },
     ],
   });
   t.after(() => gw.close());
@@ -174,21 +184,25 @@ test('verify: APInex jalur cepat katalog publik — health jadi dot, allowFree j
     port,
     '/api/verify-models',
     { 'X-Sachet-Key': KEY, 'X-Sachet-Provider': 'apinex' },
-    { models: ['free/a', 'b', 'c', 'tak-ada-di-katalog'] },
+    { models: ['free/a', 'b', 'c', 'claude-x', 'saja-free-tanpa-prefix', 'tak-ada-di-katalog'] },
   );
   const byModel = Object.fromEntries(
     events.filter((e) => e.type === 'result').map((r) => [r.model, r]),
   );
   assert.strictEqual(byModel['free/a'].ok, true);
-  assert.strictEqual(byModel['free/a'].free, true, 'allowFree = badge free');
+  assert.strictEqual(byModel['free/a'].free, true, 'prefix free/ = badge free');
   assert.strictEqual(byModel['b'].ok, true);
-  assert.strictEqual(byModel['b'].free, false, 'bukan allowFree');
+  assert.strictEqual(byModel['b'].free, false, 'bukan tier free');
   assert.strictEqual(byModel['c'].ok, false, 'health=dead = merah');
   assert.strictEqual(byModel['c'].reason, 'health=dead');
+  assert.strictEqual(byModel['claude-x'].ok, true);
+  assert.strictEqual(byModel['claude-x'].free, false, 'premium + allowFree=true TETAP bukan free (bug T-ML48)');
+  assert.strictEqual(byModel['saja-free-tanpa-prefix'].ok, true);
+  assert.strictEqual(byModel['saja-free-tanpa-prefix'].free, true, 'provider "Free" = badge free');
   assert.strictEqual(byModel['tak-ada-di-katalog'].ok, null, 'id tak dikenal = tak pasti');
   assert.strictEqual(byModel['tak-ada-di-katalog'].free, null);
   const done = events.find((e) => e.type === 'done');
-  assert.strictEqual(done.ok, 2);
+  assert.strictEqual(done.ok, 4);
   assert.strictEqual(done.dead, 1);
   assert.strictEqual(done.unknown, 1);
   // The whole point of the fast path: not a single chat request.

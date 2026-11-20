@@ -93,11 +93,16 @@ class CodingSachetUnitTest {
         // Tanpa hasil live, model non-prefix tidak berbadge free.
         assertFalse(ModelStatus.isFree(Providers.APINEX, "claude-opus-5.5"))
         assertFalse(ModelStatus.isFree(Providers.NVIDIA, "nv-embedqa-e5-v5"))
-        // Katalog live (allowFree) dan NIM menjawab = free.
+        // T-ML48: flag free sweep TIDAK dipercaya untuk provider yang punya
+        // prefiks intrinsik (APInex) — katalog allowFree 2026-11-19 true di
+        // semua 22 model premium; entri stale tersimpan pun tak bisa mengecat
+        // model premium jadi free. NIM (tanpa prefiks) tetap percaya sweep.
         ModelStatus.apply("apinex", "claude-opus-5.5", ModelStatus.State.OK, true, now = 1)
+        ModelStatus.apply("apinex", "free/glm-5.3", ModelStatus.State.OK, false, now = 1)
         ModelStatus.apply("nvidia", "z-ai/glm-5.3-flash", ModelStatus.State.OK, true, now = 1)
         ModelStatus.apply("nvidia", "mati/model", ModelStatus.State.DEAD, false, now = 1)
-        assertTrue(ModelStatus.isFree(Providers.APINEX, "claude-opus-5.5"))
+        assertFalse("APInex premium + sweep free=true TETAP tidak free (bug T-ML48)", ModelStatus.isFree(Providers.APINEX, "claude-opus-5.5"))
+        assertTrue("APInex free/ tetap free via prefiks walau sweep bilang false", ModelStatus.isFree(Providers.APINEX, "free/glm-5.3"))
         assertTrue(ModelStatus.isFree(Providers.NVIDIA, "z-ai/glm-5.3-flash"))
         assertFalse(ModelStatus.isFree(Providers.NVIDIA, "mati/model"))
     }

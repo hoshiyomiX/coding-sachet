@@ -71,12 +71,18 @@ object ModelStatus {
     fun stateOf(providerId: String, model: String): State = entry(providerId, model)?.state ?: State.UNKNOWN
 
     /**
-     * Free = worth the badge: the gateway's intrinsic free/ prefix (APInex)
-     * OR the live sweep marked it free (NIM: every model that answers is
-     * free to use; APInex: the public catalogue's allowFree flag).
+     * Free = worth the badge. T-ML48: a provider with an INTRINSIC free
+     * tier (APInex free/ prefix) decides free-ness BY NAME — the sweep's
+     * free flag is only trusted for providers without a prefix (NIM:
+     * every model that answers is free to use). The APInex catalogue's
+     * allowFree is not a free indicator anymore (2026-11-19: true for all
+     * 22 premium models, false for 8 free/ models), so it must never be
+     * able to paint a premium model free here — persisted stale entries
+     * included.
      */
     fun isFree(provider: Provider, model: String): Boolean =
-        provider.isFreeByPrefix(model) || entry(provider.id, model)?.free == true
+        provider.isFreeByPrefix(model) ||
+            (provider.freeModelPrefix == null && entry(provider.id, model)?.free == true)
 
     /** Record one sweep result and wake the listeners. */
     fun apply(providerId: String, model: String, state: State, free: Boolean?, now: Long = System.currentTimeMillis()): Entry {

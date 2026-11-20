@@ -115,6 +115,10 @@ const quotaCache = new Map(); // `${providerId}|${key}` -> { at, payload }
 const QUOTA_CACHE_TTL = 60 * 1000;
 
 const num = (x) => {
+  // Number(null) === 0 — a JSON null must stay null, not become a fake
+  // "0" (2026-11-20 T-ML48: docs kini menyatakan tokens_remaining "null if
+  // unlimited"; null + unlimited:false tidak boleh dicetak sebagai 0).
+  if (x === null || x === undefined) return null;
   const n = Number(x);
   return Number.isFinite(n) ? n : null;
 };

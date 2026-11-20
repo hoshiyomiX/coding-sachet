@@ -544,6 +544,43 @@ test('HTTP server: /api/quota errors cleanly when the documented quota API is ab
   assert.strictEqual(gw.quotaRequests, 1);
 });
 
+test('HTTP server: /api/quota keeps a JSON null null — no fake "Sisa token: 0" (T-ML48)', async (t) => {
+  // Docs 2026-11-20 (apinex.bond/developers/balance): tokens_remaining is
+  // "number | null". The old num() did Number(null) === 0, so a null with
+  // unlimited:false printed a fake 0 in the chip. null must survive to the
+  // app (Kotlin shows "?" — "tidak diketahui" — instead of lying "0").
+  const gw = await startMockGateway([], {
+    key: 'sk-quota-3',
+    quota: { unlimited: false, tokenLimit: null, tokensUsed: 0, tokensRemaining: null },
+  });
+  t.after(() => gw.close());
+  useGateways({ apinex: gw });
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  const r = await getJson(port, '/api/quota', { 'x-sachet-key': 'sk-quota-3' });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.supported, true);
+  assert.strictEqual(r.body.unlimited, false);
+  assert.strictEqual(r.body.tokensRemaining, null, 'null tetap null — BUKAN 0 (Number(null) trap)');
+  assert.strictEqual(r.body.tokensUsed, 0);
+  assert.strictEqual(r.body.tokenLimit, null);
+  // Sanity: angka nyata tetap lolos utuh.
+  const gw2 = await startMockGateway([], {
+    key: 'sk-quota-4',
+    quota: { unlimited: false, tokenLimit: 20000000, tokensUsed: 700000, tokensRemaining: 19300000 },
+  });
+  t.after(() => gw2.close());
+  useGateways({ apinex: gw2 });
+  const r2 = await getJson(port, '/api/quota', { 'x-sachet-key': 'sk-quota-4' });
+  assert.strictEqual(r2.status, 200);
+  assert.strictEqual(r2.body.tokensRemaining, 19300000);
+});
+
 test('agent loop: history from a mid-session model switch is healed on the wire', async (t) => {
   const gw = await startMockGateway([{ kind: 'text', text: 'siap' }]);
   t.after(() => gw.close());
