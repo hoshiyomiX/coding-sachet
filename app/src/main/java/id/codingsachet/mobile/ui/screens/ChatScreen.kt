@@ -177,7 +177,7 @@ fun ChatScreen(
             Graph.api.quota(key, provider, fresh).fold(
                 onSuccess = { q ->
                     quotaState = if (q == null) QuotaState.Failed("tidak tersedia")
-                    else QuotaState.Ok(q.unlimited, q.tokensRemaining, q.mode)
+                    else QuotaState.Ok(q.unlimited, q.tokensRemaining, q.tokenLimit, q.mode)
                 },
                 onFailure = { quotaState = QuotaState.Failed(it.message ?: "gagal") },
             )
@@ -570,7 +570,7 @@ fun ChatScreen(
 private sealed class QuotaState {
     object Idle : QuotaState()
     object Loading : QuotaState()
-    data class Ok(val unlimited: Boolean, val tokens: Long?, val mode: String? = null) : QuotaState()
+    data class Ok(val unlimited: Boolean, val tokens: Long?, val tokenLimit: Long? = null, val mode: String? = null) : QuotaState()
     data class Failed(val message: String) : QuotaState()
 }
 
@@ -635,12 +635,13 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
         QuotaState.Loading -> "…"
         is QuotaState.Ok -> when {
             state.unlimited -> "∞"
-            // T-ML49: 0 pada key free-plan = tier gratis BELUM di-unlock
-            // (server melaporkan token_limit 0 — bukti probe 2026-11-20:
-            // 402 "top-up $5 to unlock 25M free tokens daily for life").
-            // Angka 0-nya BENAR dari server; hint menjelaskan cara membuka
-            // supaya chip tidak terbaca sebagai bug.
-            state.tokens == 0L && state.mode == "free" -> "0${s.quotaLockedHint}"
+            // T-ML49b: KEY TERKUNCI vs JATAH HABIS dibedakan lewat tokenLimit.
+            // Terkunci = tokens 0 DAN limit 0 (tidak ada alokasi sama sekali —
+            // bukti probe 2026-11-20: 402 "top-up $5 to unlock 25M free tokens
+            // daily for life", token_limit server = 0) → hint cara membuka.
+            // Habis = limit > 0 tapi remaining 0 (25jt terpakai, reset tengah
+            // malam UTC) → tetap angka polos, bukan hint top-up.
+            state.tokens == 0L && state.tokenLimit == 0L && state.mode == "free" -> "0${s.quotaLockedHint}"
             state.tokens != null -> formatTokenCount(state.tokens)
             else -> "?"
         }
