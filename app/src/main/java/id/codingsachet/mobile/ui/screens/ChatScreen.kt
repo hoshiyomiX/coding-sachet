@@ -163,10 +163,12 @@ fun ChatScreen(
     }
     val engine = current?.let { engines.getOrPut(it.id) { ChatEngine(it) } }
 
-    // ---------- sisa token APInex (chip di kanan atas kolom chat) ----------
+    // ---------- sisa token (chip di kanan atas kolom chat) ----------
+    // APInex (/v1/subscription) dan 100milionseek (header x-quota-*, T-ML52);
+    // NIM tanpa API kuota — chip disembunyikan.
     var quotaState by remember { mutableStateOf<QuotaState>(QuotaState.Idle) }
     fun refreshQuota(fresh: Boolean = false) {
-        if (Graph.prefs.provider != "apinex" || Graph.prefs.apiKey.isBlank()) {
+        if (!Graph.prefs.active.supportsQuota || Graph.prefs.apiKey.isBlank()) {
             quotaState = QuotaState.Idle
             return
         }
@@ -420,10 +422,10 @@ fun ChatScreen(
                 Column {
                     // ---------- meter token (T-ML29) ----------
                     // Kiri: pemakaian sesi ini (usage gateway, semua provider).
-                    // Kanan: sisa token APInex (hanya provider apinex).
+                    // Kanan: sisa token (APInex + 100milionseek, T-ML52).
                     TokenMeterRow(
                         sessionTokens = sessionTokens,
-                        showQuota = Graph.prefs.provider == "apinex" && Graph.prefs.apiKey.isNotBlank(),
+                        showQuota = Graph.prefs.active.supportsQuota && Graph.prefs.apiKey.isNotBlank(),
                         quotaState = quotaState,
                         onRefreshQuota = { refreshQuota(fresh = true) },
                     )
@@ -566,7 +568,7 @@ fun ChatScreen(
     }
 }
 
-/** Remaining-quota chip state (APInex only; hidden for NIM). */
+/** Remaining-quota chip state (APInex + 100milionseek; hidden for NIM). */
 private sealed class QuotaState {
     object Idle : QuotaState()
     object Loading : QuotaState()

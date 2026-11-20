@@ -129,6 +129,13 @@ class AgentApi(private val port: () -> Int) {
             val body = r.body.string()
             if (!r.isSuccessful) throw IOException(errorOf(body, r.code))
             json.parseToJsonElement(body).jsonObject["data"]!!.jsonArray
+                // T-ML52: non-chat models (the 100milionseek JEV judge on
+                // /v1/systemone) declare an `endpoint` field — keep the
+                // default chat path only, mirroring the server's filter.
+                .filter { el ->
+                    val ep = (el as? JsonObject)?.get("endpoint") as? JsonPrimitive
+                    ep == null || ep.content == "/v1/chat/completions"
+                }
                 .map { it.jsonObject["id"]!!.jsonPrimitive.content }
         }
     }

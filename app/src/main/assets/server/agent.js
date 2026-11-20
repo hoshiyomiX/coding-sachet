@@ -1123,11 +1123,13 @@ async function verifyModels({ apiKey, providerId, models, signal, emit }) {
       r = { ok: false, ms: Date.now() - t0, reason: String(e.message).slice(0, 140) };
     }
     if (r.ok === true) ok++; else if (r.ok === false) dead++; else unknown++;
-    // NIM models are free to use once they answer; a probe cannot see the
-    // APInex allowFree flag (null → the app falls back to its free/ prefix).
+    // freeByProbe providers (NIM, 100milionseek — T-ML52: the WHOLE service
+    // is free, so any model that answers is free to use) get free:true on a
+    // live answer; everyone else keeps free:null (a probe cannot see the
+    // APInex allowFree flag → the app falls back to its free/ prefix).
     // ok:null (429/…) must stay free:null — "cannot tell", not "not free".
     // Probe path tak bisa melihat katalog → tier:null (T-ML49).
-    const free = providerId === 'nvidia' ? (r.ok === true ? true : null) : null;
+    const free = provider.freeByProbe ? (r.ok === true ? true : null) : null;
     emit({ type: 'result', model: m, ok: r.ok, free, tier: null, ms: Date.now() - t0, ...(r.reason ? { reason: r.reason } : {}) });
     log.dbg('agt', `verifikasi ${providerId} ${m}: ${r.ok === true ? 'OK' : r.ok === false ? 'MATI' : 'TAK PASTI'} ${r.reason ? `(${r.reason})` : ''} ${Date.now() - t0}ms`);
   }

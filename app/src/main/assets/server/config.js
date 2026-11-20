@@ -1,8 +1,9 @@
 'use strict';
 // Coding Sachet agent server — configuration.
-// Two upstream providers are supported (both OpenAI-compatible):
+// Three upstream providers are supported (all OpenAI-compatible):
 //   apinex — https://api.apinex.bond
 //   nvidia — https://build.nvidia.com (NIM)
+//   seek   — https://100milionseek.top (T-ML52)
 // The app picks one per request via the X-Sachet-Provider header.
 // Env overrides exist only for the automated test suite (mock gateways).
 
@@ -77,6 +78,40 @@ const providers = {
       'Tunggu sebentar lalu kirim ulang pesanmu.',
     // NIM integrations should set max_tokens explicitly on chat requests.
     maxTokens: 4096,
+    // Whole catalogue free to use once a model answers (T-ML52: flag
+    // generalized from the hardcoded nvidia check in the probe path —
+    // the sweep's free badge trusts a live answer ONLY for these).
+    freeByProbe: true,
+  },
+  seek: {
+    // T-ML52 (owner order: "implementasi sebagai provider ketiga"):
+    // 100milionseek — free 100M tokens/account/UTC day (no card, no paid
+    // tier at all; milestone bonuses lift the day to 400M while they run).
+    // OpenAI-compatible: streaming + tool calls, 198K context, 64K max
+    // output, body ≤ 4MB. Rate limits: 5 concurrent requests/account and
+    // 50 tok/s per stream — NO documented RPM, so the 15 RPM client cap
+    // stays (serial ≤ 5 concurrent by construction). Prompts are never
+    // stored server-side. Model ids use a -free SUFFIX, not a prefix.
+    label: '100milionseek',
+    baseUrl: process.env.SACHET_SEEK_BASE_URL || 'https://100milionseek.top/v1',
+    rpmLimit: 15,
+    rateLimitHint:
+      'Batas laju 100milionseek tercapai. ' +
+      'Tunggu sebentar lalu kirim ulang pesanmu.',
+    // Gateway default output limit applies (up to 64K); no override.
+    maxTokens: null,
+    // Quota rides RESPONSE HEADERS of any authenticated call (docs
+    // /docs → x-quota-limit/used/remaining/reset, reset 00:00 UTC) —
+    // there is no quota endpoint. The cheapest authenticated probe is
+    // GET /models, which also refreshes the catalogue cache.
+    quota: {
+      via: 'headers',
+      probePath: '/models',
+    },
+    // The whole service is free — every model that answers is free to
+    // use (same probe semantics as NIM; jev-* judge models are filtered
+    // out of the catalogue server-side, see fetchModels).
+    freeByProbe: true,
   },
 };
 
@@ -230,7 +265,7 @@ const config = {
   dnsFallbackServers: ['1.1.1.1', '8.8.8.8'],
 };
 
-/** Resolve a provider id ("apinex" | "nvidia") to its spec, or null. */
+/** Resolve a provider id ("apinex" | "nvidia" | "seek") to its spec, or null. */
 function providerById(id) {
   return (id && Object.prototype.hasOwnProperty.call(providers, id)) ? providers[id] : null;
 }

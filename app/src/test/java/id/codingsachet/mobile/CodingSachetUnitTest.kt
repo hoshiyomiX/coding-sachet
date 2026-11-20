@@ -55,6 +55,7 @@ class CodingSachetUnitTest {
     @Test
     fun providerLookupFallsBackToApinex() {
         assertSame(Providers.NVIDIA, Providers.byId("nvidia"))
+        assertSame(Providers.SEEK, Providers.byId("seek"))
         assertSame(Providers.APINEX, Providers.byId("apinex"))
         assertSame(Providers.APINEX, Providers.byId(null))
         assertSame(Providers.APINEX, Providers.byId("bogus"))
@@ -62,12 +63,30 @@ class CodingSachetUnitTest {
 
     @Test
     fun providersHaveDistinctIdsAndValidUrls() {
-        assertEquals(2, Providers.ALL.size)
-        assertEquals(2, Providers.ALL.map { it.id }.toSet().size)
+        assertEquals(3, Providers.ALL.size)
+        assertEquals(3, Providers.ALL.map { it.id }.toSet().size)
         Providers.ALL.forEach { p ->
             assertTrue("baseUrl ${p.baseUrl} harus https", p.baseUrl.startsWith("https://"))
             assertTrue("docsUrl ${p.docsUrl} harus https", p.docsUrl.startsWith("https://"))
         }
+    }
+
+    @Test
+    fun seekProviderCarriesWholeServiceFreeSemantics() {
+        // T-ML52: 100milionseek — seluruh layanan gratis, jadi semanticsnya
+        // NIM-like: prefix-free (badge free dari probe live), validasi key
+        // via GET /models (murah — chat probe membakar ±630 token jatah),
+        // dan chip kuota aktif (header x-quota-* via server).
+        val seek = Providers.SEEK
+        assertEquals("seek", seek.id)
+        assertEquals("hms-", seek.keyPrefix)
+        assertEquals("deepseek-v4.1-flash-free", seek.defaultModel)
+        assertNull("seek tanpa prefiks free — badge dari probe live", seek.freeModelPrefix)
+        assertFalse("validasi key seek via /models, bukan chat", seek.validateViaChat)
+        assertTrue("chip sisa token aktif utk seek", seek.supportsQuota)
+        // NIM tetap tanpa chip; APInex tetap dengan chip.
+        assertFalse(Providers.NVIDIA.supportsQuota)
+        assertTrue(Providers.APINEX.supportsQuota)
     }
 
     // ---------- ModelStatus: dot & free dari hasil live (T-ML26) ----------
@@ -83,6 +102,21 @@ class CodingSachetUnitTest {
         assertEquals(ModelStatus.State.DEAD, ModelStatus.stateOf("nvidia", "m2"))
         // Provider lain tidak ikut-ikutan
         assertEquals(ModelStatus.State.UNKNOWN, ModelStatus.stateOf("apinex", "m1"))
+    }
+
+    @Test
+    fun modelStatusSeekFreeViaLiveProbe() {
+        // T-ML52: provider seek (100milionseek) tanpa prefiks — model yang
+        // menjawab probe = gratis (seluruh layanan free), model belum
+        // diperiksa tetap tampil di filter "gratis saja", hanya DEAD yang
+        // disembunyikan (pola T-ML50 utk NIM).
+        ModelStatus.reset()
+        assertTrue("seek belum diperiksa = tampil", ModelStatus.passesFreeFilter(Providers.SEEK, "deepseek-v4.1-flash-free"))
+        ModelStatus.apply("seek", "deepseek-v4.1-flash-free", ModelStatus.State.OK, true, now = 1)
+        ModelStatus.apply("seek", "jev-1.13-free", ModelStatus.State.DEAD, null, now = 1)
+        assertTrue(ModelStatus.isFree(Providers.SEEK, "deepseek-v4.1-flash-free"))
+        assertTrue(ModelStatus.passesFreeFilter(Providers.SEEK, "deepseek-v4.1-flash-free"))
+        assertFalse("seek mati = disembunyikan", ModelStatus.passesFreeFilter(Providers.SEEK, "jev-1.13-free"))
     }
 
     @Test

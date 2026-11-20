@@ -103,7 +103,15 @@ async function fetchModels(apiKey, provider, retryOpts) {
   let j;
   try { j = JSON.parse(text); } catch { throw new Error('Balasan /models bukan JSON'); }
   const ids = Array.isArray(j.data)
-    ? j.data.map((m) => m && m.id).filter((x) => typeof x === 'string')
+    ? j.data
+        .filter((m) => m && typeof m.id === 'string')
+        // T-ML52: 100milionseek lists NON-chat models (the JEV judge,
+        // served on /v1/systemone) in the same /v1/models payload with an
+        // explicit `endpoint` field. Only models on the default chat path
+        // are pickable in a chat app; providers without the field (APInex,
+        // NIM) are untouched by this filter.
+        .filter((m) => !m.endpoint || m.endpoint === '/v1/chat/completions')
+        .map((m) => m.id)
     : Array.isArray(j) ? j.filter((x) => typeof x === 'string') : [];
   return ids.sort((a, b) => a.localeCompare(b));
 }
@@ -139,13 +147,61 @@ function gatewayErrorText(text) {
 }
 
 /**
- * Remaining quota for the caller's key — ONE officially documented API
- * (owner order T-ML20): GET /v1/subscription (apinex.bond/developers)
- * returns the token counters. No fallback chain: when the documented
- * endpoint fails, the failure surfaces directly.
+ * Remaining quota for the caller's key. Two shapes:
+ *  - APInex: ONE officially documented API (owner order T-ML20) — GET
+ *    /v1/subscription returns the token counters. No fallback chain:
+ *    when the documented endpoint fails, the failure surfaces directly.
+ *  - 100milionseek (T-ML52): no quota endpoint exists — the counters ride
+ *    RESPONSE HEADERS of every authenticated call (docs /docs →
+ *    x-quota-limit/used/remaining/reset, reset 00:00 UTC). The cheapest
+ *    authenticated read is GET {probePath} (/models).
  */
 async function fetchQuota(apiKey, provider) {
   const q = provider.quota;
+  if (q && q.via === 'headers') {
+    let res;
+    try {
+      res = await fetchWithRetry(provider.baseUrl + (q.probePath || '/models'), {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(12000),
+      });
+    } catch (e) {
+      throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}: ${gatewayErrorText(text)}`);
+    }
+    await res.text().catch(() => {}); // drain the (unused) body
+    const h = (n) => {
+      // headers.get returns null when absent, and Number(null) === 0 —
+      // a missing header must stay null, never a fabricated zero (the
+      // T-ML49b chip would read 0/0 as "locked").
+      const raw = res.headers.get(n);
+      if (raw === null || raw === undefined || String(raw).trim() === '') return null;
+      const v = Number(raw);
+      return Number.isFinite(v) ? v : null;
+    };
+    const tokensRemaining = h('x-quota-remaining');
+    const tokensUsed = h('x-quota-used');
+    const tokenLimit = h('x-quota-limit');
+    if (tokensRemaining === null && tokensUsed === null && tokenLimit === null) {
+      // Headers missing = the gateway changed shape; say so instead of
+      // fabricating zeros (the T-ML49b chip treats 0/0 as "locked").
+      throw new Error('Gateway tidak mengirim header kuota (x-quota-*)');
+    }
+    return {
+      supported: true,
+      source: 'headers',
+      unlimited: false,
+      mode: null,
+      planLabel: null,
+      tokensRemaining,
+      tokensUsed,
+      tokenLimit,
+      resetsAt: res.headers.get('x-quota-reset'),
+    };
+  }
   if (!q || !q.subscriptionPath) throw new Error('Gateway tidak menyediakan info kuota');
   const headers = { Authorization: `Bearer ${apiKey}` };
 
@@ -442,6 +498,8 @@ async function route(req, res) {
       return sendJson(res, 400, { error: `Provider tidak dikenal: ${providerId}` });
     }
     // NIM has no per-key balance API; the app hides the chip.
+    // 100milionseek reads its counters from response headers instead
+    // (fetchQuota above, T-ML52).
     if (!provider.quota) return sendJson(res, 200, { supported: false });
     const cacheKey = `${providerId}|${key}`;
     const fresh = url.searchParams.get('fresh') === '1';

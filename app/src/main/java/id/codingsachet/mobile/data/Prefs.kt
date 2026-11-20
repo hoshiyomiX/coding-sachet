@@ -9,7 +9,7 @@ import id.codingsachet.mobile.api.Providers
 class Prefs(ctx: Context) {
     private val sp: SharedPreferences = ctx.getSharedPreferences("sachet", Context.MODE_PRIVATE)
 
-    /** The active provider: "apinex" (default) or "nvidia". */
+    /** The active provider: "apinex" (default), "nvidia" or "seek". */
     var provider: String
         get() = sp.getString("provider", DEFAULT_PROVIDER) ?: DEFAULT_PROVIDER
         set(v) = sp.edit().putString("provider", v).apply()

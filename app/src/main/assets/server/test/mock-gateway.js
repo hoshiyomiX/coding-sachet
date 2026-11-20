@@ -104,8 +104,15 @@ function startMockGateway(script, opts = {}) {
           if (res.socket && res.socket.destroyed) return;
           modelRequests.push({ auth: req.headers.authorization });
           if (req.headers.authorization !== `Bearer ${key}`) return unauthorized();
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ data: models.map((id) => ({ id })) }));
+          // T-ML52: model entries may be objects ({ id, endpoint?, … }) —
+          // 100milionseek declares non-chat models (JEV on /v1/systemone)
+          // with an `endpoint` field; plain ids stay the common case.
+          const payload = models.map((m) => (typeof m === 'string' ? { id: m } : m));
+          // T-ML52: quota-header providers (100milionseek) ride their
+          // counters on any authenticated response — mock them on /v1/models.
+          const extraHeaders = opts.quotaHeaders || {};
+          res.writeHead(200, { 'Content-Type': 'application/json', ...extraHeaders });
+          res.end(JSON.stringify({ data: payload }));
         };
         if (opts.slowModels && modelAttempts <= opts.slowModels) {
           setTimeout(replyModels, opts.slowModelsMs ?? 1200);

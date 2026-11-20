@@ -27,6 +27,10 @@ data class Provider(
     val freeModelPrefix: String?,
     /** How a key is validated against this provider. */
     val validateViaChat: Boolean,
+    /** Whether the "sisa token" chip applies (a quota API exists for this
+     *  provider — APInex /v1/subscription, 100milionseek response headers;
+     *  NIM has none and the chip stays hidden). T-ML52. */
+    val supportsQuota: Boolean,
 ) {
     /** Free by NAME: the gateway's own free/ tier (intrinsic, needs no
      *  probe). The broader allowFree catalogue and NIM's working-free set
@@ -48,6 +52,7 @@ object Providers {
         defaultModel = "free/glm-5.3-flashx",
         freeModelPrefix = "free/",
         validateViaChat = false,
+        supportsQuota = true,
     )
 
     val NVIDIA = Provider(
@@ -59,9 +64,30 @@ object Providers {
         defaultModel = "nvidia/nemotron-3.5-bolt-e4b",
         freeModelPrefix = null,
         validateViaChat = true,
+        supportsQuota = false,
     )
 
-    val ALL = listOf(APINEX, NVIDIA)
+    // T-ML52 (owner order: "implementasi sebagai provider ketiga").
+    // 100milionseek: free 100M tokens/account/UTC day (no card, no paid
+    // tier — milestone bonuses lift it while they run; verified live
+    // 2026-11-20). Whole catalog free → prefix-less free semantics like
+    // NIM: the live sweep's free flag decides the badge. Quota counters
+    // ride response headers (server-side fetchQuota), so the chip works.
+    // Key check: GET /v1/models with Bearer (401 on a bad key — verified
+    // live); a chat probe would waste ~630 prompt tokens of the allowance.
+    val SEEK = Provider(
+        id = "seek",
+        label = "100milionseek",
+        baseUrl = BuildConfig.SEEK_BASE_URL,
+        keyPrefix = "hms-",
+        docsUrl = "https://100milionseek.top",
+        defaultModel = "deepseek-v4.1-flash-free",
+        freeModelPrefix = null,
+        validateViaChat = false,
+        supportsQuota = true,
+    )
+
+    val ALL = listOf(APINEX, NVIDIA, SEEK)
 
     fun byId(id: String?): Provider = ALL.firstOrNull { it.id == id } ?: APINEX
 }
