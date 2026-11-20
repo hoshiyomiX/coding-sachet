@@ -129,12 +129,70 @@ class CodingSachetUnitTest {
 
     @Test
     fun modelStatusStaleness() {
+        // T-ML50: fresh = sweep yang MENYELESAI (doneAt), bukan entri apa pun.
+        // Entri parsial dari sweep yang terputus TIDAK boleh mengunci 12 jam.
         ModelStatus.reset()
         assertFalse("belum pernah dicek = tidak fresh", ModelStatus.isFresh("nvidia", now = 10_000))
         ModelStatus.apply("nvidia", "m", ModelStatus.State.OK, true, now = 0)
+        assertFalse("entri parsial tanpa sweep selesai = TIDAK fresh (bug T-ML50: picker NIM menampilkan 1 model saja)", ModelStatus.isFresh("nvidia", now = 1000))
         assertEquals(0L, ModelStatus.lastCheckedAt("nvidia"))
+        ModelStatus.markSwept("nvidia", now = 0)
         assertTrue(ModelStatus.isFresh("nvidia", now = ModelStatus.STALE_MS - 1))
         assertFalse("lebih dari 12 jam = basi, sweep ulang", ModelStatus.isFresh("nvidia", now = ModelStatus.STALE_MS + 1))
+    }
+
+    @Test
+    fun modelStatusDoneAtSurvivesPersistReload() {
+        // T-ML50: doneAt ikut ke JSON v3; payload v2 (1.0.52, tanpa doneAt)
+        // dimuat entri-nya TAPI tidak dianggap pernah selesai di-sweep.
+        ModelStatus.reset()
+        ModelStatus.apply("nvidia", "m1", ModelStatus.State.OK, true, now = 500)
+        ModelStatus.markSwept("nvidia", now = 900)
+        val v3 = ModelStatus.toJson("nvidia")
+        assertTrue(v3.contains("\"v\":3"))
+        assertTrue(v3.contains("\"doneAt\":900"))
+        ModelStatus.reset()
+        ModelStatus.fromJson("nvidia", v3)
+        assertEquals(ModelStatus.State.OK, ModelStatus.stateOf("nvidia", "m1"))
+        assertEquals(900L, ModelStatus.sweptAt("nvidia"))
+        assertTrue(ModelStatus.isFresh("nvidia", now = 901))
+        // Payload v2 ala 1.0.52: entri baru-baru ini, tanpa doneAt — dari
+        // sweep yang terpotong. Entri tetap dipakai (terukur sungguhan),
+        // tapi isFresh harus false agar picker membuka sweep lanjutan.
+        val v2 = """{"v":2,"models":{"m1":{"s":"OK","f":true,"t":null,"at":99999}}}"""
+        ModelStatus.reset()
+        ModelStatus.fromJson("nvidia", v2)
+        assertEquals(ModelStatus.State.OK, ModelStatus.stateOf("nvidia", "m1"))
+        assertNull(ModelStatus.sweptAt("nvidia"))
+        assertFalse("v2 tanpa doneAt = sweep belum selesai (bug T-ML50)", ModelStatus.isFresh("nvidia", now = 100_000))
+        // v1 tetap ditolak (kontrak T-ML49).
+        ModelStatus.reset()
+        ModelStatus.fromJson("nvidia", """{"v":1,"models":{"m1":{"s":"OK","f":true,"at":1}}}""")
+        assertEquals(ModelStatus.State.UNKNOWN, ModelStatus.stateOf("nvidia", "m1"))
+    }
+
+    @Test
+    fun modelStatusFreeFilterKeepsUncheckedForPrefixlessProviders() {
+        // T-ML50: provider tanpa prefiks free (NIM) tidak tahu status gratis
+        // sebuah model sebelum probe menjawab — model BELUM DIPERIKSA tetap
+        // tampil di filter "gratis saja" (titik abu-abu sudah bilang "belum
+        // diperiksa"); hanya yang terkonfirmasi MATI yang disembunyikan.
+        // Bukti lapangan 2026-11-20: filter lama menyembunyikan semua model
+        // NIM yang belum di-sweep, picker tampak "macet" dengan 1 baris.
+        ModelStatus.reset()
+        assertTrue("NIM belum diperiksa = tampil (bug T-ML50)", ModelStatus.passesFreeFilter(Providers.NVIDIA, "nvidia/nemotron-3.5-bolt-e4b"))
+        assertTrue("NIM ok gratis = tampil", ModelStatus.passesFreeFilter(Providers.NVIDIA, "z-ai/glm-5.3-flash"))
+        ModelStatus.apply("nvidia", "z-ai/glm-5.3-flash", ModelStatus.State.OK, true, now = 1)
+        ModelStatus.apply("nvidia", "mati/model", ModelStatus.State.DEAD, null, now = 1)
+        ModelStatus.apply("nvidia", "tak-pasti/model", ModelStatus.State.UNKNOWN, null, now = 1)
+        assertTrue(ModelStatus.passesFreeFilter(Providers.NVIDIA, "z-ai/glm-5.3-flash"))
+        assertTrue("NIM tak pasti (429/timeout) = tetap tampil", ModelStatus.passesFreeFilter(Providers.NVIDIA, "tak-pasti/model"))
+        assertFalse("NIM mati = disembunyikan", ModelStatus.passesFreeFilter(Providers.NVIDIA, "mati/model"))
+        // Provider berprefiks (APInex) tetap ketat: unchecked non-free tak tampil.
+        assertFalse(ModelStatus.passesFreeFilter(Providers.APINEX, "claude-opus-5.5"))
+        assertTrue(ModelStatus.passesFreeFilter(Providers.APINEX, "free/glm-5.3-flashx"))
+        ModelStatus.apply("apinex", "free/claude-opus-4.6", ModelStatus.State.OK, false, ModelStatus.Tier.SUBSCRIPTION, now = 1)
+        assertFalse("APInex tier langganan = disembunyikan", ModelStatus.passesFreeFilter(Providers.APINEX, "free/claude-opus-4.6"))
     }
 
     @Test
@@ -179,7 +237,7 @@ class CodingSachetUnitTest {
         ModelStatus.apply("x", "sub", ModelStatus.State.OK, false, ModelStatus.Tier.SUBSCRIPTION, now = 10)
         ModelStatus.apply("x", "top", ModelStatus.State.OK, false, ModelStatus.Tier.TOPUP, now = 20)
         val json = ModelStatus.toJson("x")
-        assertTrue(json.contains("\"v\":2"))
+        assertTrue(json.contains("\"v\":3"))
         ModelStatus.reset()
         ModelStatus.fromJson("x", json)
         assertEquals(ModelStatus.Tier.SUBSCRIPTION, ModelStatus.entry("x", "sub")?.tier)

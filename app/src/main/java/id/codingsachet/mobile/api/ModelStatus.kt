@@ -51,6 +51,16 @@ object ModelStatus {
     // per result during a sweep.
     private val store = ConcurrentHashMap<String, MutableMap<String, Entry>>()
 
+    // providerId -> timestamp of the last sweep that ran to COMPLETION
+    // (T-ML50). Entries alone must NOT count: an interrupted sweep (user
+    // cancel, double connect-fail abort, app killed mid-run) leaves a few
+    // real measurements behind, and the old isFresh — max(entry.at) —
+    // treated that partial store as "freshly checked", silently blocking
+    // every re-sweep for 12h while the rest of the catalogue stayed
+    // UNKNOWN (device evidence 2026-11-20: NIM picker showed ONLY
+    // nvidia/nemotron-3.5-bolt-e4b, sweep never started).
+    private val sweptAtMap = ConcurrentHashMap<String, Long>()
+
     // Compose screens subscribe here to re-render as sweep results arrive.
     private val listeners = CopyOnWriteArrayList<(String) -> Unit>()
 
@@ -102,6 +112,21 @@ object ModelStatus {
         return provider.freeModelPrefix == null && entry(provider.id, model)?.free == true
     }
 
+    /**
+     * Does this model belong in the "free only" (gratis saja) list?
+     * (T-ML50.) Providers WITHOUT an intrinsic free prefix (NIM) cannot
+     * know free-ness before a probe actually answers — an unchecked model
+     * has free:null, so the old predicate hid EVERYTHING until the sweep
+     * finished, and the picker opened showing one row (or none) for
+     * minutes. Now: for prefix-less providers an unchecked/uncertain model
+     * stays VISIBLE (gray dot already says "not checked yet") and only a
+     * CONFIRMED-DEAD model is filtered out. Prefix providers (APInex)
+     * keep the strict tier-based behavior.
+     */
+    fun passesFreeFilter(provider: Provider, model: String): Boolean =
+        isFree(provider, model) ||
+            (provider.freeModelPrefix == null && entry(provider.id, model)?.state != State.DEAD)
+
     /** Record one sweep result and wake the listeners. */
     fun apply(providerId: String, model: String, state: State, free: Boolean?, tier: Tier? = null, now: Long = System.currentTimeMillis()): Entry {
         val e = Entry(state, free, tier, now)
@@ -120,9 +145,22 @@ object ModelStatus {
     fun lastCheckedAt(providerId: String): Long? =
         store[providerId]?.values?.maxOfOrNull { it.at }
 
-    /** True when a full sweep's results are recent enough to trust. */
+    /** Record the completion of a FULL sweep (T-ML50) — only the genuine
+     *  'done' event of verifyModels (server sends a bare done after an
+     *  error/cancel abort; those must NOT mark the provider fresh). */
+    fun markSwept(providerId: String, now: Long = System.currentTimeMillis()) {
+        sweptAtMap[providerId] = now
+    }
+
+    /** When the last COMPLETED sweep finished (null = never completed). */
+    fun sweptAt(providerId: String): Long? = sweptAtMap[providerId]
+
+    /** True when a full sweep's results are recent enough to trust.
+     *  T-ML50: freshness = a completed sweep, NOT any single entry — a
+     *  partial store from an interrupted sweep must re-sweep on the next
+     *  picker open (orderForSweep warm-starts from what it already knows). */
     fun isFresh(providerId: String, now: Long = System.currentTimeMillis()): Boolean =
-        lastCheckedAt(providerId)?.let { now - it < STALE_MS } == true
+        sweptAtMap[providerId]?.let { now - it < STALE_MS } == true
 
     /**
      * Sweep order (warm start): the currently-selected model first (the one
@@ -152,19 +190,25 @@ object ModelStatus {
             }
         }
         return buildJsonObject {
-            put("v", 2)
+            put("v", 3)
+            put("doneAt", sweptAtMap[providerId]?.let { JsonPrimitive(it) } ?: JsonNull)
             put("models", models)
         }.toString()
     }
 
     /** Load persisted JSON; a malformed payload is ignored (empty store).
      *  T-ML49: v1 payloads (tanpa tier) sengaja DITOLAK — entri lama bisa
-     *  meng-klaim 8 model langganan sebagai gratis; v2 membawa tier. */
+     *  meng-klaim 8 model langganan sebagai gratis; v2/v3 membawa tier.
+     *  T-ML50: v2 (tanpa doneAt) dimuat TAPI dianggap belum pernah
+     *  selesai di-sweep — partial store lama tidak lagi memblokir sweep. */
     fun fromJson(providerId: String, text: String) {
         if (text.isBlank()) return
         runCatching {
             val root = json.parseToJsonElement(text).jsonObject
-            if ((root["v"] as? JsonPrimitive)?.content?.toIntOrNull() != 2) return
+            val v = (root["v"] as? JsonPrimitive)?.content?.toIntOrNull()
+            if (v == null || v < 2 || v > 3) return
+            val doneAt = (root["doneAt"] as? JsonPrimitive)?.content?.toLongOrNull()
+            if (doneAt != null) sweptAtMap[providerId] = doneAt
             val models = root["models"] as? JsonObject ?: return
             val parsed = buildMap {
                 models.forEach { (id, v) ->
@@ -194,6 +238,7 @@ object ModelStatus {
     /** Test hook: forget everything. */
     fun reset() {
         store.clear()
+        sweptAtMap.clear()
     }
 }
 
@@ -272,6 +317,14 @@ class ModelVerify(
                         }
                     }
                     "done" -> {
+                        // T-ML50: only a GENUINE completion marks the
+                        // provider fresh. The server sends done WITH counts
+                        // ({ok,dead,unknown}) on success but a BARE done
+                        // after an error/cancel abort — the bare one must
+                        // not set the completion marker, or the partial
+                        // store would block re-sweeps for 12h again.
+                        val complete = ev.containsKey("ok")
+                        if (complete) ModelStatus.markSwept(provider.id)
                         persist(provider.id)
                         ModelStatus.notifyChanged(provider.id)
                     }

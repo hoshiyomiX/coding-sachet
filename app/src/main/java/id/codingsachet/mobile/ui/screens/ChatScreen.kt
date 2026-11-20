@@ -882,7 +882,7 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                 )
                 val loaded = models
                 if (loaded != null) {
-                    val n = loaded.count { !freeOnly || ModelStatus.isFree(provider, it) }
+                    val n = loaded.count { !freeOnly || ModelStatus.passesFreeFilter(provider, it) }
                     Text("$n / ${loaded.size} · ${provider.label}", style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -938,7 +938,7 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                         }
                     )
                     val filtered = sorted.filter {
-                        (!freeOnly || ModelStatus.isFree(provider, it)) &&
+                        (!freeOnly || ModelStatus.passesFreeFilter(provider, it)) &&
                             it.contains(query, ignoreCase = true)
                     }
                     items(filtered) { m ->
