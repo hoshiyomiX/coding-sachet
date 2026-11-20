@@ -245,6 +245,9 @@ class AgentApi(private val port: () -> Int) {
         val tokensRemaining: Long?,
         val tokensUsed: Long?,
         val tokenLimit: Long?,
+        /** T-ML49: plan mode dari /v1/subscription ("free"/…) — dipakai chip
+         *  untuk membedakan 0 yang asli vs key free yang belum unlock. */
+        val mode: String? = null,
     )
 
     /**
@@ -268,6 +271,7 @@ class AgentApi(private val port: () -> Int) {
                     tokensRemaining = o.num("tokensRemaining")?.toLong(),
                     tokensUsed = o.num("tokensUsed")?.toLong(),
                     tokenLimit = o.num("tokenLimit")?.toLong(),
+                    mode = (o["mode"] as? JsonPrimitive)?.content,
                 )
             }
         }

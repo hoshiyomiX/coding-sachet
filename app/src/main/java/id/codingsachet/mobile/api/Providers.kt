@@ -42,7 +42,10 @@ object Providers {
         baseUrl = BuildConfig.APINEX_BASE_URL,
         keyPrefix = "sk-apx",
         docsUrl = "https://apinex.bond",
-        defaultModel = "free/glm-5.3",
+        // T-ML49: free/glm-5.3 kini allowFree:false (402 "subscription" —
+        // dibuktikan probe langsung 2026-11-20); default berpindah ke model
+        // jatah harian yang masih tier free.
+        defaultModel = "free/glm-5.3-flashx",
         freeModelPrefix = "free/",
         validateViaChat = false,
     )

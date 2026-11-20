@@ -34,7 +34,13 @@ object ModelStatus {
      *  checked yet (fresh install, mid-sweep, or the probe could not tell). */
     enum class State { OK, DEAD, UNKNOWN }
 
-    data class Entry(val state: State, val free: Boolean?, val at: Long)
+    /** Billing tier dari katalog APInex (T-ML49, probe langsung 2026-11-20):
+     *  FREE = jatah harian (intrinsik free/ DAN allowFree) · SUBSCRIPTION =
+     *  allowFree:false — HTTP 402 "only available with a subscription" ·
+     *  TOPUP = premium, billed dari dompet USD (pay-as-you-go). */
+    enum class Tier { FREE, SUBSCRIPTION, TOPUP }
+
+    data class Entry(val state: State, val free: Boolean?, val tier: Tier?, val at: Long)
 
     /** How long a verification stays trusted before a re-sweep is wanted. */
     const val STALE_MS = 12L * 60 * 60 * 1000
@@ -70,23 +76,35 @@ object ModelStatus {
     /** Dot state for a model: UNKNOWN until a sweep says otherwise. */
     fun stateOf(providerId: String, model: String): State = entry(providerId, model)?.state ?: State.UNKNOWN
 
+    /** Tier billing sebuah model (null = sweep belum tahu — probe path atau
+     *  id tak ada di katalog). Sumber: flag `tier` event sweep (katalog
+     *  publik APInex), T-ML49. */
+    fun tierOf(providerId: String, model: String): Tier? =
+        entry(providerId, model)?.tier
+
     /**
      * Free = worth the badge. T-ML48: a provider with an INTRINSIC free
      * tier (APInex free/ prefix) decides free-ness BY NAME — the sweep's
      * free flag is only trusted for providers without a prefix (NIM:
-     * every model that answers is free to use). The APInex catalogue's
-     * allowFree is not a free indicator anymore (2026-11-19: true for all
-     * 22 premium models, false for 8 free/ models), so it must never be
-     * able to paint a premium model free here — persisted stale entries
-     * included.
+     * every model that answers is free to use).
+     *
+     * T-ML49 (probe langsung 2026-11-20): prefix free/ TIDAK lagi menjamin
+     * gratis — 8 model free/ kini allowFree:false dan menolak key
+     * free-plan dengan 402 "subscription". Entri sweep tier=SUBSCRIPTION
+     * meng-OVERRIDE prefix: model itu keluar dari filter "gratis saja"
+     * dan badge-nya jadi "langganan". Enri tanpa tier (belum di-sweep /
+     * probe fallback) tetap pakai prefix — perilaku lama.
      */
-    fun isFree(provider: Provider, model: String): Boolean =
-        provider.isFreeByPrefix(model) ||
-            (provider.freeModelPrefix == null && entry(provider.id, model)?.free == true)
+    fun isFree(provider: Provider, model: String): Boolean {
+        if (provider.isFreeByPrefix(model)) {
+            return entry(provider.id, model)?.tier != Tier.SUBSCRIPTION
+        }
+        return provider.freeModelPrefix == null && entry(provider.id, model)?.free == true
+    }
 
     /** Record one sweep result and wake the listeners. */
-    fun apply(providerId: String, model: String, state: State, free: Boolean?, now: Long = System.currentTimeMillis()): Entry {
-        val e = Entry(state, free, now)
+    fun apply(providerId: String, model: String, state: State, free: Boolean?, tier: Tier? = null, now: Long = System.currentTimeMillis()): Entry {
+        val e = Entry(state, free, tier, now)
         store.computeIfAbsent(providerId) { ConcurrentHashMap() }[model] = e
         notifyChanged(providerId)
         return e
@@ -128,21 +146,25 @@ object ModelStatus {
                 put(id, buildJsonObject {
                     put("s", e.state.name)
                     put("f", e.free?.let { JsonPrimitive(it) } ?: JsonNull)
+                    put("t", e.tier?.let { JsonPrimitive(it.name) } ?: JsonNull)
                     put("at", e.at)
                 })
             }
         }
         return buildJsonObject {
-            put("v", 1)
+            put("v", 2)
             put("models", models)
         }.toString()
     }
 
-    /** Load persisted JSON; a malformed payload is ignored (empty store). */
+    /** Load persisted JSON; a malformed payload is ignored (empty store).
+     *  T-ML49: v1 payloads (tanpa tier) sengaja DITOLAK — entri lama bisa
+     *  meng-klaim 8 model langganan sebagai gratis; v2 membawa tier. */
     fun fromJson(providerId: String, text: String) {
         if (text.isBlank()) return
         runCatching {
             val root = json.parseToJsonElement(text).jsonObject
+            if ((root["v"] as? JsonPrimitive)?.content?.toIntOrNull() != 2) return
             val models = root["models"] as? JsonObject ?: return
             val parsed = buildMap {
                 models.forEach { (id, v) ->
@@ -156,8 +178,11 @@ object ModelStatus {
                         (fEl as? JsonPrimitive)?.content == "true" -> true
                         else -> false
                     }
+                    val tier = runCatching {
+                        Tier.valueOf((o["t"] as? JsonPrimitive)?.content ?: "")
+                    }.getOrNull()
                     val at = (o["at"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
-                    put(id, Entry(state, free, at))
+                    put(id, Entry(state, free, tier, at))
                 }
             }
             replaceAll(providerId, parsed)
@@ -236,7 +261,13 @@ class ModelVerify(
                                 "false" -> false
                                 else -> null
                             }
-                            ModelStatus.apply(provider.id, model, ok, free)
+                            val tier = when ((ev["tier"] as? JsonPrimitive)?.content) {
+                                "free" -> ModelStatus.Tier.FREE
+                                "subscription" -> ModelStatus.Tier.SUBSCRIPTION
+                                "topup" -> ModelStatus.Tier.TOPUP
+                                else -> null
+                            }
+                            ModelStatus.apply(provider.id, model, ok, free, tier)
                             if (results.incrementAndGet() % 10 == 0) persist(provider.id)
                         }
                     }

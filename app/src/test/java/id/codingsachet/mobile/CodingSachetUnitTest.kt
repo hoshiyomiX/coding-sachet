@@ -108,6 +108,26 @@ class CodingSachetUnitTest {
     }
 
     @Test
+    fun modelStatusSubscriptionTierOverridesPrefix() {
+        // T-ML49 (probe langsung 2026-11-20): 8 model free/ kini allowFree:false
+        // dan ditolak 402 "subscription" — tier SUBSCRIPTION dari sweep harus
+        // mengeluarkannya dari filter gratis + badge free, meski prefiksnya free/.
+        ModelStatus.reset()
+        ModelStatus.apply("apinex", "free/claude-opus-4.6", ModelStatus.State.OK, false, ModelStatus.Tier.SUBSCRIPTION, now = 1)
+        ModelStatus.apply("apinex", "free/glm-5.3-flashx", ModelStatus.State.OK, true, ModelStatus.Tier.FREE, now = 1)
+        ModelStatus.apply("apinex", "glm-5.3-flash", ModelStatus.State.OK, false, ModelStatus.Tier.TOPUP, now = 1)
+        ModelStatus.apply("apinex", "free/belum-disweep", ModelStatus.State.UNKNOWN, null, now = 1)
+        assertFalse("free/ + tier langganan = BUKAN free (bug T-ML49)", ModelStatus.isFree(Providers.APINEX, "free/claude-opus-4.6"))
+        assertEquals(ModelStatus.Tier.SUBSCRIPTION, ModelStatus.tierOf("apinex", "free/claude-opus-4.6"))
+        assertTrue("free/ + tier free = badge free", ModelStatus.isFree(Providers.APINEX, "free/glm-5.3-flashx"))
+        assertEquals(ModelStatus.Tier.FREE, ModelStatus.tierOf("apinex", "free/glm-5.3-flashx"))
+        assertFalse("premium tier topup = bukan free", ModelStatus.isFree(Providers.APINEX, "glm-5.3-flash"))
+        assertEquals(ModelStatus.Tier.TOPUP, ModelStatus.tierOf("apinex", "glm-5.3-flash"))
+        assertTrue("tanpa tier (belum sweep) = fallback prefiks lama", ModelStatus.isFree(Providers.APINEX, "free/belum-disweep"))
+        assertNull(ModelStatus.tierOf("apinex", "free/belum-disweep"))
+    }
+
+    @Test
     fun modelStatusStaleness() {
         ModelStatus.reset()
         assertFalse("belum pernah dicek = tidak fresh", ModelStatus.isFresh("nvidia", now = 10_000))
@@ -149,6 +169,26 @@ class CodingSachetUnitTest {
         ModelStatus.reset()
         ModelStatus.fromJson("x", "bukan json {")
         assertNull(ModelStatus.entry("x", "m1"))
+    }
+
+    @Test
+    fun modelStatusJsonV2TierRoundTripAndV1Dropped() {
+        // T-ML49: v2 membawa tier; payload v1 (tanpa tier) sengaja DITOLAK —
+        // entri lama bisa meng-klaim model langganan sebagai gratis.
+        ModelStatus.reset()
+        ModelStatus.apply("x", "sub", ModelStatus.State.OK, false, ModelStatus.Tier.SUBSCRIPTION, now = 10)
+        ModelStatus.apply("x", "top", ModelStatus.State.OK, false, ModelStatus.Tier.TOPUP, now = 20)
+        val json = ModelStatus.toJson("x")
+        assertTrue(json.contains("\"v\":2"))
+        ModelStatus.reset()
+        ModelStatus.fromJson("x", json)
+        assertEquals(ModelStatus.Tier.SUBSCRIPTION, ModelStatus.entry("x", "sub")?.tier)
+        assertEquals(ModelStatus.Tier.TOPUP, ModelStatus.entry("x", "top")?.tier)
+        // v1 (tanpa field t) ditolak — store tetap kosong, sweep ulang terjadi.
+        ModelStatus.reset()
+        val v1 = """{"v":1,"models":{"sub":{"s":"OK","f":false,"at":10}}}"""
+        ModelStatus.fromJson("x", v1)
+        assertNull("payload v1 tanpa tier ditolak (T-ML49)", ModelStatus.entry("x", "sub"))
     }
 
     // ---------- Chat persistence wire format ----------

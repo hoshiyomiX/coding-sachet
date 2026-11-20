@@ -177,7 +177,7 @@ fun ChatScreen(
             Graph.api.quota(key, provider, fresh).fold(
                 onSuccess = { q ->
                     quotaState = if (q == null) QuotaState.Failed("tidak tersedia")
-                    else QuotaState.Ok(q.unlimited, q.tokensRemaining)
+                    else QuotaState.Ok(q.unlimited, q.tokensRemaining, q.mode)
                 },
                 onFailure = { quotaState = QuotaState.Failed(it.message ?: "gagal") },
             )
@@ -570,7 +570,7 @@ fun ChatScreen(
 private sealed class QuotaState {
     object Idle : QuotaState()
     object Loading : QuotaState()
-    data class Ok(val unlimited: Boolean, val tokens: Long?) : QuotaState()
+    data class Ok(val unlimited: Boolean, val tokens: Long?, val mode: String? = null) : QuotaState()
     data class Failed(val message: String) : QuotaState()
 }
 
@@ -635,6 +635,12 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
         QuotaState.Loading -> "…"
         is QuotaState.Ok -> when {
             state.unlimited -> "∞"
+            // T-ML49: 0 pada key free-plan = tier gratis BELUM di-unlock
+            // (server melaporkan token_limit 0 — bukti probe 2026-11-20:
+            // 402 "top-up $5 to unlock 25M free tokens daily for life").
+            // Angka 0-nya BENAR dari server; hint menjelaskan cara membuka
+            // supaya chip tidak terbaca sebagai bug.
+            state.tokens == 0L && state.mode == "free" -> "0${s.quotaLockedHint}"
             state.tokens != null -> formatTokenCount(state.tokens)
             else -> "?"
         }
@@ -938,6 +944,7 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                         ModelRow(
                             model = m,
                             state = status[m]?.state ?: ModelStatus.State.UNKNOWN,
+                            tier = ModelStatus.tierOf(provider.id, m),
                             free = ModelStatus.isFree(provider, m),
                             current = current,
                             onPick = { onPick(m) },
@@ -949,9 +956,11 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
     }
 }
 
-/** One model row: live dot (green/red/gray), name, FREE badge, current check. */
+/** One model row: live dot (green/red/gray), name, billing badge
+ *  (T-ML49: free = jatah harian · langganan = butuh paket · top-up =
+ *  saldo USD; dari flag tier sweep katalog), current check. */
 @Composable
-private fun ModelRow(model: String, state: ModelStatus.State, free: Boolean, current: String, onPick: () -> Unit) {
+private fun ModelRow(model: String, state: ModelStatus.State, tier: ModelStatus.Tier?, free: Boolean, current: String, onPick: () -> Unit) {
     val s = LocalStrings.current
     ListItem(
         modifier = Modifier.clickable(onClick = onPick),
@@ -985,16 +994,27 @@ private fun ModelRow(model: String, state: ModelStatus.State, free: Boolean, cur
         },
         trailingContent = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (free) {
+                // Badge billing: hanya SATU per model. Tier sweep menang
+                // (langganan/top-up); fallback lama = flag free (prefix).
+                val badge: Pair<String, androidx.compose.ui.graphics.Color>? = when (tier) {
+                    ModelStatus.Tier.SUBSCRIPTION -> s.modelSubBadge to MaterialTheme.colorScheme.secondaryContainer
+                    ModelStatus.Tier.TOPUP -> s.modelTopupBadge to MaterialTheme.colorScheme.surfaceVariant
+                    else -> if (free) s.modelFreeBadge to MaterialTheme.colorScheme.tertiaryContainer else null
+                }
+                badge?.let { (text, bg) ->
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        color = bg,
                     ) {
                         Text(
-                            s.modelFreeBadge,
+                            text,
                             Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            color = when (tier) {
+                                ModelStatus.Tier.SUBSCRIPTION -> MaterialTheme.colorScheme.onSecondaryContainer
+                                ModelStatus.Tier.TOPUP -> MaterialTheme.colorScheme.onSurfaceVariant
+                                else -> MaterialTheme.colorScheme.onTertiaryContainer
+                            },
                         )
                     }
                 }

@@ -165,10 +165,17 @@ async function fetchQuota(apiKey, provider) {
   }
 
   const j = (await getJsonBody(sub)) || {};
+  // T-ML49: mode/plan_label ikut diteruskan — key free-plan tanpa unlock
+  // top-up $5 melaporkan token_limit/tokens_remaining 0 dari server (BUKAN
+  // bug app; bukti probe 2026-11-20: 402 "top-up $5 to unlock 25M free
+  // tokens daily for life"). Chip memakai mode+0 untuk menampilkan petunjuk
+  // unlock, bukan sekadar "0" yang tampak seperti bug.
   return {
     supported: true,
     source: 'native',
     unlimited: j.unlimited === true,
+    mode: typeof j.mode === 'string' ? j.mode : null,
+    planLabel: typeof j.plan_label === 'string' ? j.plan_label : null,
     tokensRemaining: num(j.tokens_remaining),
     tokensUsed: num(j.tokens_used),
     tokenLimit: num(j.token_limit),

@@ -497,6 +497,10 @@ test('HTTP server: /api/quota serves APInex token counters via the single docume
   assert.strictEqual(r.body.tokensRemaining, 19300000);
   assert.strictEqual(r.body.tokensUsed, 700000);
   assert.strictEqual(r.body.tokenLimit, 20000000);
+  // T-ML49: mode/plan_label diteruskan — chip membedakan 0 asli vs key
+  // free yang belum unlock top-up $5 (bukti probe 2026-11-20).
+  assert.strictEqual(r.body.mode, 'free');
+  assert.strictEqual(r.body.planLabel, 'Free');
   // ONE documented API per feature: exactly one gateway hit per fetch.
   assert.strictEqual(gw.quotaRequests, 1); // /v1/subscription only
 

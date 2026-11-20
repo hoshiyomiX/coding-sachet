@@ -158,14 +158,13 @@ test('verify: dua kegagalan connect berturut-turut = jalur gateway mati, sweep b
   assert.ok(events.some((e) => e.type === 'done'), 'done tetap dikirim');
 });
 
-test('verify: APInex jalur cepat katalog publik — health jadi dot, tier intrinsik jadi free (bukan allowFree), TANPA chat', async (t) => {
-  // T-ML48: allowFree di katalog hidup kini true untuk SEMUA model premium
-  // dan false untuk 8 model free/ — free badge HARUS dibaca dari tier
-  // intrinsik (prefix free/ atau provider "Free"), seperti kasus nyata
-  // 2026-11-19 di bawah (claude-x premium allowFree=true → BUKAN free).
+test('verify: APInex jalur cepat katalog publik — health jadi dot, TIER billing (free/langganan/top-up) dari katalog, TANPA chat', async (t) => {
+  // T-ML49 (probe langsung 2026-11-20): allowFree:false pada model free/
+  // dibalas 402 "subscription" oleh gateway — tier SUBSCRIPTION meng-override
+  // prefix intrinsik; premium allowFree:true = top-up (billed dompet USD).
   const gw = await startMockGateway([], {
     key: KEY,
-    models: ['free/a', 'b', 'c', 'claude-x', 'saja-free-tanpa-prefix'],
+    models: ['free/a', 'b', 'c', 'claude-x', 'saja-free-tanpa-prefix', 'free/sub-only'],
     catalogue: [
       { id: 'free/a', health: 'live', allowFree: true },
       { id: 'b', health: 'live', allowFree: false },
@@ -174,6 +173,8 @@ test('verify: APInex jalur cepat katalog publik — health jadi dot, tier intrin
       { id: 'claude-x', health: 'live', allowFree: true, provider: 'Claude', dollarsPer1M: 0.5 },
       // kasus nyata: klasifikasi provider "Free" tanpa prefix free/
       { id: 'saja-free-tanpa-prefix', health: 'live', allowFree: true, provider: 'Free', dollarsPer1M: 0 },
+      // kasus nyata T-ML49: free/ prefix TAPI allowFree:false → 402 langganan
+      { id: 'free/sub-only', health: 'live', allowFree: false, provider: 'Free', dollarsPer1M: 0 },
     ],
   });
   t.after(() => gw.close());
@@ -184,25 +185,33 @@ test('verify: APInex jalur cepat katalog publik — health jadi dot, tier intrin
     port,
     '/api/verify-models',
     { 'X-Sachet-Key': KEY, 'X-Sachet-Provider': 'apinex' },
-    { models: ['free/a', 'b', 'c', 'claude-x', 'saja-free-tanpa-prefix', 'tak-ada-di-katalog'] },
+    { models: ['free/a', 'b', 'c', 'claude-x', 'saja-free-tanpa-prefix', 'free/sub-only', 'tak-ada-di-katalog'] },
   );
   const byModel = Object.fromEntries(
     events.filter((e) => e.type === 'result').map((r) => [r.model, r]),
   );
   assert.strictEqual(byModel['free/a'].ok, true);
   assert.strictEqual(byModel['free/a'].free, true, 'prefix free/ = badge free');
+  assert.strictEqual(byModel['free/a'].tier, 'free', 'tier free');
   assert.strictEqual(byModel['b'].ok, true);
   assert.strictEqual(byModel['b'].free, false, 'bukan tier free');
+  assert.strictEqual(byModel['b'].tier, 'subscription', 'allowFree:false = langganan');
   assert.strictEqual(byModel['c'].ok, false, 'health=dead = merah');
   assert.strictEqual(byModel['c'].reason, 'health=dead');
   assert.strictEqual(byModel['claude-x'].ok, true);
   assert.strictEqual(byModel['claude-x'].free, false, 'premium + allowFree=true TETAP bukan free (bug T-ML48)');
+  assert.strictEqual(byModel['claude-x'].tier, 'topup', 'premium = bayar dari dompet USD');
   assert.strictEqual(byModel['saja-free-tanpa-prefix'].ok, true);
   assert.strictEqual(byModel['saja-free-tanpa-prefix'].free, true, 'provider "Free" = badge free');
+  assert.strictEqual(byModel['saja-free-tanpa-prefix'].tier, 'free');
+  assert.strictEqual(byModel['free/sub-only'].ok, true);
+  assert.strictEqual(byModel['free/sub-only'].free, false, 'free/ + allowFree:false BUKAN free (bug T-ML49 — 402 langganan)');
+  assert.strictEqual(byModel['free/sub-only'].tier, 'subscription', 'prefix free/ dioverride allowFree:false');
   assert.strictEqual(byModel['tak-ada-di-katalog'].ok, null, 'id tak dikenal = tak pasti');
   assert.strictEqual(byModel['tak-ada-di-katalog'].free, null);
+  assert.strictEqual(byModel['tak-ada-di-katalog'].tier, null);
   const done = events.find((e) => e.type === 'done');
-  assert.strictEqual(done.ok, 4);
+  assert.strictEqual(done.ok, 5);
   assert.strictEqual(done.dead, 1);
   assert.strictEqual(done.unknown, 1);
   // The whole point of the fast path: not a single chat request.
@@ -230,6 +239,7 @@ test('verify: katalog publik tak terjangkau → mundur ke probe per model (free 
   const result = events.find((e) => e.type === 'result');
   assert.strictEqual(result.ok, true, 'fallback probe menjawab');
   assert.strictEqual(result.free, null, 'probe tak bisa melihat allowFree');
+  assert.strictEqual(result.tier, null, 'probe tak bisa melihat tier katalog (T-ML49)');
   assert.ok(gw.chatAttempts >= 1, 'probe path benar-benar dipakai');
 });
 

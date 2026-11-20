@@ -921,17 +921,28 @@ function safeJson(s) {
 
 const abortErr = () => Object.assign(new Error('dibatalkan'), { name: 'AbortError' });
 
-/** Officially free = the gateway's OWN free tier, bukan allowFree.
- *  Docs apinex.bond/developers/models: model free/* memakai jatah harian
- *  (allowance) dan tidak mengisi dompet; semua model lain = pay-as-you-go
- *  dari topup USD. T-ML48 (2026-11-19): allowFree kini true untuk SEMUA 22
- *  model premium ($0.04-$1/1M) dan false untuk 8 model free/ — sinyal itu
- *  bukan penanda gratis; klasifikasi intrinsik (prefix free/ atau
- *  provider "Free") satu-satunya sumber resmi. */
-const isCatalogueFree = (e) => !!e && (
-  e.provider === 'Free' ||
-  (typeof e.id === 'string' && e.id.startsWith('free/'))
-);
+/** Model billing tier dari katalog publik — T-ML49 (2026-11-20), bukti
+ *  PROBE LANGSUNG dengan key free-plan (bukan lagi asumsi dokumen):
+ *  - allowFree:false pada 8 model free/ → HTTP 402 "only available with
+ *    a subscription" — prefix free/ TIDAK menjamin gratis lagi;
+ *  - allowFree:true premium ($0.04-$1/1M) → 200 OK, billed dari dompet
+ *    USD (pay-as-you-go/top-up);
+ *  - allowFree:true free/ → 402 "top-up $5 to unlock 25M free tokens
+ *    daily" untuk key yang belum unlock (keadaan KEY, bukan model —
+ *    lihat chip sisa token).
+ *  Tiga tier: 'free' (jatah harian, intrinsik DAN masih allowFree),
+ *  'subscription' (allowFree:false — butuh paket langganan), 'topup'
+ *  (premium, bayar dari saldo USD). null = tak dikenal. */
+const catalogueTier = (e) => {
+  if (!e) return null;
+  if (e.allowFree === false) return 'subscription';
+  const intrinsic = e.provider === 'Free' ||
+    (typeof e.id === 'string' && e.id.startsWith('free/'));
+  return intrinsic ? 'free' : 'topup';
+};
+
+// Backward-compat alias: badge free = tier 'free' saja (T-ML48→T-ML49).
+const isCatalogueFree = (e) => catalogueTier(e) === 'free';
 
 /** Fetch + parse the APInex public catalogue
  *  (apinex.bond/api/public/models): ONE unauthenticated GET returning
@@ -1072,6 +1083,7 @@ async function verifyModels({ apiKey, providerId, models, signal, emit }) {
         if (alive === true) ok++; else if (alive === false) dead++; else unknown++;
         emit({
           type: 'result', model: m, ok: alive, ms: 0,
+          tier: e ? catalogueTier(e) : null,
           free: e ? isCatalogueFree(e) : null,
           ...(alive === false && e ? { reason: `health=${e.health}` } : {}),
         });
@@ -1114,8 +1126,9 @@ async function verifyModels({ apiKey, providerId, models, signal, emit }) {
     // NIM models are free to use once they answer; a probe cannot see the
     // APInex allowFree flag (null → the app falls back to its free/ prefix).
     // ok:null (429/…) must stay free:null — "cannot tell", not "not free".
+    // Probe path tak bisa melihat katalog → tier:null (T-ML49).
     const free = providerId === 'nvidia' ? (r.ok === true ? true : null) : null;
-    emit({ type: 'result', model: m, ok: r.ok, free, ms: Date.now() - t0, ...(r.reason ? { reason: r.reason } : {}) });
+    emit({ type: 'result', model: m, ok: r.ok, free, tier: null, ms: Date.now() - t0, ...(r.reason ? { reason: r.reason } : {}) });
     log.dbg('agt', `verifikasi ${providerId} ${m}: ${r.ok === true ? 'OK' : r.ok === false ? 'MATI' : 'TAK PASTI'} ${r.reason ? `(${r.reason})` : ''} ${Date.now() - t0}ms`);
   }
   log.inf('agt', `verifikasi probe ${providerId}: ${ok} hidup / ${dead} mati / ${unknown} tak pasti`);
