@@ -225,6 +225,45 @@ test('pi: unit — promptFor + hash kanonik', () => {
   assert.strictEqual(canonicalMsg({ role: 'tool', content: 'o', toolCallId: 't1', name: 'bash' }).includes('t1'), true);
 });
 
+test('pi: error model mid-run → child dibuang, retry respawn bersih (T-ML55)', async () => {
+  assert.ok(bundleReady, bundleNote || 'bundle Pi tidak siap');
+
+  // Gateway 1: SELALU 503 (script habis → reply terakhir diulang) — berapa
+  // kali pun Pi mencoba ulang, run 1 tetap gagal. Bentuk insiden lapangan
+  // 2026-11-21: upstream_busy dari 100milionseek.
+  const gw1 = await startMockGateway([
+    { kind: 'error', status: 503, message: 'The service is busy right now. Please try again in a moment.', headers: { 'retry-after': '20' } },
+  ]);
+  useGateway(gw1);
+
+  const workdir = path.join(ROOT, 'work4');
+  const m1 = [{ role: 'user', content: 'tolong kerjakan sesuatu' }];
+
+  // Run 1: harus melempar. Opsi A: child TIDAK boleh dibiarkan hidup dalam
+  // state 'processing' (zombie) seperti bug lama — dia wajib sudah dibunuh.
+  await assert.rejects(() => runPiChat({
+    apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-mini',
+    messages: m1, workdir, emit: () => {},
+  }));
+  assert.strictEqual(activeChildCount(), 0, 'zombie child harus sudah dibunuh setelah error mid-run (opsi A)');
+
+  await gw1.close();
+
+  // Run 2 (retry owner): gateway sehat → respawn bersih dan SUKSES — bukan
+  // ditolak "Agent is already processing" seperti sebelum fix.
+  const gw2 = await startMockGateway([
+    { kind: 'text', text: 'Sembuh setelah respawn.', usage: USAGE_C },
+  ]);
+  useGateway(gw2);
+  const added2 = await runPiChat({
+    apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-mini',
+    messages: m1, workdir, emit: () => {},
+  });
+  assert.strictEqual(added2[added2.length - 1].content, 'Sembuh setelah respawn.');
+
+  await gw2.close();
+});
+
 /** Jumlah child hidup (untuk assert kill). */
 function activeChildCount() {
   // Tidak diekspor langsung — dipakai lewat efek: piBundleAvailable tidak

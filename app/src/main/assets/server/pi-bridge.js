@@ -458,11 +458,16 @@ async function runPiChat({ apiKey, providerId, model, messages, signal, emit, wo
     writeState(entry.dir, { seen, prefix: hashPrefix(combined, seen), gen: readState(entry.dir).gen });
     return added;
   } catch (e) {
-    // Child mati / error fatal → buang agar turn berikutnya respawn bersih.
-    if (rpc.exited || /proses Pi keluar|tidak siap/.test(e.message || '')) {
-      log.err('pi', 'child mati saat run:', e.message);
-      await killChild();
-    }
+    // T-ML55 (opsi A): SEMUA error mid-run non-user-abort → child dibuang.
+    // Abort user tidak pernah sampai sini (agent_settled aborted menyelesaikan
+    // run normal), jadi apapun yang lewat catch = state child tidak dipercaya
+    // lagi. Dulu hanya child-mati yang dibuang — error model seperti 503
+    // upstream_busy (stopReason='error') meninggalkan zombie child yang masih
+    // 'processing', lalu semua chat berikut direuse dan ditolak
+    // 'Agent is already processing' selamanya sampai restart server.
+    // Respawn ~1s dan state sesi hanya maju setelah sukses → tanpa kehilangan.
+    log.err('pi', 'run gagal — child dibuang agar respawn bersih:', e.message);
+    await killChild();
     throw e;
   } finally {
     if (active) active.busy = false;
