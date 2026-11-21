@@ -21,7 +21,9 @@ import id.codingsachet.mobile.ui.formatTokenCount
 import id.codingsachet.mobile.ui.projectDir
 import id.codingsachet.mobile.ui.screens.ChatEntry
 import id.codingsachet.mobile.ui.screens.buildChatEntries
+import id.codingsachet.mobile.ui.screens.buildTranscript
 import id.codingsachet.mobile.ui.stringsFor
+import id.codingsachet.mobile.ui.truncateForResend
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -788,5 +790,46 @@ class CodingSachetUnitTest {
         assertEquals(1, Regex(Regex.escape(GitSetup.MARKER)).findAll(merged).count())
         // Teks kosong/spasi juga diperlakukan sebagai config belum ada.
         assertEquals(GitSetup.block(), GitSetup.merge("  \n"))
+    }
+
+    // ---- T-ML65 #1: edit-and-resend + salin percakapan ----
+
+    @Test
+    fun truncateForResendDropsFromTheEditedUserMessageOn() {
+        val msgs = mutableListOf(
+            Msg(role = "user", content = "pertama"),
+            Msg(role = "assistant", content = "jawaban 1"),
+            Msg(role = "user", content = "kedua"),
+            Msg(role = "assistant", content = "jawaban 2"),
+            Msg(role = "tool", content = "exit=0", toolCallId = "t1"),
+        )
+        truncateForResend(msgs, 2)
+        // History kembali ke kondisi tepat sebelum "kedua" — pesan
+        // sesudahnya (jawaban + hasil tool) hilang semua.
+        assertEquals(listOf("pertama", "jawaban 1"), msgs.map { it.content })
+        // Batas: index 0 dan == size tidak melempar.
+        truncateForResend(msgs, msgs.size)
+        assertEquals(2, msgs.size)
+        truncateForResend(msgs, 0)
+        assertTrue(msgs.isEmpty())
+    }
+
+    @Test
+    fun transcriptSkipsToolTrafficAndBlankRounds() {
+        val msgs = listOf(
+            Msg(role = "user", content = "bikin file a.txt"),
+            // Putaran tool-tanpa-teks khas engine Pi — tidak masuk transkrip.
+            Msg(role = "assistant", content = "", toolCalls = listOf(ToolCall(id = "t1", name = "write_file"))),
+            Msg(role = "tool", content = "exit=0", toolCallId = "t1"),
+            Msg(role = "assistant", content = "Sudah dibuat."),
+            Msg(role = "user", content =  "  terima kasih  "),
+        )
+        val t = buildTranscript(msgs, "Anda", "Asisten")
+        assertEquals(
+            "Anda:\nbikin file a.txt\n\nAsisten:\nSudah dibuat.\n\nAnda:\nterima kasih",
+            t,
+        )
+        // Sesi kosong / tanpa teks → transkrip kosong (menu disabled).
+        assertEquals("", buildTranscript(listOf(Msg(role = "assistant", content = "")), "Anda", "Asisten"))
     }
 }

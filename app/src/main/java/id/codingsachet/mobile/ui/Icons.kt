@@ -181,3 +181,42 @@ val CreateNewFolderIcon: ImageVector
             close()
         }
     }.build().also { createNewFolderIcon = it }
+
+// Material Design "content_copy" (Apache-2.0) — T-ML65 #1 message copy.
+private var copyIcon: ImageVector? = null
+val CopyIcon: ImageVector
+    get() = copyIcon ?: ImageVector.Builder(
+        name = "SachetCopy",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(16.0f, 1.0f)
+            lineTo(4.0f, 1.0f)
+            curveToRelative(-1.1f, 0.0f, -2.0f, 0.9f, -2.0f, 2.0f)
+            lineToRelative(0.0f, 14.0f)
+            lineToRelative(2.0f, 0.0f)
+            lineTo(4.0f, 3.0f)
+            lineToRelative(12.0f, 0.0f)
+            lineTo(16.0f, 1.0f)
+            close()
+            moveTo(19.0f, 5.0f)
+            lineTo(8.0f, 5.0f)
+            curveToRelative(-1.1f, 0.0f, -2.0f, 0.9f, -2.0f, 2.0f)
+            lineToRelative(0.0f, 14.0f)
+            curveToRelative(0.0f, 1.1f, 0.9f, 2.0f, 2.0f, 2.0f)
+            lineToRelative(11.0f, 0.0f)
+            curveToRelative(1.1f, 0.0f, 2.0f, -0.9f, 2.0f, -2.0f)
+            lineTo(21.0f, 7.0f)
+            curveToRelative(0.0f, -1.1f, -0.9f, -2.0f, -2.0f, -2.0f)
+            close()
+            moveTo(19.0f, 21.0f)
+            lineTo(8.0f, 21.0f)
+            lineTo(8.0f, 7.0f)
+            lineToRelative(11.0f, 0.0f)
+            lineToRelative(0.0f, 14.0f)
+            close()
+        }
+    }.build().also { copyIcon = it }

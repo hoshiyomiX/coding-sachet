@@ -135,6 +135,20 @@ class ChatEngine(val session: Session) {
         return true
     }
 
+    /** T-ML65 #1: edit-and-resend. Drops every message from [index] (the
+     *  edited USER message) onward — its answer and any tool rounds after
+     *  it — then sends [text] as a fresh turn via [send]. Returns false
+     *  (and drops NOTHING) when a turn cannot start, the message is not a
+     *  user message, or the captured index went stale. */
+    fun resendFrom(index: Int, text: String, model: String): Boolean {
+        if (busy || text.isBlank() || model.isBlank()) return false
+        if (index < 0 || index >= session.messages.size) return false
+        if (session.messages[index].role != "user") return false
+        truncateForResend(session.messages, index)
+        Logx.i("chat", "edit-resend session=${session.id} potong ke pesan #$index → ${session.messages.size} pesan")
+        return send(text, model)
+    }
+
     private var turnStartedAt = 0L
 
     // ---- server-death auto-retry (T-ML27 P3) ----
@@ -583,4 +597,11 @@ fun canContinueFromHistory(messages: List<Msg>): Boolean {
     if (last.role == "tool") return true
     if (last.role == "assistant" && !last.toolCalls.isNullOrEmpty()) return true
     return false
+}
+
+/** T-ML65 #1 (murni, teruji JVM): buang semua pesan mulai [startIndex]
+ *  — history kembali ke kondisi tepat sebelum pesan user yang diedit.
+ *  Dipakai [ChatEngine.resendFrom] (edit-and-resend). */
+internal fun truncateForResend(messages: MutableList<Msg>, startIndex: Int) {
+    while (messages.size > startIndex) messages.removeAt(messages.size - 1)
 }

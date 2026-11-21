@@ -1,6 +1,8 @@
 package id.codingsachet.mobile.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -33,6 +35,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Menu
@@ -42,6 +45,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
@@ -82,8 +87,11 @@ import kotlinx.coroutines.awaitCancellation
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -118,21 +126,28 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import android.widget.Toast
+import id.codingsachet.mobile.ui.ChatIntent
+import id.codingsachet.mobile.ui.CopyIcon
 
 private val PrettyJson = Json { prettyPrint = true }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
     session: Session?,
     onSessionChange: (Session?) -> Unit,
     onOpenFiles: () -> Unit,
     onOpenSettings: () -> Unit,
+    intent: ChatIntent = ChatIntent.None,
+    onIntentConsumed: () -> Unit = {},
 ) {
     val s = LocalStrings.current
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val runtimeState by Graph.runtime.state.collectAsState()
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
 
     // Back closes the session drawer first (the AppRoot back handlers are
     // composed before this one, so this wins whenever the drawer is open).
@@ -157,6 +172,31 @@ fun ChatScreen(
     var pendingSend by remember { mutableStateOf(false) }
     // Bumped after a finished turn so the project tree reloads new files.
     var treeVersion by remember { mutableIntStateOf(0) }
+
+    // T-ML65 #1: edit-and-resend target (a user message in the open
+    // history). The index is captured at tap time by identity — Msg is a
+    // data class, so indexOf() could match a duplicated message.
+    var editTarget by remember { mutableStateOf<Pair<Msg, Int>?>(null) }
+
+    /** Copy [text] to the system clipboard with a light confirmation. */
+    fun copyText(text: String) {
+        clipboard.setText(AnnotatedString(text))
+        Toast.makeText(context, s.copiedToClipboard, Toast.LENGTH_SHORT).show()
+    }
+
+    // T-ML65 #2: homepage entry points. "Proyek baru" opens the project
+    // dialog (the send button buffers its text the same way); "Proyek
+    // berjalan" opens the left drawer over the project/session list. The
+    // effect re-fires whenever the intent CHANGES, so it also works when
+    // ChatScreen was already mounted under the Home overlay.
+    LaunchedEffect(intent) {
+        when (intent) {
+            ChatIntent.NewProject -> showNewProject = true
+            ChatIntent.OpenDrawer -> scope.launch { drawer.open() }
+            ChatIntent.None -> {}
+        }
+        if (intent != ChatIntent.None) onIntentConsumed()
+    }
 
     // One engine per session, kept for the lifetime of the screen so a
     // running stream survives switching back and forth between chats.
@@ -355,6 +395,22 @@ fun ChatScreen(
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
                     // Top-bar buttons relocated here (T-ML28 #5): File and
                     // Settings stay reachable from the drawer.
+                    // T-ML65 #1: salin percakapan penuh (transkrip teks).
+                    NavigationDrawerItem(
+                        label = { Text(s.copyChat) },
+                        icon = { Icon(CopyIcon, contentDescription = s.copyChat) },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawer.close() }
+                            val text = buildTranscript(
+                                current?.messages ?: emptyList(),
+                                s.transcriptUser,
+                                s.transcriptAssistant,
+                            )
+                            if (text.isNotBlank()) copyText(text)
+                        },
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                    )
                     NavigationDrawerItem(
                         label = { Text(s.filesTitle) },
                         icon = { Icon(TextFileIcon, contentDescription = s.filesTitle) },
@@ -548,7 +604,26 @@ fun ChatScreen(
                     ) {
                         items(entries) { entry ->
                             when (entry) {
-                                is ChatEntry.Single -> MessageBubble(entry.m, toolResults, activeCallIds)
+                                is ChatEntry.Single -> MessageBubble(
+                                    entry.m,
+                                    toolResults,
+                                    activeCallIds,
+                                    onCopy = {
+                                        // T-ML65 #1: user text or the
+                                        // assistant's text (tool cards are
+                                        // rendered inside, not copied).
+                                        if (entry.m.content.isNotBlank()) copyText(entry.m.content)
+                                    },
+                                    onEdit = if (entry.m.role == "user" && !busyNow) {
+                                        {
+                                            // Identity lookup — Msg is a data
+                                            // class, indexOf() could match a
+                                            // duplicate older message.
+                                            val idx = msgs.indexOfFirst { it === entry.m }
+                                            if (idx >= 0) editTarget = Pair(entry.m, idx)
+                                        }
+                                    } else null,
+                                )
                                 is ChatEntry.Group -> ToolCardGroup(
                                     entry.cards,
                                     String.format(s.toolGroupFmt, entry.cards.size),
@@ -587,6 +662,22 @@ fun ChatScreen(
                 showNewProject = false
                 pendingSend = false
             },
+        )
+    }
+
+    // T-ML65 #1: edit a sent user message → drop the rest of the history
+    // and resend the edited text as a fresh turn.
+    editTarget?.let { (target, idx) ->
+        EditMessageDialog(
+            initial = target.content,
+            onConfirm = { newText ->
+                editTarget = null
+                val sess = current ?: return@EditMessageDialog
+                val e = engines.getOrPut(sess.id) { ChatEngine(sess) }
+                // Keep the dialog text when the turn cannot start (busy).
+                if (e.resendFrom(idx, newText, model)) Unit
+            },
+            onDismiss = { editTarget = null },
         )
     }
 }
@@ -701,18 +792,42 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
 }
 
 /** Persisted messages: user bubbles right, assistant content + tool cards left. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(m: Msg, toolResults: Map<String, Msg>, activeCallIds: Set<String> = emptySet()) {
+private fun MessageBubble(
+    m: Msg,
+    toolResults: Map<String, Msg>,
+    activeCallIds: Set<String> = emptySet(),
+    onCopy: (() -> Unit)? = null,
+    onEdit: (() -> Unit)? = null,
+) {
     val s = LocalStrings.current
     when (m.role) {
         "user" -> {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                // T-ML65 #1: long-press a message → Salin / Edit&resend.
+                var menu by remember { mutableStateOf(false) }
                 Surface(
                     shape = RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp),
                     color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier.widthIn(max = 320.dp),
+                    modifier = Modifier
+                        .widthIn(max = 320.dp)
+                        .combinedClickable(
+                            onClick = {},
+                            onLongClick = if (onCopy != null || onEdit != null) {
+                                { menu = true }
+                            } else null,
+                        ),
                 ) {
-                    Text(m.content, Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium)
+                    Box {
+                        Text(m.content, Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium)
+                        MessageActionsMenu(
+                            expanded = menu,
+                            onDismiss = { menu = false },
+                            onCopy = onCopy,
+                            onEdit = onEdit,
+                        )
+                    }
                 }
             }
         }
@@ -723,11 +838,25 @@ private fun MessageBubble(m: Msg, toolResults: Map<String, Msg>, activeCallIds: 
             ) {
                 ThinkingBlock(m.thinking)
                 if (m.content.isNotBlank()) {
+                    // T-ML65 #1: long-press the answer → Salin.
+                    var menu by remember { mutableStateOf(false) }
                     Surface(
                         shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.combinedClickable(
+                            onClick = {},
+                            onLongClick = if (onCopy != null) { { menu = true } } else null,
+                        ),
                     ) {
-                        Column(Modifier.padding(12.dp)) { Markdownish(m.content) }
+                        Box {
+                            Column(Modifier.padding(12.dp)) { Markdownish(m.content) }
+                            MessageActionsMenu(
+                                expanded = menu,
+                                onDismiss = { menu = false },
+                                onCopy = onCopy,
+                                onEdit = null,
+                            )
+                        }
                     }
                 }
                 m.toolCalls?.let { calls ->
@@ -749,6 +878,53 @@ private fun MessageBubble(m: Msg, toolResults: Map<String, Msg>, activeCallIds: 
         // "tool" results are rendered inside their cards
     }
 }
+
+/** T-ML65 #1: long-press actions for one bubble — Salin (and Edit &
+ *  kirim ulang for user messages while no turn is running). */
+@Composable
+private fun MessageActionsMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    onCopy: (() -> Unit)?,
+    onEdit: (() -> Unit)?,
+) {
+    val s = LocalStrings.current
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        onCopy?.let { act ->
+            DropdownMenuItem(
+                text = { Text(s.copyMessage) },
+                leadingIcon = { Icon(CopyIcon, contentDescription = null) },
+                onClick = {
+                    onDismiss()
+                    act()
+                },
+            )
+        }
+        onEdit?.let { act ->
+            DropdownMenuItem(
+                text = { Text(s.editMessage) },
+                leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                onClick = {
+                    onDismiss()
+                    act()
+                },
+            )
+        }
+    }
+}
+
+/** T-ML65 #1 (murni, teruji JVM): transkrip teks "Salin percakapan" —
+ * hanya pesan user/assistant yang berisi teks (hasil tool dan putaran
+ * tool-tanpa-teks sudah diringkas di UI, tidak masuk transkrip). */
+internal fun buildTranscript(
+    msgs: List<Msg>,
+    userLabel: String,
+    assistantLabel: String,
+): String = msgs
+    .filter { (it.role == "user" || it.role == "assistant") && it.content.isNotBlank() }
+    .joinToString("\n\n") { m ->
+        (if (m.role == "user") userLabel else assistantLabel) + ":\n" + m.content.trim()
+    }
 
 private fun prettyArgs(args: JsonElement): String =
     runCatching { PrettyJson.encodeToString(JsonElement.serializer(), args) }.getOrDefault(args.toString())
@@ -1175,6 +1351,37 @@ private fun NewProjectDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit)
         confirmButton = {
             TextButton(onClick = { onConfirm(name.trim()) }, enabled = name.isNotBlank()) {
                 Text(s.newProjectCreate)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(s.cancel) } },
+    )
+}
+
+/** T-ML65 #1: edit-and-resend — dialog dengan teks asli yang bisa
+ *  diubah, tombol "Kirim ulang". */
+@Composable
+private fun EditMessageDialog(initial: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+    val s = LocalStrings.current
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(s.editResendTitle) },
+        text = {
+            Column {
+                Text(s.editResendHint, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    maxLines = 10,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(text.trim()) }, enabled = text.isNotBlank()) {
+                Text(s.editResendSend)
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(s.cancel) } },
