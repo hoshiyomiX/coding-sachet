@@ -87,7 +87,28 @@ object Providers {
         supportsQuota = true,
     )
 
-    val ALL = listOf(APINEX, NVIDIA, SEEK)
+    // T-ML64 (owner order: "implementasi provider Ngodingai.net").
+    // NgodeAI: gateway IDR prepaid (llm.ngodeai.net) — free tier = model
+    // whose own catalogue pricing is 0 (glm-5.3-flash, minimax-m3.1-flash,
+    // …, verified live 2026-11-21); paid models metered per token against
+    // the wallet (402 insufficient_balance under Rp 1). freeModelPrefix
+    // null + server catalogueSweep: the badge's free flag comes from the
+    // gateway's own pricing (NOT a live answer — paid models answer too
+    // once the wallet has funds). Chip: GET /v1/balance saldo IDR (mode
+    // "idr" → rendered as Rupiah). Key check: GET /v1/models (401 bad key).
+    val NGODEAI = Provider(
+        id = "ngodeai",
+        label = "NgodeAI",
+        baseUrl = BuildConfig.NGODEAI_BASE_URL,
+        keyPrefix = "ngodeai_live_",
+        docsUrl = "https://docs.ngodeai.net",
+        defaultModel = "ngodeai/glm-5.3-flash",
+        freeModelPrefix = null,
+        validateViaChat = false,
+        supportsQuota = true,
+    )
+
+    val ALL = listOf(APINEX, NVIDIA, SEEK, NGODEAI)
 
     fun byId(id: String?): Provider = ALL.firstOrNull { it.id == id } ?: APINEX
 }

@@ -102,6 +102,7 @@ import id.codingsachet.mobile.ui.StopIcon
 import id.codingsachet.mobile.ui.TextFileIcon
 import id.codingsachet.mobile.ui.ToolCardUi
 import id.codingsachet.mobile.ui.formatTokenCount
+import id.codingsachet.mobile.ui.formatIdrAmount
 import id.codingsachet.mobile.ui.projectDir
 import id.codingsachet.mobile.ui.components.Markdownish
 import id.codingsachet.mobile.ui.components.ToolCard
@@ -646,19 +647,25 @@ private fun TokenMeterRow(
     }
 }
 
-/** The APInex remaining-quota chip — a Surface only; the enclosing row owns
+/** The remaining-quota chip — a Surface only; the enclosing row owns
  *  alignment. Emits nothing while Idle. Tappable to refresh.
  *  T-ML43: padding INSIDE the pill, ripple clipped to the pill shape (clip
- *  before clickable), ellipsis as the ultra-narrow safety net. */
+ *  before clickable), ellipsis as the ultra-narrow safety net.
+ *  T-ML64: NgodeAI mode "idr" — the number is the IDR wallet balance, so
+ *  the label becomes "Saldo" and the value a Rupiah figure (id-ID
+ *  grouping), never a token abbreviation. */
 @Composable
 private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
     val s = LocalStrings.current
     if (state is QuotaState.Idle) return
+    val idr = state is QuotaState.Ok && state.mode == "idr"
+    val label = if (idr) s.balanceLabel else s.quotaLabel
     val value = when (state) {
         QuotaState.Idle -> return
         QuotaState.Loading -> "…"
         is QuotaState.Ok -> when {
             state.unlimited -> "∞"
+            idr -> state.tokens?.let { "Rp " + formatIdrAmount(it) } ?: "?"
             // T-ML49b: KEY TERKUNCI vs JATAH HABIS dibedakan lewat tokenLimit.
             // Terkunci = tokens 0 DAN limit 0 (tidak ada alokasi sama sekali —
             // bukti probe 2026-11-20: 402 "top-up $5 to unlock 25M free tokens
@@ -679,10 +686,10 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
             .heightIn(min = 32.dp)
             .clip(chipShape)
             .clickable(onClick = onRefresh)
-            .semantics { contentDescription = "${s.quotaLabel}: $value" },
+            .semantics { contentDescription = "$label: $value" },
     ) {
         Text(
-            "${s.quotaLabel}: $value",
+            "$label: $value",
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
             style = MaterialTheme.typography.labelMedium,
             color = if (state is QuotaState.Failed) MaterialTheme.colorScheme.error

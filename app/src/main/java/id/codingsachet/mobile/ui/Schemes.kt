@@ -162,3 +162,11 @@ fun projectDir(baseWorkdir: String, projectName: String): String {
  */
 fun formatTokenCount(tokens: Long): String =
     java.text.NumberFormat.getIntegerInstance(java.util.Locale("id", "ID")).format(tokens)
+
+/**
+ * IDR wallet display (T-ML64, NgodeAI): the balance with Indonesian
+ * grouping — 50000 → "50.000" — for the "Saldo: Rp 50.000" chip. Pure so
+ * the unit test pins the contract.
+ */
+fun formatIdrAmount(amount: Long): String =
+    java.text.NumberFormat.getIntegerInstance(java.util.Locale("id", "ID")).format(amount)

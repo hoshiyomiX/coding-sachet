@@ -48,6 +48,9 @@ const http = require('http');
  *              GET /v1/subscription (the ONE documented quota API):
  *              { mode, unlimited, tokenLimit, tokensUsed, tokensRemaining }
  *              Without it the endpoint answers 404 (quota unsupported).
+ * opts.balance: serve the NgodeAI wallet endpoint GET /v1/balance
+ *              (T-ML64): { currency:'IDR', balance_idr: <number> }.
+ *              Without it the endpoint answers 404.
  * opts.catalogue: serve the APInex PUBLIC catalogue (site-style path
  *              GET /api/public/models — NOT under /v1) as
  *              [{id, health, allowFree}, …] for the live-verification
@@ -77,6 +80,7 @@ function startMockGateway(script, opts = {}) {
   let modelAttempts = 0;
   let quotaRequests = 0;
   let catalogueRequests = 0;
+  let balanceRequests = 0;
   let n = 0;
   const server = http.createServer((req, res) => {
     let body = '';
@@ -155,6 +159,23 @@ function startMockGateway(script, opts = {}) {
           resets_at_utc: null,
           allowed: true,
         }));
+        return;
+      }
+
+      // NgodeAI wallet endpoint (T-ML64) — the prepaid IDR balance the
+      // /api/quota 'balance' shape reads.
+      if (req.method === 'GET' && req.url === '/v1/balance') {
+        balanceRequests++;
+        if (opts.balance === undefined || opts.balance === null) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'not found' } }));
+          return;
+        }
+        if (req.headers.authorization !== `Bearer ${key}`) return unauthorized();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(typeof opts.balance === 'object'
+          ? opts.balance
+          : { currency: 'IDR', balance_idr: opts.balance }));
         return;
       }
 
@@ -245,6 +266,16 @@ function startMockGateway(script, opts = {}) {
           res.end(JSON.stringify({ error: { message: 'Unrecognized request argument supplied: stream_options' } }));
           return;
         }
+        if (reply.kind === 'rawsse') {
+          // T-ML64: raw SSE chunks exactly as given (e.g. NgodeAI's
+          // keepalive {id:'chatcmpl-keepalive', choices:[]} + reasoning
+          // deltas) — exercises the parser's tolerance verbatim.
+          res.writeHead(reply.status || 200, { 'Content-Type': 'text/event-stream' });
+          reply.chunks.forEach((obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`));
+          res.write('data: [DONE]\n\n');
+          res.end();
+          return;
+        }
 
         // SSE reply
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -302,6 +333,7 @@ function startMockGateway(script, opts = {}) {
         get modelAttempts() { return modelAttempts; },
         get quotaRequests() { return quotaRequests; },
         get catalogueRequests() { return catalogueRequests; },
+        get balanceRequests() { return balanceRequests; },
         close: () => new Promise((r) => server.close(r)),
       });
     });

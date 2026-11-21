@@ -111,6 +111,12 @@ async function fetchModels(apiKey, provider, retryOpts) {
         // are pickable in a chat app; providers without the field (APInex,
         // NIM) are untouched by this filter.
         .filter((m) => !m.endpoint || m.endpoint === '/v1/chat/completions')
+        // T-ML64: NgodeAI marks models under maintenance with
+        // status:'inactive' (400 model_maintenance on use, verified live).
+        // They are temporary noise, not pickable options — drop them; the
+        // catalogue refresh brings them back once active again. Providers
+        // without the field are untouched.
+        .filter((m) => !m.status || m.status === 'active')
         .map((m) => m.id)
     : Array.isArray(j) ? j.filter((x) => typeof x === 'string') : [];
   return ids.sort((a, b) => a.localeCompare(b));
@@ -147,7 +153,7 @@ function gatewayErrorText(text) {
 }
 
 /**
- * Remaining quota for the caller's key. Two shapes:
+ * Remaining quota for the caller's key. Three shapes:
  *  - APInex: ONE officially documented API (owner order T-ML20) — GET
  *    /v1/subscription returns the token counters. No fallback chain:
  *    when the documented endpoint fails, the failure surfaces directly.
@@ -155,9 +161,47 @@ function gatewayErrorText(text) {
  *    RESPONSE HEADERS of every authenticated call (docs /docs →
  *    x-quota-limit/used/remaining/reset, reset 00:00 UTC). The cheapest
  *    authenticated read is GET {probePath} (/models).
+ *  - NgodeAI (T-ML64): prepaid IDR wallet — GET /v1/balance returns
+ *    {currency:'IDR', balance_idr}. There is no token allowance (free
+ *    models run on a Rp 0 balance, T-ML62), so the chip shows OWNERSHIP:
+ *    tokensRemaining carries balance_idr with mode 'idr' and the app
+ *    renders it as a Rupiah figure instead of a token count.
  */
 async function fetchQuota(apiKey, provider) {
   const q = provider.quota;
+  if (q && q.via === 'balance') {
+    let res;
+    try {
+      res = await fetchWithRetry(provider.baseUrl + (q.probePath || '/balance'), {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(12000),
+      });
+    } catch (e) {
+      throw new Error(`Koneksi ke gateway gagal: ${netErrorDetail(e)}`);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}: ${gatewayErrorText(text)}`);
+    }
+    const j = await getJsonBody(res);
+    const balance = num(j && j.balance_idr);
+    if (balance === null) {
+      // A 200 without balance_idr is a shape change — say so instead of
+      // fabricating a zero the chip would render as "Rp 0" ownership.
+      throw new Error('Gateway tidak mengirim saldo (balance_idr)');
+    }
+    return {
+      supported: true,
+      source: 'balance',
+      unlimited: false,
+      mode: 'idr',
+      planLabel: j && typeof j.currency === 'string' ? j.currency : null,
+      tokensRemaining: balance,
+      tokensUsed: null,
+      tokenLimit: null,
+      resetsAt: null,
+    };
+  }
   if (q && q.via === 'headers') {
     let res;
     try {

@@ -136,6 +136,12 @@ class AgentApi(private val port: () -> Int) {
                     val ep = (el as? JsonObject)?.get("endpoint") as? JsonPrimitive
                     ep == null || ep.content == "/v1/chat/completions"
                 }
+                // T-ML64: NgodeAI marks maintenance models status:'inactive'
+                // (400 model_maintenance) — drop them, mirroring the server.
+                .filter { el ->
+                    val st = (el as? JsonObject)?.get("status") as? JsonPrimitive
+                    st == null || st.content == "active"
+                }
                 .map { it.jsonObject["id"]!!.jsonPrimitive.content }
         }
     }

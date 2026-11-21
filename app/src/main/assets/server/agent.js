@@ -960,6 +960,45 @@ async function fetchPublicCatalogue(provider, signal) {
   return j.models;
 }
 
+/** Fetch the AUTHENTICATED model catalogue (GET {baseUrl}/models with the
+ *  bearer key — NgodeAI T-ML64): one request returns per-model status
+ *  ('active'|'inactive' = maintenance) and pricing ({input,output} per 1M,
+ *  IDR), which is everything the sweep needs — zero chat probes spent.
+ *  Shape mirrors the live gateway (verified 2026-11-21): {data:[{id,
+ *  status, endpoint, pricing:{input,output}, …}]}. */
+async function fetchAuthCatalogue(apiKey, provider, signal) {
+  const res = await fetchWithRetry(
+    provider.baseUrl + '/models',
+    { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.any([signal, AbortSignal.timeout(20000)].filter(Boolean)) },
+    { retries: 1, delays: [500] }
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const e = new Error(`HTTP ${res.status}: ${String(text).slice(0, 200)}`);
+    e.status = res.status;
+    throw e;
+  }
+  const j = await res.json().catch(() => null);
+  if (!j || !Array.isArray(j.data)) throw new Error('bentuk katalog tidak dikenal');
+  return j.data.filter((m) => m && typeof m.id === 'string');
+}
+
+/** NgodeAI per-model sweep facts out of one catalogue entry (T-ML64):
+ *  ok = status 'active'; free = the gateway's OWN pricing is 0 (paid
+ *  models also answer once the wallet has funds, so a live answer can
+ *  never mark them free — unlike seek/NIM freeByProbe); tier = free for
+ *  pricing 0, topup otherwise (no subscription tier on this gateway). */
+function authCatalogueFacts(e) {
+  if (!e) return { ok: null, free: null, tier: null };
+  const active = typeof e.status === 'string' ? e.status === 'active' : null;
+  const p = e.pricing && (typeof e.pricing.input === 'number' || typeof e.pricing.output === 'number')
+    ? e.pricing
+    : (e.pricing && e.pricing_usd && (typeof e.pricing_usd.input === 'number' || typeof e.pricing_usd.output === 'number') ? e.pricing_usd : null);
+  if (!p) return { ok: active, free: null, tier: null };
+  const free = Number(p.input) === 0 && Number(p.output) === 0;
+  return { ok: active, free: active === false ? null : free, tier: free ? 'free' : 'topup' };
+}
+
 /** Read the probe response body until it proves the model is generating:
  *  for SSE the first `data: <payload>` line, for a plain JSON body (gateway
  *  ignored stream:true) any non-whitespace bytes. Resolves {ok,reason?};
@@ -1094,6 +1133,35 @@ async function verifyModels({ apiKey, providerId, models, signal, emit }) {
     } catch (e) {
       if (e && e.name === 'AbortError') throw e;
       log.wrn('agt', `verifikasi katalog ${providerId} gagal (${e.message}) — lanjut probe per model`);
+    }
+  }
+
+  // ---- fast path: the AUTHENTICATED catalogue (NgodeAI, T-ML64) ----
+  // One Bearer GET /models carries status + pricing for the whole list —
+  // the sweep costs zero chat probes and free-ness comes from the
+  // gateway's own pricing instead of a live answer (freeByProbe would lie:
+  // paid models answer too once the wallet has funds).
+  if (provider.catalogueSweep) {
+    try {
+      const entries = await fetchAuthCatalogue(apiKey, provider, signal);
+      const byId = new Map(entries.map((e) => [e.id, e]));
+      let ok = 0, dead = 0, unknown = 0;
+      for (const m of models) {
+        if (signal && signal.aborted) throw abortErr();
+        const e = byId.get(m);
+        const facts = authCatalogueFacts(e);
+        if (facts.ok === true) ok++; else if (facts.ok === false) dead++; else unknown++;
+        emit({
+          type: 'result', model: m, ok: facts.ok, free: facts.free, tier: facts.tier, ms: 0,
+          ...(facts.ok === false && e && e.status ? { reason: `status=${e.status}` } : {}),
+        });
+      }
+      log.inf('agt', `verifikasi katalog auth ${providerId}: ${ok} hidup / ${dead} mati / ${unknown} tak ada di katalog`);
+      emit({ type: 'done', ok, dead, unknown });
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      log.wrn('agt', `verifikasi katalog auth ${providerId} gagal (${e.message}) — lanjut probe per model`);
     }
   }
 

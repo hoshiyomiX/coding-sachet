@@ -63,6 +63,7 @@ class CodingSachetUnitTest {
     fun providerLookupFallsBackToApinex() {
         assertSame(Providers.NVIDIA, Providers.byId("nvidia"))
         assertSame(Providers.SEEK, Providers.byId("seek"))
+        assertSame(Providers.NGODEAI, Providers.byId("ngodeai"))
         assertSame(Providers.APINEX, Providers.byId("apinex"))
         assertSame(Providers.APINEX, Providers.byId(null))
         assertSame(Providers.APINEX, Providers.byId("bogus"))
@@ -70,12 +71,28 @@ class CodingSachetUnitTest {
 
     @Test
     fun providersHaveDistinctIdsAndValidUrls() {
-        assertEquals(3, Providers.ALL.size)
-        assertEquals(3, Providers.ALL.map { it.id }.toSet().size)
+        assertEquals(4, Providers.ALL.size)
+        assertEquals(4, Providers.ALL.map { it.id }.toSet().size)
         Providers.ALL.forEach { p ->
             assertTrue("baseUrl ${p.baseUrl} harus https", p.baseUrl.startsWith("https://"))
             assertTrue("docsUrl ${p.docsUrl} harus https", p.docsUrl.startsWith("https://"))
         }
+    }
+
+    @Test
+    fun ngodeaiProviderCarriesWalletPricingSemantics() {
+        // T-ML64: NgodeAI — gateway IDR prepaid. Free = pricing katalog 0
+        // (BUKAN freeByProbe: model berbayar juga menjawab begitu dompet
+        // terisi — jawaban live tidak boleh menandai gratis); free flag
+        // datang dari sweep katalog terautentikasi sisi server. Chip kuota
+        // = saldo dompet GET /v1/balance (mode "idr" → "Saldo: Rp …").
+        val ng = Providers.NGODEAI
+        assertEquals("ngodeai", ng.id)
+        assertEquals("ngodeai_live_", ng.keyPrefix)
+        assertEquals("ngodeai/glm-5.3-flash", ng.defaultModel)
+        assertNull("ngodeai tanpa prefiks free — badge dari pricing katalog", ng.freeModelPrefix)
+        assertFalse("validasi key ngodeai via /models, bukan chat", ng.validateViaChat)
+        assertTrue("chip saldo aktif utk ngodeai", ng.supportsQuota)
     }
 
     @Test

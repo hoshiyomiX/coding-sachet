@@ -1,9 +1,10 @@
 'use strict';
 // Coding Sachet agent server — configuration.
-// Three upstream providers are supported (all OpenAI-compatible):
-//   apinex — https://api.apinex.bond
-//   nvidia — https://build.nvidia.com (NIM)
-//   seek   — https://100milionseek.top (T-ML52)
+// Four upstream providers are supported (all OpenAI-compatible):
+//   apinex  — https://api.apinex.bond
+//   nvidia  — https://build.nvidia.com (NIM)
+//   seek    — https://100milionseek.top (T-ML52)
+//   ngodeai — https://llm.ngodeai.net (T-ML64)
 // The app picks one per request via the X-Sachet-Provider header.
 // Env overrides exist only for the automated test suite (mock gateways).
 
@@ -112,6 +113,41 @@ const providers = {
     // use (same probe semantics as NIM; jev-* judge models are filtered
     // out of the catalogue server-side, see fetchModels).
     freeByProbe: true,
+  },
+  ngodeai: {
+    // T-ML64 (owner order: "implementasi provider Ngodingai.net"):
+    // NgodeAI — OpenAI-compatible IDR gateway (llm.ngodeai.net, top-up
+    // QRIS/bank/crypto, credits never expire). 36 models behind one key:
+    // free tier = models whose own catalogue pricing is 0 (glm-5.3-flash,
+    // minimax-m3.1-flash, …) on the SHARED route; paid models (claude/gpt/
+    // gemini series, VIP route) are metered per token against the wallet
+    // — a request with balance < Rp 1 is refused 402 insufficient_balance
+    // BEFORE execution (verified live 2026-11-21). Success = HTTP 201 (any
+    // 2xx, never assert ==200). Streaming emits keepalive chunks with
+    // choices:[] and reasoning_content deltas — both tolerated by the
+    // parser. Rate limits undocumented → the 15 RPM client cap stays.
+    label: 'NgodeAI',
+    baseUrl: process.env.SACHET_NGODEAI_BASE_URL || 'https://llm.ngodeai.net/v1',
+    rpmLimit: 15,
+    rateLimitHint:
+      'Batas laju NgodeAI tercapai. ' +
+      'Tunggu sebentar lalu kirim ulang pesanmu.',
+    // Gateway default output limit applies (up to 512K); no override.
+    maxTokens: null,
+    // Quota = prepaid wallet: GET /v1/balance → {currency:'IDR',
+    // balance_idr} (verified live). Free models run on a Rp 0 balance, so
+    // the chip's number is OWNERSHIP (saldo), not an allowance.
+    quota: {
+      via: 'balance',
+      probePath: '/balance',
+    },
+    // The AUTHENTICATED /v1/models payload carries per-model status
+    // ('active'|'inactive' = maintenance) and pricing (IDR + USD per 1M) —
+    // one GET gives the whole sweep without spending a chat probe, and
+    // free-ness comes from pricing 0 (NOT freeByProbe: paid models also
+    // answer once the wallet has funds — a live answer proves nothing).
+    catalogueSweep: true,
+    freeByProbe: false,
   },
 };
 
@@ -265,7 +301,7 @@ const config = {
   dnsFallbackServers: ['1.1.1.1', '8.8.8.8'],
 };
 
-/** Resolve a provider id ("apinex" | "nvidia" | "seek") to its spec, or null. */
+/** Resolve a provider id ("apinex" | "nvidia" | "seek" | "ngodeai") to its spec, or null. */
 function providerById(id) {
   return (id && Object.prototype.hasOwnProperty.call(providers, id)) ? providers[id] : null;
 }

@@ -36,6 +36,7 @@ android {
         buildConfigField("String", "APINEX_BASE_URL", "\"https://api.apinex.bond/v1\"")
         buildConfigField("String", "NVIDIA_BASE_URL", "\"https://integrate.api.nvidia.com/v1\"")
         buildConfigField("String", "SEEK_BASE_URL", "\"https://100milionseek.top/v1\"")
+        buildConfigField("String", "NGODEAI_BASE_URL", "\"https://llm.ngodeai.net/v1\"")
         buildConfigField("String", "SERVER_PORT_DEFAULT", "\"8765\"")
         // Per-ABI guest facts, driven by CI (-PguestTriplet / -PnodeVersion).
         buildConfigField("String", "GUEST_TRIPLET", "\"${project.findProperty("guestTriplet") ?: "aarch64-linux-gnu"}\"")
