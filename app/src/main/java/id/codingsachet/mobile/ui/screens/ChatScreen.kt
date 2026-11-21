@@ -91,6 +91,7 @@ import id.codingsachet.mobile.Graph
 import id.codingsachet.mobile.api.ModelStatus
 import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
+import id.codingsachet.mobile.data.ToolCall
 import id.codingsachet.mobile.runtime.RuntimeState
 import id.codingsachet.mobile.ui.ChatEngine
 import id.codingsachet.mobile.ui.FolderIcon
@@ -104,6 +105,7 @@ import id.codingsachet.mobile.ui.formatTokenCount
 import id.codingsachet.mobile.ui.projectDir
 import id.codingsachet.mobile.ui.components.Markdownish
 import id.codingsachet.mobile.ui.components.ToolCard
+import id.codingsachet.mobile.ui.components.ToolCardGroup
 import id.codingsachet.mobile.ui.sachetSuccess
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -207,6 +209,13 @@ fun ChatScreen(
     val activeCallIds = if (busyNow) {
         msgs.lastOrNull { it.role == "assistant" }?.toolCalls?.map { it.id }?.toSet() ?: emptySet()
     } else emptySet()
+
+    // T-ML58 #2: history dipangkas jadi entri render — barisan pesan
+    // assistant bertool TANPA teks (putaran-putaran murni tool engine Pi)
+    // diringkas jadi satu grup; pesan bertext/user tampil apa adanya.
+    val entries = remember(msgs.size, busyNow) {
+        buildChatEntries(msgs, toolResults, activeCallIds)
+    }
 
     val listState = rememberLazyListState()
     LaunchedEffect(live?.text?.length, live?.cards?.size, live?.thinking?.length, msgs.size) {
@@ -322,8 +331,13 @@ fun ChatScreen(
                                         Graph.chats.reload()
                                         sessionsVersion++
                                         if (current?.id == sess.id) {
-                                            current = null
-                                            onSessionChange(null)
+                                            // T-ML58 #3: pilih sesi terbaru
+                                            // berikutnya (konsisten dengan
+                                            // fallback restore AppState) —
+                                            // bukan layar kosong.
+                                            val next = Graph.chats.sessions.firstOrNull()
+                                            current = next
+                                            onSessionChange(next)
                                         }
                                     }) {
                                         Icon(
@@ -531,7 +545,15 @@ fun ChatScreen(
                         contentPadding = PaddingValues(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(msgs) { m -> MessageBubble(m, toolResults, activeCallIds) }
+                        items(entries) { entry ->
+                            when (entry) {
+                                is ChatEntry.Single -> MessageBubble(entry.m, toolResults, activeCallIds)
+                                is ChatEntry.Group -> ToolCardGroup(
+                                    entry.cards,
+                                    String.format(s.toolGroupFmt, entry.cards.size),
+                                )
+                            }
+                        }
                         live?.let { l -> item { LiveBubble(l, onResume = { engine?.continueRun() }) } }
                     }
                 }
@@ -674,6 +696,7 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
 /** Persisted messages: user bubbles right, assistant content + tool cards left. */
 @Composable
 private fun MessageBubble(m: Msg, toolResults: Map<String, Msg>, activeCallIds: Set<String> = emptySet()) {
+    val s = LocalStrings.current
     when (m.role) {
         "user" -> {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -700,18 +723,19 @@ private fun MessageBubble(m: Msg, toolResults: Map<String, Msg>, activeCallIds: 
                         Column(Modifier.padding(12.dp)) { Markdownish(m.content) }
                     }
                 }
-                m.toolCalls?.forEach { call ->
-                    val result = toolResults[call.id]
-                    ToolCard(
-                        ToolCardUi(
-                            id = call.id,
-                            name = call.name,
-                            args = prettyArgs(call.args),
-                            output = result?.content,
-                            ok = result?.let { resultOk(it) },
-                            interrupted = result == null && call.id !in activeCallIds,
+                m.toolCalls?.let { calls ->
+                    if (calls.size >= 3) {
+                        // T-ML58 #2: satu putaran dengan banyak panggilan →
+                        // satu grup (mis. batch eksplorasi engine legacy).
+                        ToolCardGroup(
+                            calls.map { call -> cardFor(call, toolResults, activeCallIds) },
+                            String.format(s.toolGroupFmt, calls.size),
                         )
-                    )
+                    } else {
+                        calls.forEach { call ->
+                            ToolCard(cardFor(call, toolResults, activeCallIds))
+                        }
+                    }
                 }
             }
         }
@@ -725,6 +749,64 @@ private fun prettyArgs(args: JsonElement): String =
 private fun resultOk(m: Msg): Boolean {
     val first = m.content.lineSequence().firstOrNull() ?: return false
     return Regex("exit=0(\\D|$)").containsMatchIn(first) || m.content.contains("\"ok\":true")
+}
+
+/** Kartu UI untuk satu panggilan tool tersimpan (dipakai MessageBubble dan
+ *  grup entri history). */
+private fun cardFor(call: ToolCall, toolResults: Map<String, Msg>, activeCallIds: Set<String>): ToolCardUi {
+    val result = toolResults[call.id]
+    return ToolCardUi(
+        id = call.id,
+        name = call.name,
+        args = prettyArgs(call.args),
+        output = result?.content,
+        ok = result?.let { resultOk(it) },
+        interrupted = result == null && call.id !in activeCallIds,
+    )
+}
+
+/** Satu entri render kolom chat (T-ML58 #2). [Group] menampung barisan
+ *  putaran tool tanpa teks — dipangkas jadi satu baris grup. */
+sealed interface ChatEntry {
+    data class Single(val m: Msg) : ChatEntry
+    data class Group(val cards: List<ToolCardUi>, val msgs: List<Msg>) : ChatEntry
+}
+
+/**
+ * T-ML58 #2 (murni, teruji JVM): pangkas history jadi entri render.
+ * Barisan pesan assistant yang HANYA memanggil tool (tanpa teks — bentuk
+ * khas engine Pi: satu tool per putaran, puluhan putaran) diringkas jadi
+ * SATU [ChatEntry.Group]; pesan berikutnya yang bertext / dari user
+ * memutus barisan. Pesan hasil tool (role "tool") tidak pernah memutus
+ * barisan — mereka dirender di dalam kartu panggilnya.
+ */
+internal fun buildChatEntries(
+    msgs: List<Msg>,
+    toolResults: Map<String, Msg> = emptyMap(),
+    activeCallIds: Set<String> = emptySet(),
+): List<ChatEntry> {
+    val out = ArrayList<ChatEntry>(msgs.size)
+    var pending = ArrayList<Msg>()
+    fun flush() {
+        val cards = pending.flatMap { it.toolCalls.orEmpty() }.map { cardFor(it, toolResults, activeCallIds) }
+        if (pending.size >= 2 && cards.size >= 2) {
+            out += ChatEntry.Group(cards, pending)
+        } else {
+            pending.forEach { out += ChatEntry.Single(it) }
+        }
+        pending = ArrayList()
+    }
+    for (m in msgs) {
+        when {
+            // Hasil tool menyusul assistant-nya — tidak memutus barisan
+            // (kartunya dirender dalam grup yang sama).
+            m.role == "tool" -> if (pending.isNotEmpty()) pending += m else out += ChatEntry.Single(m)
+            m.role == "assistant" && !m.toolCalls.isNullOrEmpty() && m.content.isBlank() -> pending += m
+            else -> { flush(); out += ChatEntry.Single(m) }
+        }
+    }
+    flush()
+    return out
 }
 
 /** The in-flight turn rendered below the history. */
@@ -774,7 +856,15 @@ private fun LiveBubble(l: LiveTurn, onResume: () -> Unit = {}) {
                 Column(Modifier.padding(12.dp)) { Markdownish(l.text) }
             }
         }
-        l.cards.forEach { ToolCard(it) }
+        // T-ML58 #2: kartu putaran BERJALAN — yang sudah selesai dalam
+        // giliran ini diringkas; 2 kartu terakhir tetap tampil (yang sedang
+        // dieksekusi + konteks terdekatnya).
+        val tailCount = if (l.cards.size >= 5) 2 else l.cards.size
+        val older = l.cards.dropLast(tailCount)
+        if (older.isNotEmpty()) {
+            ToolCardGroup(older, String.format(s.toolGroupPriorFmt, older.size))
+        }
+        l.cards.takeLast(tailCount).forEach { ToolCard(it) }
         if (l.error != null) {
             Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.errorContainer) {
                 Column(Modifier.padding(10.dp)) {

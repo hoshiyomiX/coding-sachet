@@ -5,6 +5,8 @@ import id.codingsachet.mobile.api.Providers
 import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
 import id.codingsachet.mobile.data.ToolCall
+import id.codingsachet.mobile.data.snapshotSession
+import id.codingsachet.mobile.data.writeSessionFile
 import id.codingsachet.mobile.runtime.DumpFormat
 import id.codingsachet.mobile.ui.ChatEngine
 import id.codingsachet.mobile.ui.EnStrings
@@ -13,9 +15,13 @@ import id.codingsachet.mobile.ui.ProjectNames
 import id.codingsachet.mobile.ui.SachetStrings
 import id.codingsachet.mobile.ui.Schemes
 import id.codingsachet.mobile.ui.canContinueFromHistory
+import id.codingsachet.mobile.ui.components.toolLabel
 import id.codingsachet.mobile.ui.formatTokenCount
 import id.codingsachet.mobile.ui.projectDir
+import id.codingsachet.mobile.ui.screens.ChatEntry
+import id.codingsachet.mobile.ui.screens.buildChatEntries
 import id.codingsachet.mobile.ui.stringsFor
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -632,5 +638,110 @@ class CodingSachetUnitTest {
                 it.systemPrompt!!.contains("BAHASA JAWABAN (dinamis)")
             )
         }
+    }
+
+    // ---------- T-ML58 #3: persistensi sesi atomik ----------
+
+    @Test
+    fun sessionSnapshotIsDetachedCopy() {
+        // Snapshot dipakai thread IO saat thread utama masih menambah pesan
+        // (SSE) — salinannya harus terlepas dari list hidup.
+        val s = Session(id = "snap1", title = "t", created = 1L, model = "m")
+        s.messages += Msg(role = "user", content = "halo")
+        val snap = snapshotSession(s)
+        s.messages += Msg(role = "assistant", content = "hai")
+        assertEquals("snapshot tidak boleh ikut berubah bersama sesi hidup", 1L, snap.messages.size.toLong())
+        assertEquals(2L, s.messages.size.toLong())
+        assertEquals(0L, snap.tokensUsed)
+    }
+
+    @Test
+    fun sessionFileWritesAreAtomicAndLeaveNoTemp() {
+        val dir = java.nio.file.Files.createTempDirectory("sachet-store").toFile()
+        try {
+            val json = Json { ignoreUnknownKeys = true }
+            val s = Session(
+                id = "atom1", title = "t", created = 1L, model = "m",
+                messages = mutableListOf(Msg(role = "user", content = "x")),
+            )
+            writeSessionFile(dir, s, json)
+            // Tulis ulang — penggantian file lama juga harus mulus.
+            writeSessionFile(dir, s.copy(tokensUsed = 5), json)
+            val dst = java.io.File(dir, "atom1.json")
+            assertEquals(1, dir.listFiles { f -> f.name == "atom1.json" }?.size)
+            val reloaded = json.decodeFromString<Session>(dst.readText())
+            assertEquals(5L, reloaded.tokensUsed)
+            assertEquals(1, reloaded.messages.size)
+            assertTrue(
+                "file .tmp harus sudah ter-rename (tidak ada sisa)",
+                dir.listFiles { f -> f.name.endsWith(".tmp") }.isNullOrEmpty(),
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    // ---------- T-ML58 #2: peringkasan kartu tool di history ----------
+
+    @Test
+    fun toolLabelsCoverPiNativeToolNames() {
+        // Engine Pi memancarkan nama tool ASLINYA (read/write/edit/grep/glob)
+        // — tanpa pemetaan, kartu menampilkan nama mentah bahasa Inggris
+        // (bukti keluhan owner: campuran "terminal, read, menulis, membaca").
+        for (s in listOf(IdStrings, EnStrings)) {
+            for (name in listOf("bash", "read", "write", "edit", "grep", "glob")) {
+                val label = toolLabel(name, s)
+                assertTrue(
+                    "$name harus terpetakan ke label lokal (dapat: \"$label\")",
+                    label.isNotBlank() && label != name,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun chatEntriesGroupConsecutiveToolOnlyRounds() {
+        fun assistantTool(id: String, vararg calls: Pair<String, String>) = Msg(
+            role = "assistant", content = "",
+            toolCalls = calls.map { ToolCall(id = it.first, name = it.second) },
+        )
+        fun toolResult(id: String) = Msg(role = "tool", content = "exit=0", toolCallId = id)
+
+        val msgs = listOf(
+            Msg(role = "user", content = "buat file"),
+            assistantTool("a1", "a1" to "bash"), toolResult("a1"),
+            assistantTool("a2", "a2" to "read"), toolResult("a2"),
+            assistantTool("a3", "a3" to "write"), toolResult("a3"),
+            Msg(role = "assistant", content = "Selesai — ringkasan pekerjaan."),
+        )
+        val toolResults = listOf("a1", "a2", "a3").associate { it to toolResult(it) }
+        val entries = buildChatEntries(msgs, toolResults)
+        // 1) user, 2) GRUP 3 putaran tool, 3) jawaban final bertext.
+        assertEquals(3L, entries.size.toLong())
+        val group = entries[1] as ChatEntry.Group
+        // Grup menampung assistant + hasil tool-nya (dirender dalam kartu).
+        assertEquals(6L, group.msgs.size.toLong())
+        assertEquals(3L, group.cards.size.toLong())
+        assertEquals(listOf("bash", "read", "write"), group.cards.map { it.name })
+        // Hasil tool tersambung ke kartu masing-masing (bukan "terputus").
+        assertTrue(group.cards.all { it.ok == true && it.output == "exit=0" })
+    }
+
+    @Test
+    fun chatEntriesKeepTextRoundsAndSingleToolsIndividual() {
+        // Putaran bertext (narasi model) dan putaran tool tunggal tetap
+        // tampil apa adanya — grup hanya untuk BARISAN putaran tool.
+        val msgs = listOf(
+            Msg(role = "user", content = "cek"),
+            Msg(
+                role = "assistant", content = "Aku cek dulu—",
+                toolCalls = listOf(ToolCall(id = "b1", name = "bash")),
+            ),
+            Msg(role = "tool", content = "exit=0", toolCallId = "b1"),
+            Msg(role = "assistant", content = "Hasilnya oke."),
+        )
+        val entries = buildChatEntries(msgs)
+        assertEquals(4, entries.size)
+        assertTrue(entries.all { it is ChatEntry.Single })
     }
 }

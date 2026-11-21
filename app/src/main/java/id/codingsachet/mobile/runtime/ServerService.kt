@@ -89,7 +89,16 @@ class ServerService : Service() {
     }
 
     private fun notification(text: String): Notification {
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        // T-ML58 #3: tap kartu notifikasi harus melanjutkan instance yang
+        // sudah hidup. Tanpa singleTask + flag ini, Android menumpuk
+        // MainActivity BARU di atas yang lama (launchMode standard) — state
+        // live/reset tampil aneh dan chat seolah "terhapus".
+        val open = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
         val stop = PendingIntent.getService(
             this, 1, Intent(this, ServerService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE
         )

@@ -28,21 +28,27 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import id.codingsachet.mobile.ui.LocalStrings
 import id.codingsachet.mobile.ui.ToolCardUi
 import id.codingsachet.mobile.ui.sachetSuccess
 
 /** Small monogram chip identifying a tool. Colors follow the theme so
- *  both light and dark modes keep readable contrast. */
+ *  both light and dark modes keep readable contrast. T-ML58 #2: engine Pi
+ *  memancarkan nama tool ASLINYA (read/write/edit/grep/glob) — petakan
+ *  juga, bukan hanya nama tool engine legacy (read_file/write_file/…). */
 @Composable
 private fun ToolBadge(name: String) {
-    val (letter, color) = when {
-        name == "bash" -> "$" to MaterialTheme.colorScheme.primary
-        name == "read_file" -> "R" to MaterialTheme.colorScheme.secondary
-        name == "write_file" -> "W" to sachetSuccess()
-        name == "list_dir" -> "L" to MaterialTheme.colorScheme.tertiary
-        name == "todo" -> "C" to sachetSuccess()
+    val (letter, color) = when (name) {
+        "bash" -> "$" to MaterialTheme.colorScheme.primary
+        "read_file", "read" -> "R" to MaterialTheme.colorScheme.secondary
+        "write_file", "write" -> "W" to sachetSuccess()
+        "edit" -> "E" to sachetSuccess()
+        "list_dir" -> "L" to MaterialTheme.colorScheme.tertiary
+        "todo" -> "C" to sachetSuccess()
+        "grep" -> "G" to MaterialTheme.colorScheme.tertiary
+        "glob" -> "*" to MaterialTheme.colorScheme.tertiary
         else -> "T" to MaterialTheme.colorScheme.secondary
     }
     Box(
@@ -53,20 +59,27 @@ private fun ToolBadge(name: String) {
     }
 }
 
-private fun toolLabel(name: String, s: id.codingsachet.mobile.ui.SachetStrings): String = when (name) {
+internal fun toolLabel(name: String, s: id.codingsachet.mobile.ui.SachetStrings): String = when (name) {
     "bash" -> s.toolBash
-    "read_file" -> s.toolRead
-    "write_file" -> s.toolWrite
+    "read_file", "read" -> s.toolRead
+    "write_file", "write" -> s.toolWrite
+    "edit" -> s.toolEdit
     "list_dir" -> s.toolList
     "todo" -> s.toolTodo
+    "grep" -> s.toolGrep
+    "glob" -> s.toolGlob
+    "" -> s.toolUnknown
     else -> name
 }
 
 /** One line summary of the tool call shown when collapsed. */
-private fun summarize(card: ToolCardUi): String = when (card.name) {
+internal fun summarize(card: ToolCardUi): String = when (card.name) {
     "bash" -> firstJsonField(card.args, "command") ?: card.args.lineSequence().firstOrNull() ?: ""
-    "read_file" -> firstJsonField(card.args, "path") ?: ""
-    "write_file" -> firstJsonField(card.args, "path") ?: ""
+    "read_file", "read" -> firstJsonField(card.args, "path") ?: ""
+    "write_file", "write" -> firstJsonField(card.args, "path") ?: ""
+    "edit" -> firstJsonField(card.args, "path") ?: firstJsonField(card.args, "file_path") ?: ""
+    "glob" -> firstJsonField(card.args, "pattern") ?: firstJsonField(card.args, "path") ?: ""
+    "grep" -> firstJsonField(card.args, "pattern") ?: firstJsonField(card.args, "query") ?: ""
     "list_dir" -> firstJsonField(card.args, "path") ?: ""
     "todo" -> firstJsonField(card.args, "aksi") ?: ""
     else -> card.args.take(60)
@@ -149,6 +162,68 @@ fun ToolCard(card: ToolCardUi) {
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * T-ML58 #2: N kartu tool diringkas jadi SATU baris grup yang bisa dibuka.
+ * Bukti lapangan 1.0.58: sesi engine Pi 418K tok = puluhan putaran tool, tiap
+ * putaran menggambar kartu penuh — chat dipenuhi baris "Terminal / Baca file
+ * / Tulis file / read / write / …". Satu baris grup menahan semua kartu
+ * putaran yang sudah lewat; mengetuknya membuka kartu individual.
+ */
+@Composable
+fun ToolCardGroup(cards: List<ToolCardUi>, title: String) {
+    val s = LocalStrings.current
+    var open by remember(cards.firstOrNull()?.id, cards.size) { mutableStateOf(false) }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth().animateContentSize(),
+    ) {
+        Column(
+            Modifier.clickable { open = !open }.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleSmall)
+                    // Rincian jenis tool, mis. "Terminal ×3 · Baca file ×2".
+                    val breakdown = cards.groupingBy { it.name }.eachCount()
+                        .entries.sortedByDescending { it.value }
+                        .joinToString(" · ") { (n, c) -> "${toolLabel(n, s)} ×$c" }
+                    Text(
+                        breakdown,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = if (open) 3 else 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                // Status ringkas grup: ada gagal → gagal; ada yang masih
+                // berjalan → berjalan; ada terputus (run mati) → terputus.
+                val running = cards.count { it.ok == null && !it.interrupted }
+                val failed = cards.count { it.ok == false }
+                val interrupted = cards.count { it.interrupted }
+                val (status, color) = when {
+                    failed > 0 -> s.toolFailed to MaterialTheme.colorScheme.error
+                    running > 0 -> s.toolRunning to MaterialTheme.colorScheme.primary
+                    interrupted > 0 -> s.toolInterrupted to MaterialTheme.colorScheme.onSurfaceVariant
+                    else -> s.toolDone to sachetSuccess()
+                }
+                Text(status, style = MaterialTheme.typography.labelSmall, color = color)
+                Icon(
+                    if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (open) cards.forEach { ToolCard(it) }
         }
     }
 }

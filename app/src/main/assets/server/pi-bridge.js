@@ -58,12 +58,26 @@ function envInt(name, dflt) {
 const RETRY_DELAY_MS = envInt('SACHET_PI_RETRY_DELAY_MS', 15000);
 const RETRY_MAX = envInt('SACHET_PI_RETRY_MAX', 2);
 
-// Lampiran system prompt statis (PoC): aturan bahasa T-ML41 diteruskan ke
-// engine baru; sisanya memakai prompt bawaan Pi yang sudah diuji untuk
-// tool-toolnya sendiri (read/bash/edit/write).
+// Lampiran system prompt statis. Aturan bahasa T-ML41 diteruskan ke engine
+// baru; sisanya memakai prompt bawaan Pi yang sudah diuji untuk tool-toolnya
+// sendiri (read/bash/edit/write).
+//
+// T-ML58 #1 (owner order: "coding task sangat lambat & boros token", bukti
+// logcat 1.0.58: ptok 50K/giliran, sesi 418K tok, run 3m10s utk prompt 82ch):
+// engine Pi TIDAK mewarisi disiplin hemat putaran engine legacy (T-ML40) —
+// tiap putaran tool mengirim ulang SELURUH konteks ke provider 50 tok/s.
+// Disiplin di bawah menekan jumlah putaran: batching, tanpa baca ulang,
+// grep-first, jawaban ringkas, berhenti saat mentok.
 const APPEND_SYSTEM =
   'Always answer in the same language as the user message. ' +
-  'Finish coding tasks end-to-end with the tools available.';
+  'Finish coding tasks end-to-end with the tools available.\n' +
+  'Work economically — every additional round is slow on this device and re-sends the whole conversation as input tokens:\n' +
+  '- Batch independent commands into ONE bash call (&& or ;) or several tool calls in a single reply.\n' +
+  '- Never re-read a file you already read this session; read only the line ranges you need (view_range).\n' +
+  '- Prefer targeted searches (grep, glob) over dumping whole files or directories.\n' +
+  '- Do not narrate or announce steps before doing them — act first, then summarize at the end.\n' +
+  '- Keep conversational answers short. Write code carefully but concisely; do not restate file contents in the reply.\n' +
+  '- If two consecutive rounds make no progress, stop exploring and report the blocker.';
 
 /** Apakah bundle Pi tersedia di guest (dipakai server.js untuk memilih rute
  *  dan /health untuk melapor). */
@@ -540,4 +554,4 @@ async function runPiChat({ apiKey, providerId, model, messages, signal, emit, wo
   }
 }
 
-module.exports = { runPiChat, piBundleAvailable, killChild, _internals: { canonicalMsg, hashPrefix, promptFor, toAppAssistant, writeModelsJson, readState, writeState, isRetryableError, activeChildCount: () => (active && active.proc.exitCode === null ? 1 : 0), PiRpc } };
+module.exports = { runPiChat, piBundleAvailable, killChild, _internals: { canonicalMsg, hashPrefix, promptFor, toAppAssistant, writeModelsJson, readState, writeState, isRetryableError, APPEND_SYSTEM, activeChildCount: () => (active && active.proc.exitCode === null ? 1 : 0), PiRpc } };

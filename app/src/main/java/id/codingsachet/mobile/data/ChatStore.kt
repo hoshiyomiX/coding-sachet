@@ -50,6 +50,10 @@ class ChatStore(ctx: Context) {
     private val dir: File = File(ctx.filesDir, "sessions").apply { mkdirs() }
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
     private val index = LinkedHashMap<String, Session>()
+    // T-ML58 #3: persist() dipanggil PER EVENT SSE dari koroutine IO yang
+    // tidak dijadwalkan — dua writeText bersamaan pada file yang sama
+    // saling menimpa tengah-tulisan. Semua tulisan dilewatkan kunci ini.
+    private val writeLock = Any()
     val sessions: List<Session> get() = index.values.sortedByDescending { it.created }
 
     init { reload() }
@@ -80,13 +84,21 @@ class ChatStore(ctx: Context) {
 
     fun save(s: Session) {
         // Best effort synchronous write; files are small. Call from a background thread.
-        runCatching { File(dir, s.id + ".json").writeText(json.encodeToString(s)) }
-            .onFailure { Logx.e("store", "gagal menyimpan sesi ${s.id}", it) }
+        // T-ML58 #3: atomic + serialized (snapshotSession + writeSessionFile) —
+        // tulis in-place yang lama mengtruncate dulu, jadi proses yang dibunuh
+        // di tengah tulis (LMK/OEM killer saat app di-background) meninggalkan
+        // JSON terpotong → reload membuang seluruh sesi → "chat terhapus".
+        synchronized(writeLock) {
+            runCatching { writeSessionFile(dir, snapshotSession(s), json) }
+                .onFailure { Logx.e("store", "gagal menyimpan sesi ${s.id}", it) }
+        }
     }
 
     fun delete(s: Session) {
         index.remove(s.id)
         File(dir, s.id + ".json").delete()
+        // Sisa tulis atomik yang belum sempat di-rename ikut dibuang.
+        File(dir, s.id + ".json.tmp").delete()
     }
 
     /** Keep a short, human title derived from the first user message. */
@@ -94,5 +106,43 @@ class ChatStore(ctx: Context) {
         if (s.title.isNotBlank()) return
         val first = s.messages.firstOrNull { it.role == "user" }?.content ?: return
         s.title = first.lineSequence().firstOrNull()?.take(48)?.ifBlank { "Chat" } ?: "Chat"
+    }
+}
+
+/**
+ * T-ML58 #3: snapshot sesi yang aman diserialisasi dari thread lain —
+ * `messages` adalah list hidup yang dimutasi thread utama selama SSE
+ * mengalir; iterasi langsung rawan CME (lesson T-ML42). Copy-nya dicoba
+ * ulang sebentar — window rasanya mikrodetik, dan kegagalan snapshot
+ * TIDAK pernah merusak file lama (tulis atomik lewat file sementara).
+ */
+internal fun snapshotSession(s: Session): Session {
+    var last: Exception? = null
+    repeat(3) {
+        try {
+            return s.copy(messages = ArrayList(s.messages))
+        } catch (e: Exception) {
+            last = e
+        }
+    }
+    throw last ?: IllegalStateException("snapshot sesi ${s.id} gagal")
+}
+
+/**
+ * T-ML58 #3: tulis atomik — konten ditulis ke file sementara lalu
+ * di-rename menggantikan file sesi. `File.writeText` biasa membuka file
+ * LAMA dengan truncate sebelum menulis: proses dibunuh di tengah tulis
+ * menyisakan JSON terpotong yang dibuang seluruhnya saat reload. Rename
+ * dalam satu direktori bersifat atomik — file lama selalu utuh sampai
+ * penggantinya siap penuh.
+ */
+internal fun writeSessionFile(dir: File, s: Session, json: Json) {
+    val dst = File(dir, s.id + ".json")
+    val tmp = File(dir, s.id + ".json.tmp")
+    tmp.writeText(json.encodeToString(s))
+    if (!tmp.renameTo(dst)) {
+        // Fallback teoretis (rename antar-filesystem) — salin lalu hapus.
+        tmp.copyTo(dst, overwrite = true)
+        tmp.delete()
     }
 }

@@ -292,6 +292,26 @@ test('pi: unit — klasifikasi error retryable (T-ML57)', () => {
   assert.ok(!isRetryableError(''));
 });
 
+test('pi: unit — APPEND_SYSTEM memuat disiplin hemat putaran (T-ML58 #1)', () => {
+  // Bukti lapangan 1.0.58 (logcat 11:49): ptok 50.617/giliran, sesi 418.339
+  // tok untuk prompt 82ch — engine Pi tidak mewarisi disiplin T-ML40 dan
+  // tiap putaran tool mengirim ulang SELURUH konteks ke provider 50 tok/s.
+  // Lampiran system prompt kini menegakkan kontrak hemat yang sama.
+  const p = _internals.APPEND_SYSTEM;
+
+  // Aturan bahasa T-ML41 tetap diteruskan.
+  assert.ok(p.includes('Always answer in the same language as the user message'));
+
+  // Kontrak hemat putaran (T-ML58 #1):
+  assert.ok(p.includes('Batch independent commands'), 'perintah independen digabung');
+  assert.ok(p.includes('Never re-read a file'), 'tidak membaca ulang file');
+  assert.ok(p.includes('view_range'), 'baca per rentang baris');
+  assert.ok(/grep/i.test(p), 'grep-first alih-alih dump file');
+  assert.ok(p.includes('Do not narrate'), 'tanpa narasi langkah');
+  assert.ok(p.includes('no progress'), 'berhenti saat dua putaran mentok');
+  assert.ok(p.includes('restate file contents'), 'jawaban tidak menyalin ulang isi file');
+});
+
 test('pi: auto-retry — 503 mid-run setelah tool → ulang otomatis → sukses (T-ML57)', async () => {
   assert.ok(bundleReady, bundleNote || 'bundle Pi tidak siap');
 

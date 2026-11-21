@@ -43,8 +43,14 @@ class AppState(
      * composable) so it survives opening Settings/Files and back — and is
      * restored from disk on launch via [Prefs.lastSessionId], so closing
      * the app or a process death never loses the current chat.
+     *
+     * T-ML58 #3: when the saved id points nowhere (prefs write lost to a
+     * process kill, or the file could not be read) fall back to the NEWEST
+     * session instead of a blank screen — the conversation reopens, it does
+     * not read as "deleted".
      */
     var currentSession: Session? = Graph.chats.get(Graph.prefs.lastSessionId)
+        ?: Graph.chats.sessions.firstOrNull()
         private set
 
     /** Switch the open session and persist it as the last one used. */
