@@ -515,6 +515,8 @@ class ChatEngine(val session: Session) {
             atau /sdcard/coding-sachet bila tanpa proyek.
             Lingkungan: node, bash, dan git tersedia; python TIDAK tersedia secara bawaan —
             pakai node untuk skrip, atau instal python via apt bila memang perlu.
+            Git sudah dikonfigurasi (safe.directory + core.fileMode=false) untuk /sdcard —
+            jangan menambahkan safe.directory manual dan jangan menonaktifkan kepemilikan git.
 
             BAHASA JAWABAN (dinamis): selalu ikuti bahasa pesan pengguna yang TERAKHIR —
             pesan Inggris → jawab Inggris, pesan Indonesia → jawab Indonesia, dan seterusnya.

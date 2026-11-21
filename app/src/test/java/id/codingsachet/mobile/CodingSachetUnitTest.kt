@@ -8,6 +8,7 @@ import id.codingsachet.mobile.data.ToolCall
 import id.codingsachet.mobile.data.snapshotSession
 import id.codingsachet.mobile.data.writeSessionFile
 import id.codingsachet.mobile.runtime.DumpFormat
+import id.codingsachet.mobile.runtime.GitSetup
 import id.codingsachet.mobile.ui.ChatEngine
 import id.codingsachet.mobile.ui.EnStrings
 import id.codingsachet.mobile.ui.IdStrings
@@ -743,5 +744,32 @@ class CodingSachetUnitTest {
         val entries = buildChatEntries(msgs)
         assertEquals(4, entries.size)
         assertTrue(entries.all { it is ChatEntry.Single })
+    }
+
+    // ---------- T-ML59: baseline git (dubious ownership di /sdcard) ----------
+
+    @Test
+    fun gitSetupWritesBaselineIntoEmptyConfig() {
+        val text = GitSetup.merge(null)
+        assertTrue("safe.directory wajib ada", text.contains("[safe]"))
+        assertTrue("safe.directory harus * (folder proyek dinamis)", text.contains("directory = *"))
+        assertTrue("fileMode=false wajib (FUSE 0777)", text.contains("fileMode = false"))
+        assertTrue(GitSetup.isConfigured(text))
+        // Baris konfigurasi git tidak boleh berindentasi spasi (harus TAB).
+        text.lines().filter { it.trim().startsWith("directory") || it.trim().startsWith("fileMode") }
+            .forEach { assertTrue("indentasi harus TAB: $it", it.startsWith("\t")) }
+    }
+
+    @Test
+    fun gitSetupKeepsUserConfigAndIsIdempotent() {
+        val user = "[user]\n\tname = Sachet\n\temail = s@example.com\n"
+        val merged = GitSetup.merge(user)
+        assertTrue("config pengguna harus utuh", merged.contains("name = Sachet"))
+        assertTrue(GitSetup.isConfigured(merged))
+        // Boot berikutnya tidak boleh menduplikasi blok.
+        assertEquals(merged, GitSetup.merge(merged))
+        assertEquals(1, Regex(Regex.escape(GitSetup.MARKER)).findAll(merged).count())
+        // Teks kosong/spasi juga diperlakukan sebagai config belum ada.
+        assertEquals(GitSetup.block(), GitSetup.merge("  \n"))
     }
 }

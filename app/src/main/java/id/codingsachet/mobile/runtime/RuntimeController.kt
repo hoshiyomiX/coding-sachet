@@ -146,6 +146,7 @@ class RuntimeController(
             writeServerFiles()
             installPiBundle()
             ensureRuntimeLibs()
+            ensureGitBaseline()
             smokeTest()
 
             prefs.runtimeReady = true
@@ -225,6 +226,27 @@ class RuntimeController(
         // marker versi tidak cocok atau rpc-entry hilang (T-ML45).
         runCatching { ensurePiBundle() }
             .onFailure { logLine("Gagal memasang bundle Pi: ${it.message}") }
+        // T-ML59: heal baseline git setiap boot (murah, idempoten) — rootfs
+        // lama yang dibuat sebelum fix ini tetap dapat safe.directory.
+        runCatching { ensureGitBaseline() }
+            .onFailure { logLine("Gagal memasang baseline git: ${it.message}") }
+    }
+
+    /**
+     * T-ML59: file di /sdcard selalu milik uid aplikasi, sedangkan git di
+     * dalam proot berjalan sebagai root → `fatal: detected dubious ownership`
+     * di SETIAP repo baru. Tulis baseline safe.directory ke /etc/gitconfig +
+     * /root/.gitconfig (lihat [GitSetup]); isi config pengguna dipertahankan.
+     */
+    private fun ensureGitBaseline() {
+        for (guest in listOf(GitSetup.SYSTEM_CONFIG_GUEST, GitSetup.GLOBAL_CONFIG_GUEST)) {
+            val f = paths.host(guest)
+            val current = if (f.isFile) f.readText() else null
+            if (GitSetup.isConfigured(current)) continue
+            f.parentFile?.mkdirs()
+            f.delete()
+            f.writeText(GitSetup.merge(current))
+        }
     }
 
     /** Extract the pinned Pi RPC bundle into the guest rootfs (T-ML45).
