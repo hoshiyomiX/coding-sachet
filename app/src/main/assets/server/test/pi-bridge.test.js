@@ -41,6 +41,9 @@ if (bundleReady) {
   process.env.SACHET_PI_STATE_DIR = path.join(ROOT, 'state');
 }
 process.env.SACHET_NO_WARMUP = '1';
+// T-ML57: ulangan otomatis cepat untuk test (produksi: jeda 15s, 2 ulangan).
+process.env.SACHET_PI_RETRY_DELAY_MS = '400';
+process.env.SACHET_PI_RETRY_MAX = '2';
 
 const { runPiChat, killChild, piBundleAvailable, _internals } = require('../pi-bridge');
 const { config } = require('../config');
@@ -141,7 +144,7 @@ test('pi: sesi bertahan melewati respawn child (kontinuitas)', async () => {
 
   // "Restart server": child dibunuh keras — state sesi hanya di disk.
   await killChild();
-  assert.strictEqual(activeChildCount(), 0, 'child harus benar-benar mati');
+  assert.strictEqual(pgrepChildCount(), 0, 'child harus benar-benar mati');
 
   // Turn 2: app mengirim history penuh (m1 + added1 + user baru).
   const m2 = m1.concat(added1, [{ role: 'user', content: 'Masih ingat marker tadi?' }]);
@@ -245,7 +248,7 @@ test('pi: error model mid-run → child dibuang, retry respawn bersih (T-ML55)',
     apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-mini',
     messages: m1, workdir, emit: () => {},
   }));
-  assert.strictEqual(activeChildCount(), 0, 'zombie child harus sudah dibunuh setelah error mid-run (opsi A)');
+  assert.strictEqual(pgrepChildCount(), 0, 'zombie child harus sudah dibunuh setelah error mid-run (opsi A)');
 
   await gw1.close();
 
@@ -264,12 +267,125 @@ test('pi: error model mid-run → child dibuang, retry respawn bersih (T-ML55)',
   await gw2.close();
 });
 
-/** Jumlah child hidup (untuk assert kill). */
-function activeChildCount() {
-  // Tidak diekspor langsung — dipakai lewat efek: piBundleAvailable tidak
-  // relevan; jembatan paling sederhana = cek tidak ada node child tersisa
-  // dengan rpc-entry di cmdline. Cukup longgar untuk tes ini.
+test('pi: unit — klasifikasi error retryable (T-ML57)', () => {
+  const { isRetryableError } = _internals;
+
+  // Bentuk lapangan (insiden 2026-11-21): Pi mem-prefix status HTTP.
+  assert.ok(isRetryableError('502 {"title":"Error 502: Bad gateway","status":502,"zone":"100milionseek.top"}'));
+  assert.ok(isRetryableError('503 {"error":{"message":"The service is busy right now."}}'));
+  assert.ok(isRetryableError('fetch failed'));
+  assert.ok(isRetryableError('socket hang up'));
+  assert.ok(isRetryableError('read ECONNRESET'));
+  assert.ok(isRetryableError('terminated'));
+  assert.ok(isRetryableError('529 {"error":{"type":"overloaded_error"}}'));
+
+  // Konfigurasi/salah kunci — ulang tidak menolong.
+  assert.ok(!isRetryableError('401 {"error":{"message":"Invalid token"}}'));
+  assert.ok(!isRetryableError('402 Payment required: saldo habis'));
+  assert.ok(!isRetryableError('404 model tidak dikenal'));
+
+  // Watchdog internal + child mati: bukan domain auto-retry.
+  assert.ok(!isRetryableError('timeout menunggu agent_settled'));
+  assert.ok(!isRetryableError('timeout 30000ms menunggu respons RPC'));
+  assert.ok(!isRetryableError('proses Pi keluar (kode null sinyal SIGKILL)'));
+  assert.ok(!isRetryableError('bundle Pi tidak ditemukan di /opt/sachet/pi-bundle'));
+  assert.ok(!isRetryableError(''));
+});
+
+test('pi: auto-retry — 503 mid-run setelah tool → ulang otomatis → sukses (T-ML57)', async () => {
+  assert.ok(bundleReady, bundleNote || 'bundle Pi tidak siap');
+
+  // Replika insiden 08:51 (1.0.57-571): putaran PERTAMA sehat (pesan
+  // assistant + tool sudah terkirim ke app), lalu 503 menimpa call
+  // berikutnya sampai Pi menyerah. Latch `recovered` diputar tepat di
+  // jendela antara child dibunuh dan respawn ulangan.
+  let recovered = false;
+  const gw = await startMockGateway(
+    [
+      { kind: 'tools', text: 'Cek dulu.', calls: [{ id: 'call_r1', name: 'bash', args: { command: 'echo retry-marker > retry.txt' } }], usage: USAGE_A },
+      { kind: 'text', text: 'Pulih setelah retry.', usage: USAGE_C },
+    ],
+    { failChatWhile: (i) => i >= 2 && !recovered },
+  );
+  useGateway(gw);
+
+  // try/finally: assertion gagal pun gateway WAJIB ditutup — server yang
+  // tetap listening membuat event loop test runner tidak pernah drain.
+  try {
+    const workdir = path.join(ROOT, 'work5');
+    const events = [];
+    // Deteksi jendela retry memakai state modul (_internals.activeChildCount)
+    // — deterministik, bebas race /proc. pgrep eksternal terbukti bisa
+    // mengembalikan hitungan palsu 0 persis di window spawn yang sibuk.
+    const bridgeCount = _internals.activeChildCount;
+
+    // Baseline bersih: tes sebelumnya (path sukses) meninggalkan child hidup.
+    await killChild();
+    assert.strictEqual(bridgeCount(), 0, 'baseline: tidak boleh ada child sebelum run');
+
+    const done = runPiChat({
+      apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-mini',
+      messages: [{ role: 'user', content: 'buat retry.txt' }], workdir, emit: (e) => events.push(e),
+    });
+    done.catch(() => {}); // jangan biarkan rejection nganggur selama polling
+
+    // Attempt-1: child spawn → ... → dibunuh oleh catch. Pulihkan gateway
+    // saat child mati (jendela = jeda ulangan 400ms).
+    await waitUntil(() => bridgeCount() >= 1, 30000, 'attempt-1 child tidak pernah spawn');
+    await waitUntil(() => bridgeCount() === 0, 60000, 'attempt-1 child tidak kunjung dibunuh');
+    recovered = true;
+
+    const added = await done;
+
+    // Run SUKSES lewat ulangan — bukan reject.
+    assert.strictEqual(added[added.length - 1].content, 'Pulih setelah retry.');
+    assert.ok(events.some((e) => e.type === 'message' && e.msg.content === 'Pulih setelah retry.'), 'pesan ulangan harus sampai ke app');
+
+    // Event attempt GAGAL tetap terkirim (streaming live) — bentuk insiden:
+    // tool round dulu, baru kegagalan, baru pemulihan. Probe lapangan: saat
+    // ulangan, Pi memuat sesi persist lalu menutup toolCall menggantung
+    // dengan pesan assistant kosong sintetis (tanpa LLM call) SEBELUM call
+    // pulih — jadi jumlah assistant >= 2, bukan persis 2.
+    assert.ok(fs.readFileSync(path.join(workdir, 'retry.txt'), 'utf8').trim() === 'retry-marker', 'tool attempt-1 harus benar-benar jalan');
+    const assistants = added.filter((m) => m.role === 'assistant');
+    assert.ok(assistants.length >= 2, 'minimal a1 (tool round) + a2 (pulih)');
+    assert.ok(Array.isArray(assistants[0].toolCalls) && assistants[0].toolCalls.length === 1, 'pesan pertama = a1 round tool attempt-1');
+    assert.ok(events.filter((e) => e.type === 'message').length >= 2, 'kedua pesan terkirim ke app');
+
+    // Gateway benar-benar melihat gelombang gagal sebelum pulih.
+    assert.ok(gw.chatAttempts >= 3, 'harus ada request sehat + beberapa request 503');
+
+    // State sesi maju dengan SEMUA pesan request ini (konsistensi history app).
+    const crypto2 = require('node:crypto');
+    const sha = (s) => crypto2.createHash('sha256').update(String(s)).digest('hex');
+    const dir = path.join(process.env.SACHET_PI_STATE_DIR, sha(['apinex', 'test-mini', workdir, sha('sk-test-123').slice(0, 12)].join('|')).slice(0, 16));
+    const st = _internals.readState(dir);
+    assert.strictEqual(st.seen, 1 + added.length, 'seen = user + semua pesan lintas percobaan');
+  } finally {
+    await gw.close();
+  }
+});
+
+/** Jumlah child rpc-entry yang terlihat /proc (pembuktian eksternal utk
+ *  zombie T-ML55). Kegagalan pgrep TIDAK boleh dibaca "0 child" — retry,
+ *  lalu gagal keras: hitungan palsu pernah membuat poll retry menembus
+ *  saat child masih hidup (sesi T-ML57). */
+function pgrepChildCount() {
   const { spawnSync } = require('node:child_process');
-  const r = spawnSync('pgrep', ['-f', 'rpc-entry.js'], { encoding: 'utf8' });
-  return r.status === 0 ? String(r.stdout).trim().split('\n').filter(Boolean).length : 0;
+  for (let i = 0; i < 5; i++) {
+    const r = spawnSync('pgrep', ['-f', 'rpc-entry.js'], { encoding: 'utf8' });
+    if (!r.error && r.status !== null) {
+      return r.status === 0 ? String(r.stdout).trim().split('\n').filter(Boolean).length : 0;
+    }
+  }
+  throw new Error('pgrep gagal berulang — hitungan child tidak bisa dipercaya');
+}
+
+/** Poll sampai predikat benar (atau timeout — dengan pesan yang jelas). */
+async function waitUntil(pred, timeoutMs, label) {
+  const t0 = Date.now();
+  while (!pred()) {
+    if (Date.now() - t0 > timeoutMs) throw new Error(`waitUntil timeout: ${label || 'kondisi tidak pernah terpenuhi'}`);
+    await new Promise((r) => setTimeout(r, 15));
+  }
 }

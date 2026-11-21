@@ -24,6 +24,13 @@
 // sisi app (pesan diedit/dihapus) terdeteksi lewat hash prefix kanonik →
 // sesi baru (gen++), konteks lama dibuang — jelas di log, bukan diam-diam.
 //
+// Ketahanan (T-ML57): error transient provider saat mid-run (5xx Cloudflare,
+// koneksi putus) → child dibuang (T-ML55) lalu prompt dikirim ulang
+// OTOMATIS setelah 15s di child baru, maks 2 ulangan — pemulihan insiden
+// 502/503 seek tanpa sentuhan owner. Event attempt yang gagal tetap sudah
+// terkirim live ke app, jadi `added` menumpuk lintas percobaan agar history
+// app ↔ state sesi tetap sinkron.
+//
 // Batas PoC (disengaja, Fase 2 menutupnya): tanpa protokol RENCANA/MEMORI
 // (Pi memakai system prompt bawaannya + lampiran bahasa), tanpa 15 RPM
 // client-side, tanpa input gambar (wasm photon tidak dibundel).
@@ -39,6 +46,17 @@ const NODE_BIN = process.execPath;
 const BUNDLE_DIR = process.env.SACHET_PI_BUNDLE_DIR || '/opt/sachet/pi-bundle';
 const STATE_DIR = process.env.SACHET_PI_STATE_DIR || '/opt/sachet/pi-bridge';
 const RPC_ENTRY = path.join(BUNDLE_DIR, 'bundle', 'rpc-entry.js');
+
+// T-ML57 (owner order: "auto-retry dengan timeout 15s"): error retryable
+// (5xx provider dsb.) → tunggu 15s → respawn + kirim ulang prompt, maks 2
+// ulangan. Abort user memutus antrean ulang. Env override dipakai test utk
+// jeda kecil tanpa menyentuh default produksi.
+function envInt(name, dflt) {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : dflt;
+}
+const RETRY_DELAY_MS = envInt('SACHET_PI_RETRY_DELAY_MS', 15000);
+const RETRY_MAX = envInt('SACHET_PI_RETRY_MAX', 2);
 
 // Lampiran system prompt statis (PoC): aturan bahasa T-ML41 diteruskan ke
 // engine baru; sisanya memakai prompt bawaan Pi yang sudah diuji untuk
@@ -322,23 +340,49 @@ function promptFor(messages, seen, piFresh) {
   return '[lanjutan] Lanjutkan pekerjaan dari titik terakhir. Jangan mengulang langkah yang sudah selesai.';
 }
 
+/** Error yang layak dicoba ulang: kegagalan transient JARINGAN/provider
+ *  (5xx, koneksi putus) — BUKAN salah konfigurasi (4xx auth/kuota/model),
+ *  bukan watchdog internal bridge (tool mungkin sudah setengah jalan saat
+ *  timeout), dan bukan child mati (OOM dsb. — diulang hanya membakar
+ *  baterai). Bentuk lapangan: Pi mem-prefix pesan dengan status HTTP,
+ *  mis. `502 {"title":"Error 502: Bad gateway",...}`. */
+function isRetryableError(msg) {
+  if (!msg) return false;
+  if (/menunggu (agent_settled|event Pi|respons RPC)/.test(msg)) return false;
+  if (/^proses Pi keluar/.test(msg)) return false;
+  if (/bundle Pi tidak ditemukan|Provider tidak dikenal|prompt ditolak Pi|messages wajib array|masih sibuk dengan sesi lain/.test(msg)) return false;
+  if (/\b4\d\d\b/.test(msg) && !/\b5\d\d\b/.test(msg)) return false; // 4xx murni: ulang tidak menolong
+  return /\b5\d{2}\b|bad gateway|service unavailable|upstream|overloaded|econnreset|etimedout|socket hang up|eai_again|fetch failed|network error|terminated/i.test(msg);
+}
+
+/** Tidur yang bisa diputus sinyal abort (user menekan stop). */
+function waitAbortable(ms, signal) {
+  if (signal && signal.aborted) return Promise.resolve();
+  if (!signal) return new Promise((r) => setTimeout(r, ms));
+  return new Promise((r) => {
+    const fin = () => { clearTimeout(t); signal.removeEventListener('abort', fin); r(); };
+    const t = setTimeout(fin, ms);
+    signal.addEventListener('abort', fin, { once: true });
+  });
+}
+
 // ---------------------------------------------------------------- API utama
 
 /**
  * Satu run chat lewat engine Pi — kontrak sama dengan runAgent() di
  * agent.js: emit event SSE app, kembalikan daftar pesan baru untuk app.
+ * Error transient (5xx provider) diulang otomatis (T-ML57): maks 2 ulangan,
+ * jeda 15s, abort user memutus antrean.
  */
 async function runPiChat({ apiKey, providerId, model, messages, signal, emit, workdir }) {
   if (!Array.isArray(messages)) throw new Error('messages wajib array');
   const wd = resolveWorkdir(workdir);
 
   // Penyimpangan history → buang sesi lama, mulai gen baru.
-  let st = null;
-  let entry = null;
   const probeKey = [providerId, model, wd, sha(apiKey).slice(0, 12)].join('|');
   const probeHash = sha(probeKey).slice(0, 16);
   const probeDir = path.join(STATE_DIR, probeHash);
-  st = readState(probeDir);
+  let st = readState(probeDir);
   if (st.seen > 0 && (messages.length < st.seen || hashPrefix(messages, st.seen) !== st.prefix)) {
     st = { seen: 0, prefix: '', gen: (st.gen || 0) + 1 };
     writeState(probeDir, st);
@@ -346,17 +390,22 @@ async function runPiChat({ apiKey, providerId, model, messages, signal, emit, wo
   }
   const piFresh = st.seen === 0;
 
-  entry = await ensureChild({ apiKey, providerId, model, workdir: wd });
-  entry.busy = true;
-  const { rpc } = entry;
-
+  // T-ML57: `added`/`turns` menumpuk lintas percobaan — event attempt yang
+  // gagal sudah terkirim live ke app, jadi ulangan yang berhasil harus
+  // mengembalikan SEMUA pesan request ini agar history app ↔ state sesi
+  // tetap sinkron (prefix hash dihitung dari gabungan keduanya).
   const added = [];
   let turns = 0;
-  const marker = rpc.events.length; // event run ini mulai dari sini
 
-  try {
+  /** Satu percobaan run (spawn/reuse child → prompt → pompa event). */
+  const runAttempt = async (attempt) => {
+    const entry = await ensureChild({ apiKey, providerId, model, workdir: wd });
+    entry.busy = true;
+    const { rpc } = entry;
+    const marker = rpc.events.length; // event run ini mulai dari sini
+
     const prompt = promptFor(messages, piFresh ? 0 : st.seen, piFresh);
-    log.inf('pi', `prompt ${prompt.length}ch (history ${messages.length} msg, pi-seen ${st.seen})`);
+    log.inf('pi', `prompt ${prompt.length}ch (history ${messages.length} msg, pi-seen ${st.seen}${attempt > 1 ? `, percobaan ${attempt}` : ''})`);
 
     const pr = await rpc.send({ type: 'prompt', message: prompt }, 30000);
     if (!pr.success) throw new Error(`prompt ditolak Pi: ${pr.error || pr.data}`);
@@ -457,21 +506,38 @@ async function runPiChat({ apiKey, providerId, model, messages, signal, emit, wo
     const combined = messages.concat(added);
     writeState(entry.dir, { seen, prefix: hashPrefix(combined, seen), gen: readState(entry.dir).gen });
     return added;
-  } catch (e) {
-    // T-ML55 (opsi A): SEMUA error mid-run non-user-abort → child dibuang.
-    // Abort user tidak pernah sampai sini (agent_settled aborted menyelesaikan
-    // run normal), jadi apapun yang lewat catch = state child tidak dipercaya
-    // lagi. Dulu hanya child-mati yang dibuang — error model seperti 503
-    // upstream_busy (stopReason='error') meninggalkan zombie child yang masih
-    // 'processing', lalu semua chat berikut direuse dan ditolak
-    // 'Agent is already processing' selamanya sampai restart server.
-    // Respawn ~1s dan state sesi hanya maju setelah sukses → tanpa kehilangan.
-    log.err('pi', 'run gagal — child dibuang agar respawn bersih:', e.message);
-    await killChild();
-    throw e;
-  } finally {
-    if (active) active.busy = false;
+  };
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await runAttempt(attempt);
+    } catch (e) {
+      // T-ML55 (opsi A): SEMUA error mid-run non-user-abort → child dibuang.
+      // Abort user tidak pernah sampai sini (agent_settled aborted menyelesaikan
+      // run normal), jadi apapun yang lewat catch = state child tidak dipercaya
+      // lagi. Dulu hanya child-mati yang dibuang — error model seperti 503
+      // upstream_busy (stopReason='error') meninggalkan zombie child yang masih
+      // 'processing', lalu semua chat berikut direuse dan ditolak
+      // 'Agent is already processing' selamanya sampai restart server.
+      // Respawn ~1s dan state sesi hanya maju setelah sukses → tanpa kehilangan.
+      log.err('pi', 'run gagal — child dibuang agar respawn bersih:', e.message);
+      await killChild();
+      // T-ML57: error transient (5xx provider, koneksi putus) → tunggu 15s →
+      // prompt dikirim ulang di child baru, maks RETRY_MAX ulangan.
+      if (attempt <= RETRY_MAX && !(signal && signal.aborted) && isRetryableError(e.message)) {
+        log.inf('pi', `error retryable — ulang otomatis ${attempt}/${RETRY_MAX} setelah ${Math.round(RETRY_DELAY_MS / 1000)}s`);
+        await waitAbortable(RETRY_DELAY_MS, signal);
+        if (signal && signal.aborted) {
+          log.dbg('pi', 'ulangan dibatalkan user selama menunggu');
+          throw new Error('dibatalkan');
+        }
+        continue;
+      }
+      throw e;
+    } finally {
+      if (active) active.busy = false;
+    }
   }
 }
 
-module.exports = { runPiChat, piBundleAvailable, killChild, _internals: { canonicalMsg, hashPrefix, promptFor, toAppAssistant, writeModelsJson, readState, writeState, PiRpc } };
+module.exports = { runPiChat, piBundleAvailable, killChild, _internals: { canonicalMsg, hashPrefix, promptFor, toAppAssistant, writeModelsJson, readState, writeState, isRetryableError, activeChildCount: () => (active && active.proc.exitCode === null ? 1 : 0), PiRpc } };

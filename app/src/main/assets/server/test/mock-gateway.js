@@ -39,6 +39,11 @@ const http = require('http');
  *                  (default 1200) — simulates a cold VPN path whose first
  *                  TLS/DNS roundtrip outruns a short client timeout
  * opts.slowModelsMs: the delay above, in milliseconds
+ * opts.failChatWhile: (chatAttemptIndex) => boolean — while true, EVERY
+ *                  chat request is answered 503 upstream-busy WITHOUT
+ *                  consuming the scripted replies (gateway-level fault
+ *                  injection, T-ML57 auto-retry tests); flip the closure's
+ *                  latch to restore the script mid-test
  * opts.quota:  serve the APInex-native quota endpoint
  *              GET /v1/subscription (the ONE documented quota API):
  *              { mode, unlimited, tokenLimit, tokensUsed, tokensRemaining }
@@ -177,6 +182,14 @@ function startMockGateway(script, opts = {}) {
           setTimeout(() => {
             try { res.socket.destroy(); } catch { /* already gone */ }
           }, opts.cutStreamDelayMs ?? 60);
+          return;
+        }
+        // Gateway-level fault injection (T-ML57): reply 503 upstream-busy
+        // while the callback says so — the scripted replies stay untouched,
+        // so flipping the latch restores the script exactly where it was.
+        if (opts.failChatWhile && opts.failChatWhile(chatAttempts)) {
+          res.writeHead(503, { 'Content-Type': 'application/json', 'retry-after': '1' });
+          res.end(JSON.stringify({ error: { message: 'upstream busy (failChatWhile injection)' } }));
           return;
         }
         const parsed = JSON.parse(body);
