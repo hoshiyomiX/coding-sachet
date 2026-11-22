@@ -31,6 +31,17 @@
 // terkirim live ke app, jadi `added` menumpuk lintas percobaan agar history
 // app ↔ state sesi tetap sinkron.
 //
+// T-ML68 #1 (owner order: "Pi engine mendukung 1 model orchestrator + 1
+// executor, atur dalam json config, dalam 1 run"): konfigurasi JSON dari app
+// (Settings → Konfigurasi JSON, kunci "pi") memilih dua model SATU provider —
+// orchestrator (spawn default, merencanakan + memutuskan tool) dan executor
+// (mengambil alih putaran BERIKUTNYA setelah putaran tool pertama, menuntaskan
+// penulisan/jawaban). Perpindahan via RPC set_model (didukung bundle Pi,
+// diverifikasi dari dispatch chunk-VEJDBY3O.js) — models.json memuat KEDUA
+// model agar set_model selalu menemukannya. Batas v1: executor HARUS satu
+// provider dengan orchestrator (satu API key per run); lintas-provider =
+// pekerjaan bridge lanjutan.
+//
 // Batas PoC (disengaja, Fase 2 menutupnya): tanpa protokol RENCANA/MEMORI
 // (Pi memakai system prompt bawaannya + lampiran bahasa), tanpa 15 RPM
 // client-side, tanpa input gambar (wasm photon tidak dibundel).
@@ -208,10 +219,12 @@ class PiRpc {
   dispose() { try { this.proc.stdin.end(); } catch { /* already closed */ } }
 }
 
-/** models.json untuk satu kunci — provider OpenAI-compatible + SATU model
- *  aktif (yang dipilih app). Ditulis sebelum spawn; baseUrl mengikuti
- *  config.js (env test override sudah berlaku di sana). */
-function writeModelsJson(dir, { providerId, provider, model, apiKey }) {
+/** models.json untuk satu kunci — provider OpenAI-compatible + model
+ *  aktif (yang dipilih app) + executor opsional (T-ML68 #1: kedua model
+ *  terdaftar agar set_model bisa berpindah mid-run). Ditulis sebelum
+ *  spawn; baseUrl mengikuti config.js (env test override sudah berlaku
+ *  di sana). */
+function writeModelsJson(dir, { providerId, provider, model, apiKey, executor }) {
   const maxTokens = provider.maxTokens || 16384;
   const spec = {
     $schema: 'https://pi.dev/schemas/models.schema.json',
@@ -229,8 +242,33 @@ function writeModelsJson(dir, { providerId, provider, model, apiKey }) {
       },
     },
   };
+  // T-ML68 #1: executor terdaftar di provider yang sama (satu key per run).
+  if (executor && executor !== model) {
+    spec.providers[providerId].models.push({
+      id: executor, name: executor, reasoning: false, input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000, maxTokens,
+    });
+  }
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'models.json'), JSON.stringify(spec, null, 2));
+}
+
+/** T-ML68 #1 (murni): parse konfigurasi dual-model dari options JSON app.
+ *  Bentuk: {"pi":{"orchestrator":"…","executor":"…"}}. Valid = minimal
+ *  satu role terisi dan keduanya tidak identik; string dibersihkan + dipangkas
+ *  (id model tidak pernah >120 char). Selain itu → null (mode single-model
+ *  lama, tanpa perubahan perilaku). */
+function parseDualConfig(options) {
+  const pi = options && typeof options === 'object' && !Array.isArray(options)
+    ? options.pi : null;
+  if (!pi || typeof pi !== 'object' || Array.isArray(pi)) return null;
+  const clean = (v) => (typeof v === 'string' ? v.trim().slice(0, 120) : '');
+  const orchestrator = clean(pi.orchestrator);
+  const executor = clean(pi.executor);
+  if (!orchestrator && !executor) return null;
+  if (orchestrator && executor && orchestrator === executor) return null;
+  return { orchestrator: orchestrator || null, executor: executor || null };
 }
 
 function readState(dir) {
@@ -256,10 +294,19 @@ async function killChild() {
   log.dbg('pi', `child ${a.keyhash} dihentikan (${Date.now() - t0}ms)`);
 }
 
+/** Kunci sesi child. T-ML68 #1: konfigurasi dual menambah segmen
+ *  "dual:<executor>" — SEBELUMnya kunci TIDAK berubah sama sekali, jadi
+ *  sesi Pi pengguna lama (single-model) tetap kontinu lintas update app
+ *  dan test yang meminku format kunci tetap hijau. */
+function sessionKey(providerId, model, executor, workdir, keyHash) {
+  const base = [providerId, model, workdir, keyHash].join('|');
+  return executor && executor !== model ? `${base}|dual:${executor}` : base;
+}
 /** Pastikan child untuk kunci ini hidup (respawn memuat ulang sesi via
- *  --session-id deterministik). Melempar bila bundle hilang. */
-async function ensureChild({ apiKey, providerId, model, workdir }) {
-  const key = [providerId, model, workdir, sha(apiKey).slice(0, 12)].join('|');
+ *  --session-id deterministik). Melempar bila bundle hilang. T-ML68 #1:
+ *  executor ikut kunci sesi — ganti konfigurasi dual = sesi Pi baru. */
+async function ensureChild({ apiKey, providerId, model, executor, workdir }) {
+  const key = sessionKey(providerId, model, executor, workdir, sha(apiKey).slice(0, 12));
   const keyhash = sha(key).slice(0, 16);
   const dir = path.join(STATE_DIR, keyhash);
   if (active && active.key === key && active.proc.exitCode === null) return active;
@@ -276,7 +323,7 @@ async function ensureChild({ apiKey, providerId, model, workdir }) {
   if (!provider) throw new Error(`Provider tidak dikenal: ${providerId}`);
 
   const st = readState(dir);
-  writeModelsJson(path.join(dir, 'agent'), { providerId, provider, model, apiKey });
+  writeModelsJson(path.join(dir, 'agent'), { providerId, provider, model, apiKey, executor });
 
   const args = [
     RPC_ENTRY, '--mode', 'rpc',
@@ -388,12 +435,15 @@ function waitAbortable(ms, signal) {
  * Error transient (5xx provider) diulang otomatis (T-ML57): maks 2 ulangan,
  * jeda 15s, abort user memutus antrean.
  */
-async function runPiChat({ apiKey, providerId, model, messages, signal, emit, workdir }) {
+async function runPiChat({ apiKey, providerId, model, executor, messages, signal, emit, workdir }) {
   if (!Array.isArray(messages)) throw new Error('messages wajib array');
   const wd = resolveWorkdir(workdir);
 
-  // Penyimpangan history → buang sesi lama, mulai gen baru.
-  const probeKey = [providerId, model, wd, sha(apiKey).slice(0, 12)].join('|');
+  // Penyimpangan history → buang sesi lama, mulai gen baru. T-ML68 #1:
+  // executor ikut kunci probe (format kompatibel — tanpa executor kunci
+  // TIDAK berubah) — konfigurasi dual berbeda = konteks sesi lama tidak
+  // dipakai paksa.
+  const probeKey = sessionKey(providerId, model, executor, wd, sha(apiKey).slice(0, 12));
   const probeHash = sha(probeKey).slice(0, 16);
   const probeDir = path.join(STATE_DIR, probeHash);
   let st = readState(probeDir);
@@ -413,10 +463,13 @@ async function runPiChat({ apiKey, providerId, model, messages, signal, emit, wo
 
   /** Satu percobaan run (spawn/reuse child → prompt → pompa event). */
   const runAttempt = async (attempt) => {
-    const entry = await ensureChild({ apiKey, providerId, model, workdir: wd });
+    const entry = await ensureChild({ apiKey, providerId, model, executor, workdir: wd });
     entry.busy = true;
     const { rpc } = entry;
     const marker = rpc.events.length; // event run ini mulai dari sini
+    // T-ML68 #1: dual-model aktif = executor berbeda terdaftar di models.json.
+    const dualExecutor = executor && executor !== model ? executor : null;
+    let executorHanded = false; // set_model executor sudah dikirim (sekali cukup)
 
     const prompt = promptFor(messages, piFresh ? 0 : st.seen, piFresh);
     log.inf('pi', `prompt ${prompt.length}ch (history ${messages.length} msg, pi-seen ${st.seen}${attempt > 1 ? `, percobaan ${attempt}` : ''})`);
@@ -448,6 +501,20 @@ async function runPiChat({ apiKey, providerId, model, messages, signal, emit, wo
         const msg = toAppAssistant(m);
         emit({ type: 'message', msg });
         added.push(msg);
+        // T-ML68 #1: putaran orchestrator berakhir dengan panggilan tool →
+        // putaran BERIKUTNYA (mengonsumsi hasil tool dan menuntaskan
+        // pekerjaan) dijalankan executor. set_model dikirim DI TENGAH pompa
+        // event — dispatch RPC Pi memprosesnya sebelum turn berikutnya;
+        // kegagalan hanya di-log (run tetap jalan dengan orchestrator).
+        if (dualExecutor && !executorHanded && Array.isArray(m.content)
+            && m.content.some((b) => b && b.type === 'toolCall')) {
+          executorHanded = true;
+          log.inf('pi', `dual-model: putaran tool selesai — serahkan sisa run ke executor ${dualExecutor}`);
+          emit({ type: 'model', model: dualExecutor, role: 'executor' });
+          rpc.send({ type: 'set_model', provider: providerId, modelId: dualExecutor }, 15000)
+            .then((r) => { if (!r.success) log.wrn('pi', `set_model executor gagal: ${r.error || 'tidak diketahui'}`); })
+            .catch(() => { /* fire-and-forget; kegagalan tidak membunuh run */ });
+        }
         const u = m.usage;
         if (u && (u.input || u.output || u.totalTokens)) {
           emit({
@@ -554,4 +621,4 @@ async function runPiChat({ apiKey, providerId, model, messages, signal, emit, wo
   }
 }
 
-module.exports = { runPiChat, piBundleAvailable, killChild, _internals: { canonicalMsg, hashPrefix, promptFor, toAppAssistant, writeModelsJson, readState, writeState, isRetryableError, APPEND_SYSTEM, activeChildCount: () => (active && active.proc.exitCode === null ? 1 : 0), PiRpc } };
+module.exports = { runPiChat, piBundleAvailable, killChild, parseDualConfig, _internals: { canonicalMsg, hashPrefix, promptFor, toAppAssistant, writeModelsJson, parseDualConfig, readState, writeState, isRetryableError, APPEND_SYSTEM, activeChildCount: () => (active && active.proc.exitCode === null ? 1 : 0), PiRpc } };

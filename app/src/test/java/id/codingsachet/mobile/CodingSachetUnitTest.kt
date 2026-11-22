@@ -547,6 +547,9 @@ class CodingSachetUnitTest {
         // still owes a response — the history ends in a tool result, or in an
         // assistant round whose results never arrived (an interrupted round
         // the server heals). Everything else is a plain error.
+        // T-ML68 #2: a trailing USER message now also counts — the run died
+        // before any answer arrived, so "Lanjutkan" retries it instead of a
+        // dead-end; and allowText opts into a truncated assistant answer.
         val call = ToolCall(id = "c1", name = "bash")
         assertTrue(
             "tool result terakhir = run bisa dilanjutkan",
@@ -576,11 +579,25 @@ class CodingSachetUnitTest {
                 )
             )
         )
-        assertFalse(
-            "pesan user terakhir = run belum mulai",
+        assertTrue(
+            "T-ML68 #2: pesan user belum dijawab = retry, bukan dead-end",
             canContinueFromHistory(listOf(Msg(role = "user", content = "hai")))
         )
+        assertTrue(
+            "T-ML68 #2: jawaban terpotong bisa dilanjutkan (allowText)",
+            canContinueFromHistory(
+                listOf(
+                    Msg(role = "user", content = "kerja"),
+                    Msg(role = "assistant", content = "Hasilnya sebagian—"),
+                ),
+                allowText = true,
+            )
+        )
         assertFalse("history kosong", canContinueFromHistory(emptyList()))
+        assertFalse(
+            "history kosong tetap ditolak meski allowText",
+            canContinueFromHistory(emptyList(), allowText = true)
+        )
     }
 
     @Test

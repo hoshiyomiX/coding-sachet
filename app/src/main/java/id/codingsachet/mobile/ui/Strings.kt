@@ -168,6 +168,8 @@ data class SachetStrings(
     val schemeSection: String,
     val schemeHint: String,
     val serverRestarting: String,
+    // T-ML68 #2: baris lanjut permanen di akhir history (run terpenggal).
+    val resumePendingHint: String,
 )
 
 val IdStrings = SachetStrings(
@@ -334,6 +336,7 @@ val IdStrings = SachetStrings(
     schemeSection = "Skema siap pakai",
     schemeHint = "Skema mengisi opsi JSON dan prompt sistem agent, lalu berlaku pada pesan berikutnya — tanpa perlu reset server. Kunci milik agent (model, messages, stream, tools) selalu ditolak.",
     serverRestarting = "Server agent dimatikan sistem — memulai ulang, tugas dilanjutkan otomatis…",
+    resumePendingHint = "Pekerjaan terakhir terputus sebelum selesai.",
 )
 
 val EnStrings = SachetStrings(
@@ -499,6 +502,7 @@ val EnStrings = SachetStrings(
     schemeSection = "Ready-made schemes",
     schemeHint = "A scheme fills the JSON options and the agent's system prompt, then applies to your next message — no server reset needed. Agent-owned keys (model, messages, stream, tools) are always rejected.",
     serverRestarting = "The agent server was killed by the system — restarting, the task continues automatically…",
+    resumePendingHint = "The last run was interrupted before it finished.",
 )
 
 val LocalStrings = staticCompositionLocalOf { IdStrings }

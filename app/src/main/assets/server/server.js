@@ -21,7 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const { config, providerById, HOME } = require('./config');
 const { runAgent, verifyModels } = require('./agent');
-const { runPiChat, piBundleAvailable } = require('./pi-bridge');
+const { runPiChat, piBundleAvailable, parseDualConfig } = require('./pi-bridge');
 const { safePath, listDir, readFile, writeFile } = require('./tools');
 const { fetchWithRetry, fetchRetryTimeout, netErrorDetail } = require('./net');
 const log = require('./log');
@@ -409,6 +409,18 @@ async function route(req, res) {
     const chatT0 = Date.now();
     let chatTurns = 0;
 
+    // T-ML68 #1: konfigurasi dual-model (Settings → Konfigurasi JSON, kunci
+    // "pi") — orchestrator menimpa model sesi, executor mengambil alih
+    // putaran setelah tool pertama. Kunci "pi" DIBUANG dari options legacy
+    // agar tidak ikut terkirim ke gateway (bukan opsi OpenAI-compatible).
+    const dual = parseDualConfig(body.options) || null;
+    const legacyOptions = body.options && typeof body.options === 'object' && !Array.isArray(body.options) && 'pi' in body.options
+      ? Object.fromEntries(Object.entries(body.options).filter(([k]) => k !== 'pi'))
+      : body.options;
+    if (dual) {
+      log.inf('srv', `dual-model pi: orchestrator=${dual.orchestrator || body.model} executor=${dual.executor || '(tidak ada)'}`);
+    }
+
     // SSE response headers
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -436,7 +448,8 @@ async function route(req, res) {
         ? await runPiChat({
             apiKey: key,
             providerId,
-            model: body.model,
+            model: (dual && dual.orchestrator) || body.model,
+            executor: (dual && dual.executor) || null,
             messages: body.messages,
             workdir: typeof body.workdir === 'string' ? body.workdir.slice(0, 512) : undefined,
             signal: abort.signal,
@@ -450,7 +463,7 @@ async function route(req, res) {
             systemPrompt: body.systemPrompt,
             // OpenAI-compatible request options (Settings → Konfigurasi JSON):
             // sanitized inside the agent; reserved keys can never pass.
-            options: body.options,
+            options: legacyOptions,
             // Per-session project folder (T-ML28: one project per folder). The
             // agent validates it against the sandbox and creates it when absent;
             // invalid values silently fall back to the server's default workdir.

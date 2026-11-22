@@ -107,6 +107,7 @@ import id.codingsachet.mobile.ui.ProjectNames
 import id.codingsachet.mobile.ui.StopIcon
 import id.codingsachet.mobile.ui.TextFileIcon
 import id.codingsachet.mobile.ui.ToolCardUi
+import id.codingsachet.mobile.ui.canContinueFromHistory
 import id.codingsachet.mobile.ui.formatTokenCount
 import id.codingsachet.mobile.ui.formatIdrAmount
 import id.codingsachet.mobile.ui.projectDir
@@ -629,6 +630,37 @@ fun ChatScreen(
                             }
                         }
                         live?.let { l -> item { LiveBubble(l, onResume = { engine?.continueRun() }) } }
+                        // T-ML68 #2: baris lanjut PERMANEN — turun dari history
+                        // yang dipersist (bukan live turn), jadi tetap ada
+                        // setelah restart app / ganti sesi balik lagi. Muncul
+                        // hanya saat tidak ada turn hidup DAN model masih
+                        // berhutang jawaban (ujung history = hasil tool /
+                        // panggilan tool tanpa hasil / pesan user belum dijawab).
+                        if (live == null && !busyNow && canContinueFromHistory(msgs)) {
+                            item {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.secondaryContainer,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Row(
+                                        Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Text(
+                                            s.resumePendingHint,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        Button(onClick = { engine?.continueRun() }) {
+                                            Text(s.resumeRun)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1032,11 +1064,14 @@ private fun LiveBubble(l: LiveTurn, onResume: () -> Unit = {}) {
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    // T-ML37 P1-3: the run died after completed tool rounds —
-                    // the history ends in a tool round, so the model still owes
-                    // the next round. One tap re-issues the stream instead of
-                    // losing the whole run's work over a dead network path.
-                    if (l.canContinue && !l.busy) {
+                    // T-ML37 P1-3 + T-ML68 #2: tombol Lanjutkan/retry tetap
+                    // tampil di SEMUA kartu error (truncated, lost connection,
+                    // gagal sebelum putaran pertama) selama tidak ada turn
+                    // berjalan — engine.continueRun() yang memutus validitas
+                    // (history kosong saja yang ditolak). Dulu gerbang
+                    // canContinue menyembunyikan tombol persis pada kasus
+                    // "Tekan Lanjutkan untuk mencoba lagi".
+                    if (!l.busy) {
                         Button(
                             onClick = onResume,
                             modifier = Modifier.padding(top = 8.dp),

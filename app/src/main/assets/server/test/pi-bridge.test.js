@@ -409,3 +409,68 @@ async function waitUntil(pred, timeoutMs, label) {
     await new Promise((r) => setTimeout(r, 15));
   }
 }
+
+test('pi: unit — parseDualConfig + models.json dual (T-ML68 #1)', () => {
+  const { parseDualConfig, writeModelsJson } = _internals;
+  const os = require('node:os');
+
+  // parseDualConfig: bentuk valid, tidak valid, dan no-op.
+  assert.deepStrictEqual(parseDualConfig({ pi: { orchestrator: 'a', executor: 'b' } }), { orchestrator: 'a', executor: 'b' });
+  assert.deepStrictEqual(parseDualConfig({ pi: { executor: 'b' } }), { orchestrator: null, executor: 'b' });
+  assert.deepStrictEqual(parseDualConfig({ pi: { orchestrator: '  a  ' } }), { orchestrator: 'a', executor: null });
+  assert.strictEqual(parseDualConfig(null), null, 'tanpa options = null');
+  assert.strictEqual(parseDualConfig({}), null, 'tanpa kunci pi = null');
+  assert.strictEqual(parseDualConfig({ pi: 'bukan objek' }), null, 'pi non-objek = null');
+  assert.strictEqual(parseDualConfig({ pi: [1, 2] }), null, 'pi array = null');
+  assert.strictEqual(parseDualConfig({ pi: {} }), null, 'pi kosong = null');
+  assert.strictEqual(parseDualConfig({ pi: { orchestrator: 'sama', executor: 'sama' } }), null, 'identik = no-op');
+  assert.strictEqual(parseDualConfig({ pi: { orchestrator: 42, executor: true } }), null, 'tipe salah = null');
+
+  // writeModelsJson: executor terdaftar di provider sama; tanpa executor =
+  // perilaku lama (satu model).
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-dual-'));
+  const provider = { label: 'T', baseUrl: 'http://x/v1', maxTokens: 999 };
+  writeModelsJson(dir, { providerId: 'apinex', provider, model: 'orch', apiKey: 'k', executor: 'exec' });
+  let spec = JSON.parse(fs.readFileSync(path.join(dir, 'models.json'), 'utf8'));
+  assert.deepStrictEqual(spec.providers.apinex.models.map((m) => m.id), ['orch', 'exec'], 'kedua model harus terdaftar');
+  assert.strictEqual(spec.providers.apinex.models[1].maxTokens, 999);
+
+  writeModelsJson(dir, { providerId: 'apinex', provider, model: 'solo', apiKey: 'k', executor: 'solo' });
+  spec = JSON.parse(fs.readFileSync(path.join(dir, 'models.json'), 'utf8'));
+  assert.deepStrictEqual(spec.providers.apinex.models.map((m) => m.id), ['solo'], 'executor identik tidak diduplikasi');
+
+  writeModelsJson(dir, { providerId: 'apinex', provider, model: 'solo', apiKey: 'k' });
+  spec = JSON.parse(fs.readFileSync(path.join(dir, 'models.json'), 'utf8'));
+  assert.deepStrictEqual(spec.providers.apinex.models.map((m) => m.id), ['solo'], 'tanpa executor = single (perilaku lama)');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('pi: dual-model — executor mengambil alih putaran setelah tool (T-ML68 #1)', async () => {
+  assert.ok(bundleReady, bundleNote || 'bundle Pi tidak siap');
+
+  const gw = await startMockGateway([
+    { kind: 'tools', text: 'Rencana siap.', calls: [{ id: 'call_1', name: 'bash', args: { command: 'echo dual-ok > dual.txt' } }], usage: USAGE_A },
+    { kind: 'text', text: 'Selesai oleh executor.', usage: USAGE_B },
+  ]);
+  useGateway(gw);
+  const workdir = path.join(ROOT, 'work-dual');
+  const events = [];
+  const added = await runPiChat({
+    apiKey: 'sk-test-123', providerId: 'apinex', model: 'orch-mini', executor: 'exec-mini',
+    messages: [{ role: 'user', content: 'Buat file dual.txt.' }], workdir,
+    emit: (e) => events.push(e),
+  });
+
+  // Event handoff executor terkirim ke app (ChatEngine mengabaikan tipe asing).
+  const modelEv = events.find((e) => e.type === 'model');
+  assert.ok(modelEv, 'event model (handoff executor) hilang');
+  assert.strictEqual(modelEv.role, 'executor');
+  assert.strictEqual(modelEv.model, 'exec-mini');
+
+  // Permintaan chat kedua ke gateway benar-benar memakai executor.
+  const sentModels = gw.requests.map((r) => r && r.model).filter(Boolean);
+  assert.ok(sentModels.includes('exec-mini'), `permintaan executor tidak terlihat: ${sentModels.join(',')}`);
+  assert.strictEqual(added[added.length - 1].content, 'Selesai oleh executor.');
+  assert.strictEqual(fs.readFileSync(path.join(workdir, 'dual.txt'), 'utf8').trim(), 'dual-ok');
+  await gw.close();
+});

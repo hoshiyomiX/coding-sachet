@@ -315,7 +315,7 @@ class ChatEngine(val session: Session) {
                 // produce the next round. The 2026-11-12 field case: a 2.47 M
                 // token run (89 rounds) died on a dead VPN path with the final
                 // answer one round away. That work must not evaporate.
-                val resume = !turnCancelled && canContinueFromHistory(session.messages)
+                val resume = !turnCancelled && canContinueFromHistory(session.messages, allowText = true)
                 val msg = ev.str("message")
                 val text = if (!resume) msg else if (roundsDone > 0)
                     "Terputus setelah $roundsDone putaran selesai ($msg). " +
@@ -452,7 +452,10 @@ class ChatEngine(val session: Session) {
      *  nothing to continue from (or a turn is still in flight). */
     fun continueRun(): Boolean {
         if (busy) return false
-        if (!canContinueFromHistory(session.messages)) return false
+        // T-ML68 #2: allowText — jawaban terpotong (truncated mid-text) pun
+        // bisa dilanjutkan: server Pi melanjutkan sesinya dengan instruksi
+        // "[lanjutan]", engine legacy mengirim ulang history lengkap.
+        if (!canContinueFromHistory(session.messages, allowText = true)) return false
         receivedAnything = false
         receivedDone = false
         roundsDone = 0
@@ -589,13 +592,25 @@ class ChatEngine(val session: Session) {
  * history? True when the last persisted message is a tool result, or an
  * assistant round that still awaits its results (an interrupted round the
  * server heals) — i.e. the model still owes a response to something. A
- * history ending in a user or plain assistant message has nothing to
- * resume: the failure is surfaced as a plain error instead.
+ * history ending in a plain assistant message has nothing to resume by
+ * default (a COMPLETED final answer); the truncated case opts in via
+ * [allowText] (T-ML68 #2).
  */
-fun canContinueFromHistory(messages: List<Msg>): Boolean {
+/** T-ML37 P1-3 + T-ML68 #2 (murni, teruji JVM): history yang masih bisa
+ *  dilanjutkan/dicoba ulang — ujungnya hasil tool (model berhutang putaran
+ *  berikutnya), panggilan tool tanpa hasil, ATAU pesan user yang belum
+ *  dijawab (run gagal sebelum jawaban tiba = retry, bukan dead-end).
+ *  [allowText] (dipakai jalur error live + continueRun) juga menerima
+ *  jawaban assistant yang TERPOTONG — melanjutkan dari teks setengah jadi
+ *  alih-alih membuang pekerjaan. Default false: history berujung jawaban
+ *  final utuh = tidak ada yang perlu dilanjutkan.
+ */
+fun canContinueFromHistory(messages: List<Msg>, allowText: Boolean = false): Boolean {
     val last = messages.lastOrNull() ?: return false
     if (last.role == "tool") return true
     if (last.role == "assistant" && !last.toolCalls.isNullOrEmpty()) return true
+    if (last.role == "user") return true
+    if (allowText && last.role == "assistant") return true
     return false
 }
 
