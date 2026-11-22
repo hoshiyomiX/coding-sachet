@@ -410,7 +410,7 @@ jobs:
         run: |
           set -e
           TAG="beta"
-          NOTES="Coding Sachet beta build ${{ github.run_number }} — split ABI APKs (arm64-v8a, armeabi-v7a, x86_64). Ubuntu 24.04 + Node.js + git bundled inside the APK (xz ultra compression, no first-run downloads). Providers: APInex (https://api.apinex.bond/v1), NVIDIA NIM (https://integrate.api.nvidia.com/v1), 100milionseek (https://100milionseek.top/v1) & NgodeAI (https://llm.ngodeai.net/v1)."
+          NOTES="Coding Sachet beta build ${{ github.run_number }} — split ABI APKs (arm64-v8a, armeabi-v7a, x86_64). Ubuntu 24.04 + Node.js + git bundled inside the APK (xz ultra compression, no first-run downloads). Providers: APInex (https://api.apinex.bond/v1), NVIDIA NIM (https://integrate.api.nvidia.com/v1), 100milionseek (https://100milionseek.top/v1) & NgodeAI (https://llm.ngodeai.net/v1). Chat: copy / edit-and-resend buttons under every message (long-press menu removed)."
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --title "Coding Sachet beta build ${{ github.run_number }}" --notes "$NOTES" --prerelease
           fi

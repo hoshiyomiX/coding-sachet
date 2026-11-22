@@ -2,7 +2,6 @@ package id.codingsachet.mobile.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -45,8 +44,6 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
@@ -91,6 +88,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -792,7 +790,6 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
 }
 
 /** Persisted messages: user bubbles right, assistant content + tool cards left. */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubble(
     m: Msg,
@@ -804,31 +801,19 @@ private fun MessageBubble(
     val s = LocalStrings.current
     when (m.role) {
         "user" -> {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                // T-ML65 #1: long-press a message → Salin / Edit&resend.
-                var menu by remember { mutableStateOf(false) }
+            // T-ML66: long-press menu retired — Salin / Edit sit as compact
+            // buttons directly under the bubble (right-aligned like the
+            // bubble itself). Edit is passed only for user messages while
+            // no turn is running; hidden otherwise.
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
                 Surface(
                     shape = RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp),
                     color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier
-                        .widthIn(max = 320.dp)
-                        .combinedClickable(
-                            onClick = {},
-                            onLongClick = if (onCopy != null || onEdit != null) {
-                                { menu = true }
-                            } else null,
-                        ),
+                    modifier = Modifier.widthIn(max = 320.dp),
                 ) {
-                    Box {
-                        Text(m.content, Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium)
-                        MessageActionsMenu(
-                            expanded = menu,
-                            onDismiss = { menu = false },
-                            onCopy = onCopy,
-                            onEdit = onEdit,
-                        )
-                    }
+                    Text(m.content, Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium)
                 }
+                MessageActionRow(onCopy = onCopy, onEdit = onEdit)
             }
         }
         "assistant" -> {
@@ -838,26 +823,15 @@ private fun MessageBubble(
             ) {
                 ThinkingBlock(m.thinking)
                 if (m.content.isNotBlank()) {
-                    // T-ML65 #1: long-press the answer → Salin.
-                    var menu by remember { mutableStateOf(false) }
+                    // T-ML66: Salin as a compact button under the answer
+                    // (long-press menu retired).
                     Surface(
                         shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier.combinedClickable(
-                            onClick = {},
-                            onLongClick = if (onCopy != null) { { menu = true } } else null,
-                        ),
                     ) {
-                        Box {
-                            Column(Modifier.padding(12.dp)) { Markdownish(m.content) }
-                            MessageActionsMenu(
-                                expanded = menu,
-                                onDismiss = { menu = false },
-                                onCopy = onCopy,
-                                onEdit = null,
-                            )
-                        }
+                        Column(Modifier.padding(12.dp)) { Markdownish(m.content) }
                     }
+                    MessageActionRow(onCopy = onCopy, onEdit = null)
                 }
                 m.toolCalls?.let { calls ->
                     if (calls.size >= 3) {
@@ -879,37 +853,39 @@ private fun MessageBubble(
     }
 }
 
-/** T-ML65 #1: long-press actions for one bubble — Salin (and Edit &
- *  kirim ulang for user messages while no turn is running). */
+/** T-ML66 (replaces the T-ML65 long-press dropdown): compact action
+ *  buttons under one bubble — Salin (user + assistant text) and Edit &
+ *  kirim ulang (user messages, only while no turn is running). Actions
+ *  are always visible instead of hidden behind a long-press gesture;
+ *  emits nothing when both actions are null. */
 @Composable
-private fun MessageActionsMenu(
-    expanded: Boolean,
-    onDismiss: () -> Unit,
+private fun MessageActionRow(
     onCopy: (() -> Unit)?,
     onEdit: (() -> Unit)?,
 ) {
     val s = LocalStrings.current
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        onCopy?.let { act ->
-            DropdownMenuItem(
-                text = { Text(s.copyMessage) },
-                leadingIcon = { Icon(CopyIcon, contentDescription = null) },
-                onClick = {
-                    onDismiss()
-                    act()
-                },
-            )
-        }
-        onEdit?.let { act ->
-            DropdownMenuItem(
-                text = { Text(s.editMessage) },
-                leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
-                onClick = {
-                    onDismiss()
-                    act()
-                },
-            )
-        }
+    if (onCopy == null && onEdit == null) return
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        onCopy?.let { act -> MessageActionButton(s.copyMessage, CopyIcon, act) }
+        onEdit?.let { act -> MessageActionButton(s.editMessage, Icons.Filled.Edit, act) }
+    }
+}
+
+/** One small icon+label button for [MessageActionRow]; quiet onSurface-
+ *  Variant colors so long transcripts stay readable. */
+@Composable
+private fun MessageActionButton(label: String, icon: ImageVector, onClick: () -> Unit) {
+    val tint = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = label, modifier = Modifier.size(14.dp), tint = tint)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = tint, maxLines = 1)
     }
 }
 
