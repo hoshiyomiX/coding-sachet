@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -25,7 +26,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -34,28 +38,30 @@ import id.codingsachet.mobile.ui.LocalStrings
 import id.codingsachet.mobile.ui.ToolCardUi
 import id.codingsachet.mobile.ui.sachetSuccess
 
-/** Small monogram chip identifying a tool. Colors follow the theme so
- *  both light and dark modes keep readable contrast. T-ML58 #2: engine Pi
- *  memancarkan nama tool ASLINYA (read/write/edit/grep/glob) — petakan
- *  juga, bukan hanya nama tool engine legacy (read_file/write_file/…). */
+/**
+ * T-ML67 (owner order "more compact & simple tools call session"): every
+ * tool round renders as ONE flat line — colored monospace glyph, merged
+ * "label · summary" ellipsized, an 8dp status dot, a small chevron. No
+ * per-card Surface, no 28dp badge box, no status words: a long Pi run
+ * reads like a tight log instead of a stack of full-width cards. Tap the
+ * row to expand args/output (kept from T-ML58).
+ */
+
+/** Monogram letter + theme color identifying a tool (T-ML58 #2 lineage —
+ *  engine Pi emits its native tool names too, not just legacy ones). */
 @Composable
-private fun ToolBadge(name: String) {
-    val (letter, color) = when (name) {
-        "bash" -> "$" to MaterialTheme.colorScheme.primary
-        "read_file", "read" -> "R" to MaterialTheme.colorScheme.secondary
+internal fun toolGlyph(name: String): Pair<String, Color> {
+    val c = MaterialTheme.colorScheme
+    return when (name) {
+        "bash" -> "$" to c.primary
+        "read_file", "read" -> "R" to c.secondary
         "write_file", "write" -> "W" to sachetSuccess()
         "edit" -> "E" to sachetSuccess()
-        "list_dir" -> "L" to MaterialTheme.colorScheme.tertiary
+        "list_dir" -> "L" to c.tertiary
         "todo" -> "C" to sachetSuccess()
-        "grep" -> "G" to MaterialTheme.colorScheme.tertiary
-        "glob" -> "*" to MaterialTheme.colorScheme.tertiary
-        else -> "T" to MaterialTheme.colorScheme.secondary
-    }
-    Box(
-        Modifier.size(28.dp).background(color.copy(alpha = 0.18f), RoundedCornerShape(8.dp)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(letter, color = color, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+        "grep" -> "G" to c.tertiary
+        "glob" -> "*" to c.tertiary
+        else -> "T" to c.secondary
     }
 }
 
@@ -96,82 +102,113 @@ private fun firstJsonField(json: String, field: String): String? {
     return if (end > quote) rest.substring(quote + 1, end) else rest.take(40)
 }
 
-/** Expandable card for one agent tool call. */
+/** Status color for one call: running = primary, interrupted = muted
+ *  (T-ML31 P2-7), done = success, failed = error. */
+@Composable
+private fun statusColor(ok: Boolean?, interrupted: Boolean): Color = when (ok) {
+    null -> if (interrupted) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary
+    true -> sachetSuccess()
+    false -> MaterialTheme.colorScheme.error
+}
+
+@Composable
+private fun statusText(card: ToolCardUi): String {
+    val s = LocalStrings.current
+    return when (card.ok) {
+        null -> if (card.interrupted) s.toolInterrupted else s.toolRunning
+        true -> s.toolDone
+        false -> s.toolFailed
+    }
+}
+
+/** 8dp status dot (T-ML67): replaces the status word — the color carries
+ *  the state, the text rides along as contentDescription for a11y. */
+@Composable
+private fun StatusDot(color: Color, description: String) {
+    Box(
+        Modifier
+            .size(8.dp)
+            .clip(CircleShape)
+            .background(color)
+            .semantics { contentDescription = description },
+    )
+}
+
+/** One tool call as a single flat expandable line. */
 @Composable
 fun ToolCard(card: ToolCardUi) {
     val s = LocalStrings.current
     var open by remember(card.id) { mutableStateOf(false) }
+    val (letter, glyphColor) = toolGlyph(card.name)
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        modifier = Modifier.fillMaxWidth().animateContentSize(),
-    ) {
-        Column(Modifier.clickable { open = !open }.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ToolBadge(card.name)
-                Column(Modifier.weight(1f)) {
-                    Text(toolLabel(card.name, s), style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        summarize(card),
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = if (open) 4 else 1,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                when (card.ok) {
-                    null -> Text(
-                        if (card.interrupted) s.toolInterrupted else s.toolRunning,
-                        style = MaterialTheme.typography.labelSmall,
-                        // Interrupted reads as a muted state, not the active
-                        // primary color a running call shows (T-ML31 P2-7).
-                        color = if (card.interrupted) MaterialTheme.colorScheme.onSurfaceVariant
-                        else MaterialTheme.colorScheme.primary,
-                    )
-                    true -> Text(s.toolDone, style = MaterialTheme.typography.labelSmall, color = sachetSuccess())
-                    false -> Text(s.toolFailed, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                }
-                Icon(
-                    if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+    Column(Modifier.fillMaxWidth().animateContentSize()) {
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { open = !open }
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                letter,
+                color = glyphColor,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelMedium,
+            )
+            val summary = summarize(card)
+            val line = if (summary.isBlank()) toolLabel(card.name, s)
+            else "${toolLabel(card.name, s)} · $summary"
+            Text(
+                line,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            StatusDot(statusColor(card.ok, card.interrupted), statusText(card))
+            Icon(
+                if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        if (open) {
+            if (card.args.isNotBlank()) {
+                Text(
+                    card.args.trim(),
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+                        .padding(6.dp),
                 )
             }
-            if (open) {
-                if (card.args.isNotBlank()) {
-                    Text(
-                        card.args.trim(),
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-                            .padding(8.dp),
-                    )
-                }
-                if (card.output != null) {
-                    Text(
-                        card.output.ifBlank { "(empty)"}.take(6000),
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-                            .padding(8.dp),
-                    )
-                }
+            if (card.output != null) {
+                Text(
+                    card.output.ifBlank { "(empty)"}.take(6000),
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+                        .padding(6.dp),
+                )
             }
         }
     }
 }
 
 /**
- * T-ML58 #2: N kartu tool diringkas jadi SATU baris grup yang bisa dibuka.
- * Bukti lapangan 1.0.58: sesi engine Pi 418K tok = puluhan putaran tool, tiap
- * putaran menggambar kartu penuh — chat dipenuhi baris "Terminal / Baca file
- * / Tulis file / read / write / …". Satu baris grup menahan semua kartu
- * putaran yang sudah lewat; mengetuknya membuka kartu individual.
+ * T-ML58 #2 → T-ML67: N completed tool rounds held by ONE compact group
+ * header (single line: title · breakdown + status dot); opening it lays
+ * out the individual flat rows. Field proof 1.0.58: a 418K-token Pi run
+ * drew dozens of full cards — now it reads as one quiet line.
  */
 @Composable
 fun ToolCardGroup(cards: List<ToolCardUi>, title: String) {
@@ -179,32 +216,27 @@ fun ToolCardGroup(cards: List<ToolCardUi>, title: String) {
     var open by remember(cards.firstOrNull()?.id, cards.size) { mutableStateOf(false) }
 
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth().animateContentSize(),
     ) {
-        Column(
-            Modifier.clickable { open = !open }.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
+        Column(Modifier.clickable { open = !open }.padding(horizontal = 6.dp, vertical = 4.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text(title, style = MaterialTheme.typography.titleSmall)
-                    // Rincian jenis tool, mis. "Terminal ×3 · Baca file ×2".
-                    val breakdown = cards.groupingBy { it.name }.eachCount()
-                        .entries.sortedByDescending { it.value }
-                        .joinToString(" · ") { (n, c) -> "${toolLabel(n, s)} ×$c" }
-                    Text(
-                        breakdown,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = if (open) 3 else 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+                // Rincian jenis tool, mis. "Terminal ×3 · Baca file ×2".
+                val breakdown = cards.groupingBy { it.name }.eachCount()
+                    .entries.sortedByDescending { it.value }
+                    .joinToString(" · ") { (n, c) -> "${toolLabel(n, s)} ×$c" }
+                Text(
+                    if (breakdown.isBlank()) title else "$title · $breakdown",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
                 // Status ringkas grup: ada gagal → gagal; ada yang masih
                 // berjalan → berjalan; ada terputus (run mati) → terputus.
                 val running = cards.count { it.ok == null && !it.interrupted }
@@ -216,11 +248,12 @@ fun ToolCardGroup(cards: List<ToolCardUi>, title: String) {
                     interrupted > 0 -> s.toolInterrupted to MaterialTheme.colorScheme.onSurfaceVariant
                     else -> s.toolDone to sachetSuccess()
                 }
-                Text(status, style = MaterialTheme.typography.labelSmall, color = color)
+                StatusDot(color, status)
                 Icon(
                     if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp),
                 )
             }
             if (open) cards.forEach { ToolCard(it) }
