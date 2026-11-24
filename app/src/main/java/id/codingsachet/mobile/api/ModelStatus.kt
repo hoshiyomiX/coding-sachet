@@ -122,10 +122,22 @@ object ModelStatus {
      * stays VISIBLE (gray dot already says "not checked yet") and only a
      * CONFIRMED-DEAD model is filtered out. Prefix providers (APInex)
      * keep the strict tier-based behavior.
+     *
+     * T-ML69 #2 (owner order: "fix filter which ngodeai model free &
+     * model topup/pay"): a CONFIRMED-PAID model never passes — the lenient
+     * prefix-less rule above was written for NIM/seek (whole service free,
+     * alive ≈ free) but NgodeAI is a prepaid gateway where paid models are
+     * alive too: its authenticated-catalogue sweep reports tier=topup /
+     * free=false for them, and those verdicts now exclude the model from
+     * the free-only list. Unchecked models stay visible as before.
      */
-    fun passesFreeFilter(provider: Provider, model: String): Boolean =
-        isFree(provider, model) ||
-            (provider.freeModelPrefix == null && entry(provider.id, model)?.state != State.DEAD)
+    fun passesFreeFilter(provider: Provider, model: String): Boolean {
+        if (isFree(provider, model)) return true
+        val e = entry(provider.id, model)
+        if (e?.tier == Tier.TOPUP || e?.tier == Tier.SUBSCRIPTION) return false
+        if (e?.free == false) return false
+        return provider.freeModelPrefix == null && e?.state != State.DEAD
+    }
 
     /** Record one sweep result and wake the listeners. */
     fun apply(providerId: String, model: String, state: State, free: Boolean?, tier: Tier? = null, now: Long = System.currentTimeMillis()): Entry {

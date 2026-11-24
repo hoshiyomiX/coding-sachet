@@ -103,6 +103,8 @@ import id.codingsachet.mobile.ui.ChatEngine
 import id.codingsachet.mobile.ui.FolderIcon
 import id.codingsachet.mobile.ui.LiveTurn
 import id.codingsachet.mobile.ui.LocalStrings
+import id.codingsachet.mobile.ui.ROLE_EXECUTOR
+import id.codingsachet.mobile.ui.ROLE_ORCHESTRATOR
 import id.codingsachet.mobile.ui.ProjectNames
 import id.codingsachet.mobile.ui.StopIcon
 import id.codingsachet.mobile.ui.TextFileIcon
@@ -853,6 +855,7 @@ private fun MessageBubble(
                 Modifier.fillMaxWidth().widthIn(max = 520.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                ModelTag(m.model, m.modelRole)
                 ThinkingBlock(m.thinking)
                 if (m.content.isNotBlank()) {
                     // T-ML66: Salin as a compact button under the answer
@@ -882,6 +885,33 @@ private fun MessageBubble(
             }
         }
         // "tool" results are rendered inside their cards
+    }
+}
+
+/** T-ML69 #1 (owner order: "labeling untuk orchestrator & executor —
+ *  show each model names"): chip kecil di atas gelembung assistant —
+ *  peran + nama model yang menulis pesan itu. Executor mendapat warna
+ *  berbeda agar pergantian model mid-run terlihat sekilas. Null model
+ *  (pesan lama pra-label / pesan non-assistant) = tanpa chip. */
+@Composable
+private fun ModelTag(model: String?, role: String?) {
+    if (model.isNullOrBlank()) return
+    val executor = role == ROLE_EXECUTOR
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = if (executor) MaterialTheme.colorScheme.secondaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Text(
+            "${if (executor) ROLE_EXECUTOR else ROLE_ORCHESTRATOR} · $model",
+            Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+            color = if (executor) MaterialTheme.colorScheme.onSecondaryContainer
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -1005,6 +1035,9 @@ internal fun buildChatEntries(
 private fun LiveBubble(l: LiveTurn, onResume: () -> Unit = {}) {
     val s = LocalStrings.current
     Column(Modifier.fillMaxWidth().widthIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        // T-ML69 #1: chip model yang sedang menulis stream ini — berganti
+        // sendiri saat executor mengambil alih (event 'model').
+        ModelTag(l.model, l.modelRole)
         // Rate-limit wait hint (client-side 15 RPM cap / 429 backoff).
         l.waiting?.let {
             Text(

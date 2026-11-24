@@ -66,7 +66,21 @@ data class LiveTurn(
      *  re-issue the stream so the model produces the next round, instead
      *  of losing the whole run's work over one dead network path. */
     val canContinue: Boolean = false,
+    /** Model yang sedang menulis stream ini (T-ML69 #1). Diisi sejak run
+     *  dimulai (model terpilih = orchestrator) dan DIGANTI saat event
+     *  'model' tiba (handoff executor engine Pi dual-model). Null = turn
+     *  lama pra-label. */
+    val model: String? = null,
+    /** Peran model yang sedang menulis: "orchestrator" | "executor"
+     *  (T-ML69 #1) — dipakai chip label di LiveBubble. */
+    val modelRole: String? = null,
 )
+
+/** Label peran model penulis pesan (T-ML69 #1) — orchestrator = model
+ *  terpilih yang memulai run; executor = model pengganti dari konfigurasi
+ *  dual-model Pi (T-ML68 #1) setelah putaran tool pertama. */
+const val ROLE_ORCHESTRATOR = "orchestrator"
+const val ROLE_EXECUTOR = "executor"
 
 /**
  * Drives one session: sends history to the agent server and folds the
@@ -129,7 +143,7 @@ class ChatEngine(val session: Session) {
         turnStartedAt = System.currentTimeMillis()
         retryCount = 0
         turnCancelled = false
-        live.value = LiveTurn()
+        live.value = LiveTurn(model = model, modelRole = ROLE_ORCHESTRATOR)
         Logx.i("chat", "kirim session=${session.id} model=$model msgs=${session.messages.size}")
         startStream(model)
         return true
@@ -164,10 +178,24 @@ class ChatEngine(val session: Session) {
     // server) is abandoned instead of firing a new stream the user cancelled.
     @Volatile private var turnCancelled = false
 
+    // T-ML69 #1: model penulis run ini. runModel = model yang memulai
+    // (terpilih di app — orchestrator); handoffModel = model pengganti dari
+    // event 'model' (executor engine Pi dual-model, T-ML68). Pesan assistant
+    // yang datang setelahnya di-tag dengannya.
+    private var runModel: String? = null
+    private var handoffModel: String? = null
+    private var handoffIsExecutor = false
+
     private fun startStream(model: String) {
         // Fresh stream attempt (initial or auto-retry): the done marker
         // belongs to THIS attempt, not the one that just died.
         receivedDone = false
+        // T-ML69 #1: label model di-reset per attempt — auto-retry memulai
+        // dari model terpilih lagi (handoff executor terjadi ulang lewat
+        // event 'model' bila run dual-model).
+        runModel = model
+        handoffModel = null
+        handoffIsExecutor = false
         val key = Graph.prefs.apiKey
         if (key.isBlank()) {
             Logx.w("chat", "kirim diblokir: API key belum diatur")
@@ -231,6 +259,20 @@ class ChatEngine(val session: Session) {
 
     private suspend fun handle(ev: JsonObject) {
         when (ev["type"]?.jsonPrimitive?.content) {
+            "model" -> {
+                // T-ML69 #1: server berganti model mid-run (engine Pi
+                // dual-model T-ML68 #1 — executor mengambil alih putaran
+                // setelah tool pertama). Catat model + perannya: chip live
+                // berganti dan pesan-pesan berikutnya di-tag dengannya.
+                val mdl = ev.str("model").takeIf { it.isNotBlank() } ?: return
+                handoffModel = mdl
+                handoffIsExecutor = ev.str("role") == ROLE_EXECUTOR
+                Logx.i("chat", "model berganti mid-run: $mdl (peran=${if (handoffIsExecutor) ROLE_EXECUTOR else ROLE_ORCHESTRATOR})")
+                live.value = live.value?.copy(
+                    model = mdl,
+                    modelRole = if (handoffIsExecutor) ROLE_EXECUTOR else ROLE_ORCHESTRATOR,
+                )
+            }
             "think" -> { receivedAnything = true; live.value = live.value?.copy(thinking = live.value!!.thinking + ev.str("delta"), waiting = null, reconnect = null, reconnectTo = null) }
             "text" -> { receivedAnything = true; live.value = live.value?.copy(text = live.value!!.text + ev.str("delta"), waiting = null, reconnect = null, reconnectTo = null) }
             "netretry" -> {
@@ -276,6 +318,14 @@ class ChatEngine(val session: Session) {
                         val o = tc.jsonObject
                         ToolCall(id = o.str("id"), name = o.str("name"), args = o["args"] ?: JsonObject(emptyMap()))
                     },
+                    // T-ML69 #1: label model penulis — setelah event 'model'
+                    // (handoff executor) semua putaran berikut di-tag model
+                    // pengganti; sebelum itu model yang memulai run. Pesan
+                    // tool/user tidak diberi label (bukan tulisan model).
+                    model = if (m.str("role") == "assistant") handoffModel ?: runModel else null,
+                    modelRole = if (m.str("role") == "assistant") {
+                        if (handoffModel != null && handoffIsExecutor) ROLE_EXECUTOR else ROLE_ORCHESTRATOR
+                    } else null,
                 )
                 // The streamed text and cards are now part of the persisted
                 // history; clear the live copies so they are not shown twice.
@@ -462,7 +512,7 @@ class ChatEngine(val session: Session) {
         turnStartedAt = System.currentTimeMillis()
         retryCount = 0
         turnCancelled = false
-        live.value = LiveTurn()
+        live.value = LiveTurn(model = session.model, modelRole = ROLE_ORCHESTRATOR)
         Logx.i("chat", "lanjutkan run yang terputus session=${session.id} msgs=${session.messages.size}")
         startStream(session.model)
         return true

@@ -188,6 +188,40 @@ class CodingSachetUnitTest {
     }
 
     @Test
+    fun modelStatusFreeFilterExcludesConfirmedPaidModels() {
+        // T-ML69 #2 (owner order: "fix filter which ngodeai model free &
+        // model topup/pay"): NgodeAI adalah gateway prepaid — sweep katalog
+        // ber-autentikasi melaporkan tier per model. Model BERBAYAR yang
+        // HIDUP (katalog tampil + dot hijau) TIDAK boleh lolos filter
+        // "gratis saja"; aturan lama prefix-less (NIM: hidup ≈ gratis)
+        // membiarkannya lolos.
+        ModelStatus.reset()
+        // Bentuk katalog live 2026-11-24: 4 aktif dengan pricing 0/0…
+        ModelStatus.apply("ngodeai", "ngodeai/glm-5.3-flash", ModelStatus.State.OK, true, ModelStatus.Tier.FREE, now = 1)
+        ModelStatus.apply("ngodeai", "ngodeai/minimax-m3.1-flash", ModelStatus.State.OK, true, ModelStatus.Tier.FREE, now = 1)
+        // …dan model VIP berbayar yang juga aktif:
+        ModelStatus.apply("ngodeai", "ngodeai/claude-haiku-5.5", ModelStatus.State.OK, false, ModelStatus.Tier.TOPUP, now = 1)
+        ModelStatus.apply("ngodeai", "ngodeai/glm-5.3", ModelStatus.State.OK, false, ModelStatus.Tier.TOPUP, now = 1)
+        // Belum di-sweep / tidak ada di katalog = UNKNOWN tanpa verdict:
+        ModelStatus.apply("ngodeai", "ngodeai/baru-belum-tahu", ModelStatus.State.UNKNOWN, null, null, now = 1)
+        assertTrue("model free 0/0 = gratis (badge + filter)", ModelStatus.isFree(Providers.NGODEAI, "ngodeai/glm-5.3-flash"))
+        assertTrue(ModelStatus.passesFreeFilter(Providers.NGODEAI, "ngodeai/glm-5.3-flash"))
+        assertTrue(ModelStatus.passesFreeFilter(Providers.NGODEAI, "ngodeai/minimax-m3.1-flash"))
+        assertFalse("model topup AKTIF tidak boleh lolos filter gratis (bug T-ML69)", ModelStatus.passesFreeFilter(Providers.NGODEAI, "ngodeai/claude-haiku-5.5"))
+        assertFalse(ModelStatus.passesFreeFilter(Providers.NGODEAI, "ngodeai/glm-5.3"))
+        assertFalse("isFree model topup = false", ModelStatus.isFree(Providers.NGODEAI, "ngodeai/claude-haiku-5.5"))
+        assertTrue("belum di-sweep tetap tampil (dot abu-abu, perilaku T-ML50)", ModelStatus.passesFreeFilter(Providers.NGODEAI, "ngodeai/baru-belum-tahu"))
+        // Regresi NIM/seek (freeByProbe, tanpa verdict tier): hidup = tetap
+        // lolos filter gratis — perbaikan tidak boleh memecah provider lain.
+        ModelStatus.apply("nvidia", "z-ai/glm-5.3-flash", ModelStatus.State.OK, true, now = 1)
+        ModelStatus.apply("nvidia", "ngodeai/hanya-tanpa-verdict", ModelStatus.State.OK, null, null, now = 1)
+        assertTrue(ModelStatus.passesFreeFilter(Providers.NVIDIA, "z-ai/glm-5.3-flash"))
+        assertTrue("NIM hidup tanpa verdict tier = lolos (perilaku lama)", ModelStatus.passesFreeFilter(Providers.NVIDIA, "ngodeai/hanya-tanpa-verdict"))
+        ModelStatus.apply("nvidia", "mati/model", ModelStatus.State.DEAD, false, now = 1)
+        assertFalse(ModelStatus.passesFreeFilter(Providers.NVIDIA, "mati/model"))
+    }
+
+    @Test
     fun modelStatusStaleness() {
         // T-ML50: fresh = sweep yang MENYELESAI (doneAt), bukan entri apa pun.
         // Entri parsial dari sweep yang terputus TIDAK boleh mengunci 12 jam.
@@ -347,6 +381,29 @@ class CodingSachetUnitTest {
         assertEquals(s.messages[1].toolCalls?.size, back.messages[1].toolCalls?.size)
         assertEquals(s.messages[1].toolCalls?.get(0)?.name, back.messages[1].toolCalls?.get(0)?.name)
         assertEquals(s.messages[2].toolCallId, back.messages[2].toolCallId)
+    }
+
+    @Test
+    fun msgModelRoleFieldsRoundTripAndStayAbsentWhenNull() {
+        // T-ML69 #1: label model penulis pesan. Field baru WAJIB:
+        // (a) round-trip utuh lewat JSON persistensi, dan (b) TIDAK muncul
+        // di wire bila null (encodeDefaults=false — pesan lama dikirim ke
+        // server dengan bentuk BAWAAN; server memetakan field eksplisit
+        // sehingga kunci asing tak pernah bocor ke gateway).
+        val tagged = Msg(
+            role = "assistant",
+            content = "selesai",
+            model = "minimax-m3.1-flash",
+            modelRole = "executor",
+        )
+        val back = json.decodeFromString<Msg>(json.encodeToString(tagged))
+        assertEquals("minimax-m3.1-flash", back.model)
+        assertEquals("executor", back.modelRole)
+        assertTrue("field model ter-serialize saat terisi", json.encodeToString(tagged).contains("\"model\""))
+        val plain = Msg(role = "user", content = "halo")
+        val wire = json.encodeToString(plain)
+        assertFalse("pesan tanpa label tidak membawa kunci model (kompatibilitas wire)", wire.contains("\"model\""))
+        assertFalse(wire.contains("\"modelRole\""))
     }
 
     @Test

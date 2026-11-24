@@ -25,6 +25,18 @@ data class Msg(
     val toolCalls: List<ToolCall>? = null,
     val toolCallId: String? = null,
     val name: String? = null,
+    /** Model yang MENULIS pesan ini (T-ML69 #1: label orchestrator/
+     *  executor). Null = pesan lama pra-update. Hanya diisi untuk pesan
+     *  assistant; kedua engine (Pi dual-model & legacy) memilih model yang
+     *  memulai run, event 'model' (handoff executor) menggantinya.
+     *  Aman di kabel: kedua engine server memetakan field eksplisit
+     *  (toOpenAiMessages/canonicalMsg) — kunci tambahan tidak pernah bocor
+     *  ke gateway dan tidak mengubah hash sesi Pi. */
+    val model: String? = null,
+    /** Peran model penulis: "orchestrator" | "executor" (T-ML69 #1) —
+     *  null = pesan lama / tidak diketahui. Disimpan bersama Msg agar
+     *  label tetap benar walau konfigurasi JSON dual-model berubah. */
+    val modelRole: String? = null,
 )
 
 @Serializable
