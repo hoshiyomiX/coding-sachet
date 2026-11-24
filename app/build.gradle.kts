@@ -103,8 +103,8 @@ dependencies {
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.foundation)
-    implementation(libs.compose.material3)
-    implementation(libs.compose.material.icons.core)
+    implementation(libs.miuix.ui)          // official miuix (compose-miuix-ui/miuix) 0.9.4
+    implementation(libs.miuix.preference)  // SwitchPreference dsb. — lihat MIGRATION.md
     implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
