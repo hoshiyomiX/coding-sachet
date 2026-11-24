@@ -11,10 +11,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.basic.Surface
+import top.yukonga.miuix.kmp.basic.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,11 +43,11 @@ fun HomeScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("Coding Sachet", style = MaterialTheme.typography.headlineMedium)
+        Text("Coding Sachet", style = MiuixTheme.textStyles.title1)
         Text(
             s.appTagline,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MiuixTheme.textStyles.body2,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(36.dp))
@@ -72,8 +72,8 @@ fun HomeScreen(
 @Composable
 private fun HomeOption(icon: ImageVector, title: String, hint: String, onClick: () -> Unit) {
     Surface(
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        // shape default Surface miuix sudah squircle khas HyperOS (MIGRATION.md §3.1)
+        color = MiuixTheme.colorScheme.surfaceContainer, // pengganti surfaceVariant M3
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
     ) {
         Row(
@@ -83,16 +83,16 @@ private fun HomeOption(icon: ImageVector, title: String, hint: String, onClick: 
             Icon(
                 icon,
                 contentDescription = title,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = MiuixTheme.colorScheme.primary,
                 modifier = Modifier.size(32.dp),
             )
             Spacer(Modifier.width(16.dp))
             Column {
-                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(title, style = MiuixTheme.textStyles.title2)
                 Text(
                     hint,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
             }
         }

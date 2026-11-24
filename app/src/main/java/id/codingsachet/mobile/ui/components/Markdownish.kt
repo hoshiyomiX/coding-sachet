@@ -6,9 +6,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.basic.Surface
+import top.yukonga.miuix.kmp.basic.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -27,9 +27,9 @@ import androidx.compose.ui.unit.dp
  */
 @Composable
 fun Markdownish(text: String) {
-    val codeBg = MaterialTheme.colorScheme.surfaceVariant
-    val codeColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val textStyle = MaterialTheme.typography.bodyMedium
+    val codeBg = MiuixTheme.colorScheme.surfaceVariant
+    val codeColor = MiuixTheme.colorScheme.onSurfaceVariantSummary
+    val textStyle = MiuixTheme.textStyles.main
 
     Column {
         val blocks = splitFences(text)
@@ -45,7 +45,7 @@ fun Markdownish(text: String) {
                             Text(
                                 b.first.trimEnd(),
                                 fontFamily = FontFamily.Monospace,
-                                style = MaterialTheme.typography.bodySmall,
+                                style = MiuixTheme.textStyles.body2,
                                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                             )
                         }
@@ -68,7 +68,7 @@ private fun HeadingOrText(block: String, textStyle: TextStyle, codeColor: Color)
         for ((i, line) in lines.withIndex()) {
             val h = heading.find(line)
             when {
-                h != null -> Text(h.groupValues[2], style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                h != null -> Text(h.groupValues[2], style = MiuixTheme.textStyles.title3, fontWeight = FontWeight.Bold)
                 line.isBlank() && i == lines.lastIndex -> Unit // no trailing spacer
                 else -> Text(inline(line, codeColor), style = textStyle)
             }

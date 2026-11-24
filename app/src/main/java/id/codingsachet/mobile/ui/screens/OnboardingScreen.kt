@@ -14,15 +14,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
+import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
+import top.yukonga.miuix.kmp.basic.TabRow
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,7 +44,6 @@ import id.codingsachet.mobile.ui.LocalStrings
 import kotlinx.coroutines.launch
 
 /** Welcome → provider → API key → environment install (bundled in the APK). */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
     val s = LocalStrings.current
@@ -87,46 +85,46 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("Coding Sachet", style = MaterialTheme.typography.displaySmall, color = MaterialTheme.colorScheme.primary)
-            Text(s.appTagline, style = MaterialTheme.typography.bodyLarge)
+            Text("Coding Sachet", style = MiuixTheme.textStyles.title1, color = MiuixTheme.colorScheme.primary)
+            Text(s.appTagline, style = MiuixTheme.textStyles.body1)
 
-            // language chips
-            androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = Graph.prefs.lang == "id", onClick = { Graph.prefs.lang = "id"; onLangChange("id") }, label = { Text("Bahasa Indonesia") })
-                FilterChip(selected = Graph.prefs.lang == "en", onClick = { Graph.prefs.lang = "en"; onLangChange("en") }, label = { Text("English") })
-            }
-
-            Text(s.onboardingBody, style = MaterialTheme.typography.bodyMedium)
-
-            // provider chips + free-tier note
-            Text(s.providerSection, style = MaterialTheme.typography.titleSmall)
-            androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Providers.ALL.forEach { p ->
-                    FilterChip(
-                        selected = provider.id == p.id,
-                        onClick = { switchProvider(p) },
-                        label = { Text(p.label) },
-                    )
-                }
-            }
-            Text(
-                "${provider.label} · ${provider.docsUrl.removePrefix("https://")}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // language chips → TabRow segmented miuix (MIGRATION.md §3.2)
+            val langs = listOf("id" to "Bahasa Indonesia", "en" to "English")
+            TabRow(
+                tabs = langs.map { it.second },
+                selectedTabIndex = langs.indexOfFirst { it.first == Graph.prefs.lang }.coerceAtLeast(0),
+                onTabSelected = { i ->
+                    Graph.prefs.lang = langs[i].first
+                    onLangChange(langs[i].first)
+                },
             )
 
-            OutlinedTextField(
+            Text(s.onboardingBody, style = MiuixTheme.textStyles.main)
+
+            // provider chips + free-tier note
+            Text(s.providerSection, style = MiuixTheme.textStyles.title3)
+            TabRow(
+                tabs = Providers.ALL.map { it.label },
+                selectedTabIndex = Providers.ALL.indexOfFirst { it.id == provider.id }.coerceAtLeast(0),
+                onTabSelected = { i -> switchProvider(Providers.ALL[i]) },
+            )
+            Text(
+                "${provider.label} · ${provider.docsUrl.removePrefix("https://")}",
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+
+            TextField(
                 value = key,
                 onValueChange = { key = it.trim(); keyError = null },
-                label = { Text("${s.apiKeyLabel} ${provider.label}") },
-                placeholder = { Text(provider.keyPrefix + "…") },
+                label = provider.keyPrefix + "…",
+                useLabelAsPlaceholder = true,
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true,
-                isError = keyError != null,
                 modifier = Modifier.fillMaxWidth(),
             )
             if (keyError != null) {
-                Text(keyError!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                Text(keyError!!, color = MiuixTheme.colorScheme.error, style = MiuixTheme.textStyles.body2)
             }
 
             Button(
@@ -148,16 +146,14 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 if (checking) {
-                    CircularProgressIndicator(Modifier.height(18.dp), strokeWidth = 2.dp)
+                    CircularProgressIndicator(strokeWidth = 2.dp, size = 18.dp)
                     Spacer(Modifier.height(8.dp))
                 }
                 Text(if (keyOk) s.keyOk else s.next, Modifier.padding(start = if (checking) 8.dp else 0.dp))
             }
 
             if (!storageGranted) {
-                TextButton(onClick = { requestStorage() }) {
-                    Text("${s.storagePermission} — ${s.storageHint}")
-                }
+                TextButton(onClick = { requestStorage() }, text = "${s.storagePermission} — ${s.storageHint}")
             }
 
             // ---- install phase (environment is bundled in the APK) ----
@@ -169,14 +165,14 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text(if (st is RuntimeState.InstallFailed) s.retry else s.installTitle) }
                     if (st is RuntimeState.InstallFailed) {
-                        Text(s.installFailed + ": " + st.message, color = MaterialTheme.colorScheme.error)
+                        Text(s.installFailed + ": " + st.message, color = MiuixTheme.colorScheme.error)
                     }
-                    Text(s.installHint, style = MaterialTheme.typography.bodySmall)
+                    Text(s.installHint, style = MiuixTheme.textStyles.body2)
                 }
                 is RuntimeState.Installing -> {
-                    Text("${st.step}${if (st.detail.isNotEmpty()) " · ${st.detail}" else ""}")
+                    Text("${st.step}${if (st.detail.isNotEmpty()) " · ${st.detail}" else "")}")
                     if (st.progress != null) {
-                        LinearProgressIndicator(progress = { st.progress ?: 0f }, modifier = Modifier.fillMaxWidth())
+                        LinearProgressIndicator(progress = st.progress, modifier = Modifier.fillMaxWidth())
                     } else {
                         LinearProgressIndicator(Modifier.fillMaxWidth())
                     }
@@ -194,8 +190,8 @@ fun OnboardingScreen(onDone: () -> Unit, onLangChange: (String) -> Unit) {
 
             Text(
                 "${s.gateway}: ${provider.baseUrl.removeSuffix("/v1")}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
         }
     }

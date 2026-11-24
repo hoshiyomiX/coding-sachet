@@ -12,13 +12,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import id.codingsachet.mobile.ui.KeyboardArrowDownIcon
+import id.codingsachet.mobile.ui.KeyboardArrowUpIcon
+import id.codingsachet.mobile.ui.LocalStrings
+import id.codingsachet.mobile.ui.ToolCardUi
+import id.codingsachet.mobile.ui.sachetSuccess
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.basic.Surface
+import top.yukonga.miuix.kmp.basic.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,9 +36,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import id.codingsachet.mobile.ui.LocalStrings
-import id.codingsachet.mobile.ui.ToolCardUi
-import id.codingsachet.mobile.ui.sachetSuccess
 
 /**
  * T-ML67 (owner order "more compact & simple tools call session"): every
@@ -51,16 +50,16 @@ import id.codingsachet.mobile.ui.sachetSuccess
  *  engine Pi emits its native tool names too, not just legacy ones). */
 @Composable
 internal fun toolGlyph(name: String): Pair<String, Color> {
-    val c = MaterialTheme.colorScheme
+    val c = MiuixTheme.colorScheme
     return when (name) {
         "bash" -> "$" to c.primary
         "read_file", "read" -> "R" to c.secondary
         "write_file", "write" -> "W" to sachetSuccess()
         "edit" -> "E" to sachetSuccess()
-        "list_dir" -> "L" to c.tertiary
+        "list_dir" -> "L" to c.primaryVariant
         "todo" -> "C" to sachetSuccess()
-        "grep" -> "G" to c.tertiary
-        "glob" -> "*" to c.tertiary
+        "grep" -> "G" to c.primaryVariant
+        "glob" -> "*" to c.primaryVariant
         else -> "T" to c.secondary
     }
 }
@@ -106,9 +105,9 @@ private fun firstJsonField(json: String, field: String): String? {
  *  (T-ML31 P2-7), done = success, failed = error. */
 @Composable
 private fun statusColor(ok: Boolean?, interrupted: Boolean): Color = when (ok) {
-    null -> if (interrupted) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary
+    null -> if (interrupted) MiuixTheme.colorScheme.onSurfaceVariantSummary else MiuixTheme.colorScheme.primary
     true -> sachetSuccess()
-    false -> MaterialTheme.colorScheme.error
+    false -> MiuixTheme.colorScheme.error
 }
 
 @Composable
@@ -155,25 +154,25 @@ fun ToolCard(card: ToolCardUi) {
                 color = glyphColor,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.labelMedium,
+                style = MiuixTheme.textStyles.body2,
             )
             val summary = summarize(card)
             val line = if (summary.isBlank()) toolLabel(card.name, s)
             else "${toolLabel(card.name, s)} · $summary"
             Text(
                 line,
-                style = MaterialTheme.typography.bodySmall,
+                style = MiuixTheme.textStyles.body2,
                 fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
             StatusDot(statusColor(card.ok, card.interrupted), statusText(card))
             Icon(
-                if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                if (open) KeyboardArrowUpIcon else KeyboardArrowDownIcon,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.size(16.dp),
             )
         }
@@ -182,10 +181,10 @@ fun ToolCard(card: ToolCardUi) {
                 Text(
                     card.args.trim(),
                     fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MiuixTheme.textStyles.body2,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+                        .background(MiuixTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
                         .padding(6.dp),
                 )
             }
@@ -193,10 +192,10 @@ fun ToolCard(card: ToolCardUi) {
                 Text(
                     card.output.ifBlank { "(empty)"}.take(6000),
                     fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MiuixTheme.textStyles.body2,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+                        .background(MiuixTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
                         .padding(6.dp),
                 )
             }
@@ -217,7 +216,7 @@ fun ToolCardGroup(cards: List<ToolCardUi>, title: String) {
 
     Surface(
         shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = MiuixTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth().animateContentSize(),
     ) {
         Column(Modifier.clickable { open = !open }.padding(horizontal = 6.dp, vertical = 4.dp)) {
@@ -231,8 +230,8 @@ fun ToolCardGroup(cards: List<ToolCardUi>, title: String) {
                     .joinToString(" · ") { (n, c) -> "${toolLabel(n, s)} ×$c" }
                 Text(
                     if (breakdown.isBlank()) title else "$title · $breakdown",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
@@ -243,16 +242,16 @@ fun ToolCardGroup(cards: List<ToolCardUi>, title: String) {
                 val failed = cards.count { it.ok == false }
                 val interrupted = cards.count { it.interrupted }
                 val (status, color) = when {
-                    failed > 0 -> s.toolFailed to MaterialTheme.colorScheme.error
-                    running > 0 -> s.toolRunning to MaterialTheme.colorScheme.primary
-                    interrupted > 0 -> s.toolInterrupted to MaterialTheme.colorScheme.onSurfaceVariant
+                    failed > 0 -> s.toolFailed to MiuixTheme.colorScheme.error
+                    running > 0 -> s.toolRunning to MiuixTheme.colorScheme.primary
+                    interrupted > 0 -> s.toolInterrupted to MiuixTheme.colorScheme.onSurfaceVariantSummary
                     else -> s.toolDone to sachetSuccess()
                 }
                 StatusDot(color, status)
                 Icon(
-                    if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    if (open) KeyboardArrowUpIcon else KeyboardArrowDownIcon,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     modifier = Modifier.size(16.dp),
                 )
             }
