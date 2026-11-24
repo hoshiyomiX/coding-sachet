@@ -405,19 +405,31 @@ async function route(req, res) {
       return sendJson(res, 400, { error: 'model dan messages wajib' });
     }
 
-    log.inf('srv', `chat mulai ${providerId} ${body.model} engine=${config.engine} msgs=${body.messages.length}${typeof body.workdir === 'string' && body.workdir ? ` workdir=${body.workdir.slice(0, 160)}` : ''}`);
-    const chatT0 = Date.now();
-    let chatTurns = 0;
-
     // T-ML68 #1: konfigurasi dual-model (Settings → Konfigurasi JSON, kunci
     // "pi") — orchestrator menimpa model sesi, executor mengambil alih
     // putaran setelah tool pertama. Kunci "pi" DIBUANG dari options legacy
     // agar tidak ikut terkirim ke gateway (bukan opsi OpenAI-compatible).
+    // T-ML70 (diagnosis logcat 2026-11-24: "gagal switch" ternyata konfigurasi
+    // tak pernah tiba + gagal diam-diam): parsing dinaikkan SEBELUM baris
+    // "chat mulai" supaya executor aktif terbaca dari situ; kunci pi yang
+    // tidak valid atau engine bukan Pi kini BERSUARA (WRN) — bukan no-op senyap.
     const dual = parseDualConfig(body.options) || null;
+    if (!dual && body.options && typeof body.options === 'object' && !Array.isArray(body.options) && 'pi' in body.options) {
+      log.wrn('srv', `kunci "pi" diabaikan: butuh {"pi":{"orchestrator":"…","executor":"…"}} non-kosong dan tidak identik (diterima: ${JSON.stringify(body.options.pi).slice(0, 160)})`);
+    }
     const legacyOptions = body.options && typeof body.options === 'object' && !Array.isArray(body.options) && 'pi' in body.options
       ? Object.fromEntries(Object.entries(body.options).filter(([k]) => k !== 'pi'))
       : body.options;
-    if (dual) {
+    const usePi = config.engine === 'pi';
+    const piReady = usePi && piBundleAvailable();
+    if (dual && !piReady) {
+      log.wrn('srv', `kunci "pi" aktif tapi engine=${config.engine}${usePi ? ' dan bundle Pi tidak ditemukan' : ' (bukan engine Pi)'} — dual-model tidak berjalan, run model tunggal`);
+    }
+
+    log.inf('srv', `chat mulai ${providerId} ${body.model} engine=${config.engine}${dual && dual.executor ? ` executor=${dual.executor}` : ''} msgs=${body.messages.length}${typeof body.workdir === 'string' && body.workdir ? ` workdir=${body.workdir.slice(0, 160)}` : ''}`);
+    const chatT0 = Date.now();
+    let chatTurns = 0;
+    if (dual && piReady) {
       log.inf('srv', `dual-model pi: orchestrator=${dual.orchestrator || body.model} executor=${dual.executor || '(tidak ada)'}`);
     }
 
@@ -440,11 +452,11 @@ async function route(req, res) {
       // T-ML45: pemilihan engine. Pi hanya jalan bila bundle tersedia di
       // rootfs — bila tidak (aset gagal diekstrak), jatuh ke legacy dengan
       // log keras: chat tetap jalan, tapi PoC-nya bohong kalau didiamkan.
-      const usePi = config.engine === 'pi';
-      if (usePi && !piBundleAvailable()) {
+      // (usePi/piReady sudah dihitung di atas sebelum baris "chat mulai".)
+      if (usePi && !piReady) {
         log.err('srv', `engine=pi tapi bundle Pi tidak ditemukan — FALLBACK ke engine legacy (periksa ekstraksi ${process.env.SACHET_PI_BUNDLE_DIR || '/opt/sachet/pi-bundle'})`);
       }
-      const added = usePi && piBundleAvailable()
+      const added = piReady
         ? await runPiChat({
             apiKey: key,
             providerId,
@@ -472,7 +484,7 @@ async function route(req, res) {
             emit,
           });
       chatTurns = added.filter((m) => m.role === 'assistant').length;
-      log.inf('srv', `chat selesai ${providerId} ${body.model} engine=${usePi && piBundleAvailable() ? 'pi' : 'legacy'} turns=${chatTurns} msgs+${added.length} ${Date.now() - chatT0}ms`);
+      log.inf('srv', `chat selesai ${providerId} ${body.model} engine=${piReady ? 'pi' : 'legacy'} turns=${chatTurns} msgs+${added.length} ${Date.now() - chatT0}ms`);
     } catch (e) {
       // A user stop (stop button / screen close) aborts the run — that is a
       // normal exit, not a failure; keep the error channel for real faults.

@@ -293,6 +293,70 @@ test('HTTP chat route: gateway errors become error + done SSE events', async (t)
   assert.strictEqual(events.at(-1).type, 'done');
 });
 
+test('HTTP chat route: invalid "pi" key is ignored + stripped, run stays single-model (T-ML70)', async (t) => {
+  // Diagnosis logcat 2026-11-24: konfigurasi dual gagal diam-diam. Kunci pi
+  // yang TIDAK valid (identik / kosong) kini bersuara (WRN server) dan tidak
+  // pernah bocor ke gateway; opsi lain di sekitarnya tetap sampai.
+  const gw = await startMockGateway([{ text: 'pong' }]);
+  t.after(() => gw.close());
+
+  useGateways({ apinex: gw });
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  const events = await collectSse(
+    port, '/api/chat',
+    { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
+    {
+      model: 'test-pro',
+      messages: [{ role: 'user', content: 'hai' }],
+      options: { pi: { orchestrator: 'sama', executor: 'sama' }, temperature: 0.5 },
+    }
+  );
+  assert.strictEqual(events.at(-1).type, 'done');
+  const last = gw.requests.at(-1);
+  assert.ok(last, 'gateway menerima setidaknya satu request');
+  assert.strictEqual(last.model, 'test-pro');
+  assert.ok(!('pi' in last), 'kunci pi tidak boleh bocor ke gateway');
+  assert.strictEqual(last.temperature, 0.5, 'opsi lain tetap diteruskan');
+});
+
+test('HTTP chat route: valid "pi" without Pi engine → stripped, single model + WRN (T-ML70)', async (t) => {
+  // engine default lingkungan test = legacy (SACHET_ENGINE tidak diset) —
+  // kunci pi valid pun tidak menjalankan dual-model dan tidak bocor; run
+  // selesai normal dengan model tunggal.
+  const gw = await startMockGateway([{ text: 'pong' }]);
+  t.after(() => gw.close());
+
+  useGateways({ apinex: gw });
+
+  const { start } = require('../server');
+  const srv = start();
+  t.after(() => new Promise((r) => srv.close(r)));
+  await new Promise((r) => srv.on('listening', r));
+  const port = srv.address().port;
+
+  const events = await collectSse(
+    port, '/api/chat',
+    { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
+    {
+      model: 'test-pro',
+      messages: [{ role: 'user', content: 'hai' }],
+      options: { pi: { orchestrator: 'orch-mini', executor: 'exec-mini' } },
+    }
+  );
+  assert.strictEqual(events.at(-1).type, 'done');
+  const last = gw.requests.at(-1);
+  assert.ok(last, 'gateway menerima setidaknya satu request');
+  assert.strictEqual(last.model, 'test-pro');
+  assert.ok(!('pi' in last), 'kunci pi tidak boleh bocor ke gateway');
+});
+
+
 test('HTTP server: unknown provider is rejected with 400', async (t) => {
   const gw = await startMockGateway([]);
   t.after(() => gw.close());

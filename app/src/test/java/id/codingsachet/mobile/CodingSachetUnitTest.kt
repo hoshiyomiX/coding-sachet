@@ -12,6 +12,7 @@ import id.codingsachet.mobile.runtime.GitSetup
 import id.codingsachet.mobile.ui.ChatEngine
 import id.codingsachet.mobile.ui.EnStrings
 import id.codingsachet.mobile.ui.IdStrings
+import id.codingsachet.mobile.ui.PiOptions
 import id.codingsachet.mobile.ui.ProjectNames
 import id.codingsachet.mobile.ui.SachetStrings
 import id.codingsachet.mobile.ui.Schemes
@@ -31,6 +32,7 @@ import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -508,6 +510,57 @@ class CodingSachetUnitTest {
         assertTrue("ekor harus <= batas", kept.toByteArray().size <= 100)
         assertTrue("harus mulai di awal baris", kept.startsWith("line-"))
         assertTrue(kept.endsWith("\n"))
+    }
+
+    // ---------- T-ML70: dual-model "pi" section builder ----------
+
+    @Test
+    fun piOptionsBuildsSectionForMatchingProvider() {
+        val o = PiOptions.build("ngodeai", "ngodeai", "ngodeai/glm-5.3-flash", "ngodeai/minimax-m3.1-flash")!!
+        val pi = o["pi"] as JsonObject
+        assertEquals("ngodeai/glm-5.3-flash", (pi["orchestrator"] as kotlinx.serialization.json.JsonPrimitive).content)
+        assertEquals("ngodeai/minimax-m3.1-flash", (pi["executor"] as kotlinx.serialization.json.JsonPrimitive).content)
+    }
+
+    @Test
+    fun piOptionsNullWhenProviderMismatched() {
+        // Batas v1: satu provider per run — pilihan milik provider lain
+        // tidak pernah dikirim (server tidak mendapat kunci pi palsu).
+        assertNull(PiOptions.build("apinex", "ngodeai", "ngodeai/glm-5.3-flash", "ngodeai/minimax-m3.1-flash"))
+        assertNull(PiOptions.build("ngodeai", "", "ngodeai/glm-5.3-flash", "ngodeai/minimax-m3.1-flash"))
+    }
+
+    @Test
+    fun piOptionsNullWhenBothBlankOrIdentical() {
+        assertNull(PiOptions.build("ngodeai", "ngodeai", "", ""))
+        assertNull(PiOptions.build("ngodeai", "ngodeai", "  ", " "))
+        assertNull(PiOptions.build("ngodeai", "ngodeai", "m", "m"))
+        assertNull(PiOptions.build("ngodeai", "ngodeai", "m", " m ")) // trim sebelum banding
+    }
+
+    @Test
+    fun piOptionsPartialRolesAreLegal() {
+        // Executor saja: model chat aktif yang menjadi orchestrator.
+        val execOnly = PiOptions.build("ngodeai", "ngodeai", "", "ngodeai/minimax-m3.1-flash")!!
+        val pi = execOnly["pi"] as JsonObject
+        assertNull(pi["orchestrator"])
+        assertEquals("ngodeai/minimax-m3.1-flash", (pi["executor"] as kotlinx.serialization.json.JsonPrimitive).content)
+        // Orchestrator saja: run tetap single-model di model itu (executor kosong).
+        val orchOnly = PiOptions.build("ngodeai", "ngodeai", "ngodeai/glm-5.3-flash", "")!!
+        val pi2 = orchOnly["pi"] as JsonObject
+        assertEquals("ngodeai/glm-5.3-flash", (pi2["orchestrator"] as kotlinx.serialization.json.JsonPrimitive).content)
+        assertNull(pi2["executor"])
+    }
+
+    @Test
+    fun piOptionsDefaultsPinNgodeaiDualModel() {
+        // Owner order T-ML70: default aktif = glm-5.3-flash → minimax,
+        // keduanya provider ngodeai (satu provider, syarat v1).
+        assertEquals("ngodeai/glm-5.3-flash", PiOptions.DEFAULT_ORCHESTRATOR)
+        assertEquals("ngodeai/minimax-m3.1-flash", PiOptions.DEFAULT_EXECUTOR)
+        assertEquals("ngodeai", PiOptions.DEFAULT_PROVIDER)
+        assertNotEquals(PiOptions.DEFAULT_ORCHESTRATOR, PiOptions.DEFAULT_EXECUTOR)
+        assertNotNull(PiOptions.build(PiOptions.DEFAULT_PROVIDER, PiOptions.DEFAULT_PROVIDER, PiOptions.DEFAULT_ORCHESTRATOR, PiOptions.DEFAULT_EXECUTOR))
     }
 
     // ---------- T-ML28: scheme templates, project folders, actual token count ----------

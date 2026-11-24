@@ -4,7 +4,10 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -28,6 +31,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -45,6 +49,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
@@ -52,11 +57,13 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import id.codingsachet.mobile.BuildConfig
 import id.codingsachet.mobile.Graph
+import id.codingsachet.mobile.api.ModelStatus
 import id.codingsachet.mobile.api.Provider
 import id.codingsachet.mobile.api.Providers
 import id.codingsachet.mobile.runtime.LogcatDump
 import id.codingsachet.mobile.runtime.RuntimeState
 import id.codingsachet.mobile.ui.LocalStrings
+import id.codingsachet.mobile.ui.PiOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -416,7 +423,13 @@ private fun JsonConfigSection() {
     var optSeed by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "seed")) }
     var optStop by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "stop")) }
     var optReasoning by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "reasoning_effort")) }
-    var optExtra by remember { mutableStateOf(Graph.prefs.requestOptionsExtra) }
+    // T-ML70: selector dual-model engine Pi — menggantikan kolom "JSON
+    // tambahan". Persist langsung saat dipilih (tanpa tombol Simpan);
+    // preview di bawah dibangun dari builder yang SAMA dengan yang
+    // dikirim ChatEngine, jadi yang terlihat = yang terkirim.
+    var piOrch by remember { mutableStateOf(Graph.prefs.piOrchestrator) }
+    var piExec by remember { mutableStateOf(Graph.prefs.piExecutor) }
+    var piSheet by remember { mutableStateOf<String?>(null) } // "orch" | "exec" saat sheet terbuka
     var savedNote by remember { mutableStateOf<String?>(null) }
 
     /** Validate the structured fields; null + the first offending label. */
@@ -453,17 +466,15 @@ private fun JsonConfigSection() {
         }
     }
 
-    /** The structured object + the extra object merged last (extra wins). */
+    /** The structured object + the "pi" dual-model section — one builder
+     *  with ChatEngine (T-ML70: preview = wire). */
     fun buildMerged(): Pair<JsonObject?, String?> {
         validateStructured()?.let { return null to it }
         val structured = buildStructured()
-        val extra = optExtra.trim()
-        if (extra.isEmpty()) return structured to null
-        val ex = runCatching { json.parseToJsonElement(extra) }.getOrNull() as? JsonObject
-            ?: return null to s.jsonExtra
+        val pi = PiOptions.build(Graph.prefs.active.id, Graph.prefs.piProvider, piOrch, piExec)
         return buildJsonObject {
             structured.forEach { (k, v) -> put(k, v) }
-            ex.forEach { (k, v) -> put(k, v) }
+            pi?.forEach { (k, v) -> put(k, v) }
         } to null
     }
 
@@ -485,7 +496,9 @@ private fun JsonConfigSection() {
         schemeId = sc.id
         Graph.prefs.schemeId = sc.id
         Graph.prefs.requestOptions = id.codingsachet.mobile.ui.Schemes.storedOptions(sc)
-        Graph.prefs.requestOptionsExtra = ""
+        // T-ML70: template skema TIDAK lagi menyentuh konfigurasi dual-model
+        // (footgun lama: applyScheme diam-diam mengosongkan JSON tambahan
+        // tempat kunci "pi" dulu hidup — akar insiden "switch tidak jalan").
         Graph.prefs.schemePrompt = id.codingsachet.mobile.ui.Schemes.storedPrompt(sc)
         // Reflect the stored template into the editor fields.
         optTemp = storedField(Graph.prefs.requestOptions, "temperature")
@@ -496,7 +509,6 @@ private fun JsonConfigSection() {
         optSeed = storedField(Graph.prefs.requestOptions, "seed")
         optStop = storedField(Graph.prefs.requestOptions, "stop")
         optReasoning = storedField(Graph.prefs.requestOptions, "reasoning_effort")
-        optExtra = ""
         savedNote = s.jsonSaved
     }
 
@@ -548,17 +560,46 @@ private fun JsonConfigSection() {
         }
     }
 
-    OutlinedTextField(
-        value = optExtra,
-        onValueChange = { optExtra = it; savedNote = null },
-        label = { Text(s.jsonExtra) },
-        placeholder = { Text("{\"logprobs\":false}") },
-        isError = error == s.jsonExtra,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-        modifier = Modifier.fillMaxWidth(),
+    // T-ML70 (owner order: "kolom opsi model selectable orchestrator &
+    // executor di settings"): selector dual-model — pilihan dipersist
+    // langsung; baris preview di bawah membuktikan kunci "pi" benar-benar
+    // akan terkirim (akar insiden: konfigurasi tak pernah tiba + tak
+    // terlihat). Opsi pertama tiap selector = mode non-aktif.
+    Text(s.dualModelSection, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+    Text(s.dualModelHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    if (Graph.prefs.piProvider.isNotBlank() && Graph.prefs.piProvider != Graph.prefs.active.id) {
+        Text(s.dualProviderNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+    }
+    DualModelRow(
+        label = s.dualOrchestrator,
+        value = piOrch.ifBlank { s.dualOrchestratorChatModel },
+        selected = piOrch.isNotBlank(),
+        onClick = { piSheet = "orch" },
     )
-    Text(s.jsonExtraHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    DualModelRow(
+        label = s.dualExecutor,
+        value = piExec.ifBlank { s.dualExecutorOff },
+        selected = piExec.isNotBlank(),
+        onClick = { piSheet = "exec" },
+    )
+    piSheet?.let { which ->
+        PiModelSheet(
+            isExecutor = which == "exec",
+            current = if (which == "exec") piExec else piOrch,
+            onPick = { m ->
+                if (which == "exec") {
+                    Graph.prefs.piExecutor = m
+                    piExec = m
+                } else {
+                    Graph.prefs.piOrchestrator = m
+                    piOrch = m
+                }
+                Graph.prefs.piProvider = Graph.prefs.active.id
+                piSheet = null
+            },
+            onDismiss = { piSheet = null },
+        )
+    }
 
     // Live preview of the exact object that will be merged into the request.
     Text(s.jsonPreview, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -577,10 +618,9 @@ private fun JsonConfigSection() {
             onClick = {
                 val (merged, err) = buildMerged()
                 if (err == null && merged != null) {
-                    // Structured fields and the extra object are stored
-                    // separately; ChatEngine merges them on send.
+                    // Structured fields are stored here; the dual-model
+                    // selectors persist on pick (T-ML70).
                     Graph.prefs.requestOptions = json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), buildStructured())
-                    Graph.prefs.requestOptionsExtra = optExtra.trim()
                     savedNote = s.jsonSaved
                 }
             },
@@ -588,9 +628,15 @@ private fun JsonConfigSection() {
         ) { Text(s.save) }
         TextButton(onClick = {
             optTemp = ""; optTopP = ""; optMaxTok = ""; optPresence = ""; optFrequency = ""
-            optSeed = ""; optStop = ""; optReasoning = ""; optExtra = ""
+            optSeed = ""; optStop = ""; optReasoning = ""
             Graph.prefs.requestOptions = ""
-            Graph.prefs.requestOptionsExtra = ""
+            // T-ML70: Reset mengembalikan dual-model ke default AKTIF
+            // (glm-5.3-flash → minimax), bukan kosong.
+            Graph.prefs.piOrchestrator = PiOptions.DEFAULT_ORCHESTRATOR
+            Graph.prefs.piExecutor = PiOptions.DEFAULT_EXECUTOR
+            Graph.prefs.piProvider = PiOptions.DEFAULT_PROVIDER
+            piOrch = PiOptions.DEFAULT_ORCHESTRATOR
+            piExec = PiOptions.DEFAULT_EXECUTOR
             // Reset also returns the scheme to the default coding agent.
             schemeId = id.codingsachet.mobile.ui.Schemes.DEFAULT_ID
             Graph.prefs.schemeId = id.codingsachet.mobile.ui.Schemes.DEFAULT_ID
@@ -598,6 +644,113 @@ private fun JsonConfigSection() {
             savedNote = s.jsonSaved
         }) { Text(s.jsonReset) }
         savedNote?.let { Text(it, Modifier.align(Alignment.CenterVertically), style = MaterialTheme.typography.labelMedium) }
+    }
+}
+
+/** T-ML70: satu baris selector dual-model (orchestrator/executor) — klik
+ *  membuka sheet pemilihan model dari provider aktif. */
+@Composable
+private fun DualModelRow(label: String, value: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+    ) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(label, style = MaterialTheme.typography.labelMedium)
+                Text(value, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            }
+            Text("›", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** T-ML70: sheet pemilih model orchestrator/executor — daftar model dari
+ *  provider AKTIF (batas v1: satu provider per run), dengan pencarian dan
+ *  baris non-aktif di paling atas. Pilihan dipersist oleh caller. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PiModelSheet(isExecutor: Boolean, current: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
+    val s = LocalStrings.current
+    val provider = Graph.prefs.active
+    var models by remember { mutableStateOf<List<String>?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var query by remember { mutableStateOf("") }
+    var attempt by remember { mutableStateOf(0) }
+
+    LaunchedEffect(attempt) {
+        models = null
+        error = null
+        Graph.api.models(Graph.prefs.apiKey, provider)
+            .onSuccess { models = it }
+            .onFailure { error = it.message }
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                if (isExecutor) s.dualExecutor else s.dualOrchestrator,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text(s.modelSearch) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            when {
+                error != null -> Column {
+                    Text("${s.modelFetchError}: $error", color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = { attempt++ }) { Text(s.retry) }
+                }
+                models == null -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CircularProgressIndicator(Modifier.width(18.dp), strokeWidth = 2.dp)
+                    Text(s.modelFetching)
+                }
+                else -> LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+                    item {
+                        PiModelRow(
+                            label = if (isExecutor) s.dualExecutorOff else s.dualOrchestratorChatModel,
+                            sub = "",
+                            selected = current.isBlank(),
+                            onPick = { onPick("") },
+                        )
+                    }
+                    val filtered = models!!.filter { it.contains(query, ignoreCase = true) }
+                    items(filtered) { m ->
+                        PiModelRow(
+                            label = m,
+                            sub = if (ModelStatus.isFree(provider, m)) s.modelFreeBadge else "",
+                            selected = m == current,
+                            onPick = { onPick(m) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** T-ML70: satu baris model di sheet — nama + badge gratis (status live
+ *  tersimpan), cek untuk pilihan saat ini. */
+@Composable
+private fun PiModelRow(label: String, sub: String, selected: Boolean, onPick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onPick),
+    ) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(label, style = MaterialTheme.typography.bodyMedium)
+                if (sub.isNotBlank()) {
+                    Text(sub, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+            if (selected) Text("✓", style = MaterialTheme.typography.titleMedium)
+        }
     }
 }
 

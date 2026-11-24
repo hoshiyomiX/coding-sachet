@@ -97,12 +97,31 @@ class Prefs(ctx: Context) {
         get() = sp.getString("requestOptions", "") ?: ""
         set(v) = sp.edit().putString("requestOptions", v).apply()
 
-    /** Extra raw JSON object (Settings → Konfigurasi JSON → JSON tambahan),
-     *  merged AFTER [requestOptions] so it can override the structured
-     *  fields. Same reserved-key protection applies server-side. */
-    var requestOptionsExtra: String
-        get() = sp.getString("requestOptionsExtra", "") ?: ""
-        set(v) = sp.edit().putString("requestOptionsExtra", v).apply()
+    // T-ML70 (owner order: default dual-model aktif + selector di Settings,
+    // kolom "JSON tambahan" dipensiunkan). Konfigurasi dual-model engine Pi
+    // kini field first-class — ChatEngine membangun kunci "pi" dari sini;
+    // validasi provider sama terjadi di PiOptions.build.
+    /** Model orchestrator (perencana + putaran tool). Blank = model chat aktif. */
+    var piOrchestrator: String
+        get() = sp.getString("piOrchestrator", "") ?: ""
+        set(v) = sp.edit().putString("piOrchestrator", v).apply()
+
+    /** Model executor (mengambil alih setelah putaran tool pertama). Blank = single model. */
+    var piExecutor: String
+        get() = sp.getString("piExecutor", "") ?: ""
+        set(v) = sp.edit().putString("piExecutor", v).apply()
+
+    /** Provider tempat kedua model di atas dipilih — pi hanya aktif bila sama
+     *  dengan provider aktif (batas v1: satu provider per run). */
+    var piProvider: String
+        get() = sp.getString("piProvider", "") ?: ""
+        set(v) = sp.edit().putString("piProvider", v).apply()
+
+    /** Migrasi paksa default (owner: "timpa semua") sudah berjalan — sekali
+     *  seumur instalasi, setelah itu pilihan user dihormati. */
+    var piDefaultsForced: Boolean
+        get() = sp.getBoolean("piDefaultsForced", false)
+        set(v) = sp.edit().putBoolean("piDefaultsForced", v).apply()
 
     /** Id of the active ready-made scheme (T-ML28: Schemes.ALL — "coding"
      *  is the default and means the plain coding agent, no overrides). */

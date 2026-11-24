@@ -240,17 +240,23 @@ class ChatEngine(val session: Session) {
             "satu proyek per folder; kerjakan semua file proyek ini di dalam folder itu."
     }
 
-    /** Konfigurasi JSON (Settings): structured options + the extra object
-     *  merged last. Blank/invalid values never block sending — the agent
-     *  server re-sanitizes everything anyway. */
+    /** Konfigurasi JSON (Settings): structured options + seksi "pi" dual-model
+     *  (T-ML70: dibangun dari selector Settings via PiOptions — kini satu
+     *  sumber kebenaran bersama preview). Blank/invalid values never block
+     *  sending — the agent server re-sanitizes everything anyway. */
     private fun requestOptions(): JsonObject? {
-        val structured = parsePref(Graph.prefs.requestOptions) ?: return null
-        val extra = parsePref(Graph.prefs.requestOptionsExtra)
-        val merged = buildJsonObject {
-            structured.forEach { (k, v) -> put(k, v) }
-            extra?.forEach { (k, v) -> put(k, v) }
+        val structured = parsePref(Graph.prefs.requestOptions)
+        val pi = PiOptions.build(
+            Graph.prefs.active.id,
+            Graph.prefs.piProvider,
+            Graph.prefs.piOrchestrator,
+            Graph.prefs.piExecutor,
+        )
+        if (structured == null && pi == null) return null
+        return buildJsonObject {
+            structured?.forEach { (k, v) -> put(k, v) }
+            pi?.forEach { (k, v) -> put(k, v) }
         }
-        return merged.takeIf { it.isNotEmpty() }
     }
 
     private fun parsePref(raw: String): JsonObject? =
