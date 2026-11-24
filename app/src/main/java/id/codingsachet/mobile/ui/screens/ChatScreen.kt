@@ -29,46 +29,39 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.NavigationDrawerItem
-import androidx.compose.material3.NavigationDrawerItemDefaults
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.rememberDrawerState
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import id.codingsachet.mobile.ui.AddIcon
+import id.codingsachet.mobile.ui.ArrowDropDownIcon
+import id.codingsachet.mobile.ui.CheckIcon
+import id.codingsachet.mobile.ui.DeleteIcon
+import id.codingsachet.mobile.ui.EditIcon
+import id.codingsachet.mobile.ui.KeyboardArrowDownIcon
+import id.codingsachet.mobile.ui.KeyboardArrowRightIcon
+import id.codingsachet.mobile.ui.MenuIcon
+import id.codingsachet.mobile.ui.RefreshIcon
+import id.codingsachet.mobile.ui.SendIcon
+import id.codingsachet.mobile.ui.SettingsIcon
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
+import top.yukonga.miuix.kmp.basic.HorizontalDivider
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
+import top.yukonga.miuix.kmp.overlay.OverlayDialog
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.Surface
+import top.yukonga.miuix.kmp.basic.Switch
+import top.yukonga.miuix.kmp.basic.TabRow
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -88,6 +81,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -133,7 +127,7 @@ import id.codingsachet.mobile.ui.CopyIcon
 
 private val PrettyJson = Json { prettyPrint = true }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
     session: Session?,
@@ -144,7 +138,9 @@ fun ChatScreen(
     onIntentConsumed: () -> Unit = {},
 ) {
     val s = LocalStrings.current
-    val drawer = rememberDrawerState(DrawerValue.Closed)
+    // MIGRATION.md §3.2: miuix 0.9.4 tanpa side drawer — state drawer
+    // menjadi Boolean sederhana pada drawer kustom dari primitif miuix.
+    var drawerOpen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val runtimeState by Graph.runtime.state.collectAsState()
     val clipboard = LocalClipboardManager.current
@@ -152,7 +148,7 @@ fun ChatScreen(
 
     // Back closes the session drawer first (the AppRoot back handlers are
     // composed before this one, so this wins whenever the drawer is open).
-    BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
+    BackHandler(enabled = drawerOpen) { drawerOpen = false }
 
     // Re-initialize only when the RESTORED session id changes (activity
     // recreation after process death); switching chats from the drawer goes
@@ -193,7 +189,7 @@ fun ChatScreen(
     LaunchedEffect(intent) {
         when (intent) {
             ChatIntent.NewProject -> showNewProject = true
-            ChatIntent.OpenDrawer -> scope.launch { drawer.open() }
+            ChatIntent.OpenDrawer -> drawerOpen = true
             ChatIntent.None -> {}
         }
         if (intent != ChatIntent.None) onIntentConsumed()
@@ -297,152 +293,18 @@ fun ChatScreen(
         }
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawer,
-        drawerContent = {
-            ModalDrawerSheet {
-                Column(Modifier.fillMaxHeight().padding(vertical = 12.dp)) {
-                    // Standard M3 drawer header: app identity.
-                    Column(
-                        Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp),
-                    ) {
-                        Text("Coding Sachet", style = MaterialTheme.typography.titleLarge)
-                        Text(
-                            s.appTagline,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    NavigationDrawerItem(
-                        label = { Text(s.chatNew) },
-                        icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                        selected = false,
-                        onClick = {
-                            scope.launch { drawer.close() }
-                            showNewProject = true
-                        },
-                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    HorizontalDivider()
-                    Text(
-                        s.sessionsTitle,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 28.dp, top = 12.dp, bottom = 4.dp),
-                    )
-                    val sessions = remember(sessionsVersion) { Graph.chats.sessions }
-                    LazyColumn(Modifier.weight(1f)) {
-                        items(sessions, key = { it.id }) { sess ->
-                            NavigationDrawerItem(
-                                label = {
-                                    Column {
-                                        Text(
-                                            sess.title.ifBlank { "…" },
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                        )
-                                        Text(
-                                            java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.getDefault())
-                                                .format(java.util.Date(sess.created))
-                                                + (sess.project?.let { "  ·  $it" } ?: ""),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                },
-                                selected = sess.id == current?.id,
-                                onClick = {
-                                    current = sess
-                                    onSessionChange(sess)
-                                    scope.launch { drawer.close() }
-                                },
-                                badge = {
-                                    IconButton(onClick = {
-                                        // A running stream keeps persisting the
-                                        // session — without cancelling its engine
-                                        // the deleted chat file would be rewritten
-                                        // (resurrected) and the stream would keep
-                                        // burning tokens in the background.
-                                        engines.remove(sess.id)?.dispose()
-                                        Graph.chats.delete(sess)
-                                        Graph.chats.reload()
-                                        sessionsVersion++
-                                        if (current?.id == sess.id) {
-                                            // T-ML58 #3: pilih sesi terbaru
-                                            // berikutnya (konsisten dengan
-                                            // fallback restore AppState) —
-                                            // bukan layar kosong.
-                                            val next = Graph.chats.sessions.firstOrNull()
-                                            current = next
-                                            onSessionChange(next)
-                                        }
-                                    }) {
-                                        Icon(
-                                            Icons.Filled.Delete,
-                                            contentDescription = s.deleteSession,
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                },
-                                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-                            )
-                        }
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    // Top-bar buttons relocated here (T-ML28 #5): File and
-                    // Settings stay reachable from the drawer.
-                    // T-ML65 #1: salin percakapan penuh (transkrip teks).
-                    NavigationDrawerItem(
-                        label = { Text(s.copyChat) },
-                        icon = { Icon(CopyIcon, contentDescription = s.copyChat) },
-                        selected = false,
-                        onClick = {
-                            scope.launch { drawer.close() }
-                            val text = buildTranscript(
-                                current?.messages ?: emptyList(),
-                                s.transcriptUser,
-                                s.transcriptAssistant,
-                            )
-                            if (text.isNotBlank()) copyText(text)
-                        },
-                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-                    )
-                    NavigationDrawerItem(
-                        label = { Text(s.filesTitle) },
-                        icon = { Icon(TextFileIcon, contentDescription = s.filesTitle) },
-                        selected = false,
-                        onClick = {
-                            scope.launch { drawer.close() }
-                            onOpenFiles()
-                        },
-                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-                    )
-                    NavigationDrawerItem(
-                        label = { Text(s.settingsTitle) },
-                        icon = { Icon(Icons.Filled.Settings, contentDescription = s.settingsTitle) },
-                        selected = false,
-                        onClick = {
-                            scope.launch { drawer.close() }
-                            onOpenSettings()
-                        },
-                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-                    )
-                }
-            }
-        },
-    ) {
+    // MIGRATION.md §3.2: side drawer kustom dari primitif miuix (Surface +
+    // scrim + AnimatedVisibility) — perilaku sama dengan ModalNavigationDrawer
+    // lama: buka dari ikon menu / intent, tutup via scrim/back/selesai aksi.
+    Box(Modifier.fillMaxSize()) {
         Scaffold(
             topBar = {
                 Column {
                     TopAppBar(
+                        title = current?.title?.ifBlank { s.chatNew } ?: s.appTagline,
                         navigationIcon = {
-                            IconButton(onClick = { scope.launch { drawer.open() } }) {
-                                Icon(Icons.Filled.Menu, contentDescription = s.sessionsTitle)
+                            IconButton(onClick = { drawerOpen = true }) {
+                                Icon(MenuIcon, contentDescription = s.sessionsTitle)
                             }
                         },
                         // The title block is the model selector: tapping it opens
@@ -450,43 +312,41 @@ fun ChatScreen(
                         // Top-bar actions (File/Settings) and the runtime status
                         // dot were removed by owner order T-ML28 #5 — the screens
                         // live in the drawer, the status in Settings.
-                        title = {
-                            Column(
+                        // MIGRATION.md §3.2: judul miuix bertipe String —
+                        // selector model pindah ke bottomContent.
+                        bottomContent = {
+                            Column {
+                            Row(
                                 Modifier
                                     .fillMaxWidth()
                                     .clickable { showModels = true }
-                                    .padding(vertical = 2.dp),
+                                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    current?.title?.ifBlank { s.chatNew } ?: s.appTagline,
-                                    style = MaterialTheme.typography.titleMedium,
+                                    model.ifBlank { s.selectModel },
+                                    style = MiuixTheme.textStyles.body2,
+                                    color = MiuixTheme.colorScheme.primary,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
                                 )
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        model.ifBlank { s.selectModel },
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f, fill = false),
-                                    )
-                                    Icon(
-                                        Icons.Filled.ArrowDropDown,
-                                        contentDescription = s.selectModel,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(16.dp),
-                                    )
-                                }
+                                Icon(
+                                    ArrowDropDownIcon,
+                                    contentDescription = s.selectModel,
+                                    tint = MiuixTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                            // Two tabs (T-ML28 #3): the chat and the project's file tree.
+                            TabRow(
+                                tabs = listOf(s.tabPrompt, s.tabProjectTree),
+                                selectedTabIndex = tab,
+                                onTabSelected = { tab = it },
+                            )
                             }
                         },
                     )
-                    // Two tabs (T-ML28 #3): the chat and the project's file tree.
-                    TabRow(selectedTabIndex = tab) {
-                        Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text(s.tabPrompt) })
-                        Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text(s.tabProjectTree) })
-                    }
                 }
             },
             bottomBar = {
@@ -502,7 +362,7 @@ fun ChatScreen(
                         onRefreshQuota = { refreshQuota(fresh = true) },
                     )
                     // ---------- composer ----------
-                    Surface(tonalElevation = 3.dp) {
+                    Surface(color = MiuixTheme.colorScheme.surfaceContainerHigh) {
                         Row(
                             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).imePadding(),
                             verticalAlignment = Alignment.Bottom,
@@ -510,39 +370,40 @@ fun ChatScreen(
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(24.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                color = MiuixTheme.colorScheme.surfaceVariant,
                                 modifier = Modifier.weight(1f),
                             ) {
                                 Box(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                                     if (input.isEmpty()) {
                                         Text(
                                             s.inputPlaceholder,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                            style = MiuixTheme.textStyles.main,
                                         )
                                     }
                                     BasicTextField(
                                         value = input,
                                         onValueChange = { input = it },
-                                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                                        textStyle = MiuixTheme.textStyles.main.copy(color = MiuixTheme.colorScheme.onSurface),
                                         modifier = Modifier.fillMaxWidth(),
                                         maxLines = 6,
                                     )
                                 }
                             }
                             if (live != null && live!!.busy) {
-                                FilledIconButton(
+                                IconButton(
                                     onClick = { engine?.stop() },
+                                    backgroundColor = MiuixTheme.colorScheme.primary,
                                     modifier = Modifier.size(48.dp),
                                 ) {
                                     Icon(
                                         StopIcon,
                                         contentDescription = s.stop,
-                                        tint = MaterialTheme.colorScheme.error,
+                                        tint = MiuixTheme.colorScheme.error,
                                     )
                                 }
                             } else {
-                                FilledIconButton(
+                                IconButton(
                                     onClick = {
                                         if (current == null) {
                                             // New session → name its project first
@@ -550,21 +411,22 @@ fun ChatScreen(
                                             // in the field and is sent on confirm.
                                             pendingSend = true
                                             showNewProject = true
-                                            return@FilledIconButton
+                                            return@IconButton
                                         }
                                         // Delegated var: smart-cast does not survive
                                         // the null branch above — the elvis keeps
                                         // the compiler's null-safety satisfied.
-                                        val target = current ?: return@FilledIconButton
+                                        val target = current ?: return@IconButton
                                         val e = engines.getOrPut(target.id) { ChatEngine(target) }
                                         // Keep the typed text when the turn cannot
                                         // start (e.g. still busy) — it is not lost.
                                         if (e.send(input, model)) input = ""
                                     },
                                     enabled = input.isNotBlank() && model.isNotBlank(),
+                                    backgroundColor = MiuixTheme.colorScheme.primary,
                                     modifier = Modifier.size(48.dp),
                                 ) {
-                                    Icon(Icons.Filled.Send, contentDescription = s.send)
+                                    Icon(SendIcon, contentDescription = s.send, tint = MiuixTheme.colorScheme.onPrimary)
                                 }
                             }
                         }
@@ -589,11 +451,11 @@ fun ChatScreen(
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Text(s.chatEmpty, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                        Text(s.chatEmpty, style = MiuixTheme.textStyles.title2, color = MiuixTheme.colorScheme.primary)
                         Text(
                             s.chatEmptyHint,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MiuixTheme.textStyles.main,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                     }
                 } else {
@@ -642,7 +504,7 @@ fun ChatScreen(
                             item {
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.secondaryContainer,
+                                    color = MiuixTheme.colorScheme.secondaryContainer,
                                     modifier = Modifier.fillMaxWidth(),
                                 ) {
                                     Row(
@@ -652,8 +514,8 @@ fun ChatScreen(
                                     ) {
                                         Text(
                                             s.resumePendingHint,
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            style = MiuixTheme.textStyles.body2,
+                                            color = MiuixTheme.colorScheme.onSecondaryContainer,
                                             modifier = Modifier.weight(1f),
                                         )
                                         Button(onClick = { engine?.continueRun() }) {
@@ -666,8 +528,156 @@ fun ChatScreen(
                     }
                 }
             }
+        } // Scaffold (trailing lambda)
+
+        // ---- side drawer panel (miuix primitives, MIGRATION.md §3.2) ----
+        AnimatedVisibility(visible = drawerOpen, enter = fadeIn(), exit = fadeOut()) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(MiuixTheme.colorScheme.windowDimming)
+                    .clickable { drawerOpen = false },
+            )
         }
-    }
+        AnimatedVisibility(
+            visible = drawerOpen,
+            enter = slideInHorizontally { -it },
+            exit = slideOutHorizontally { -it },
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxHeight().width(300.dp),
+                color = MiuixTheme.colorScheme.surfaceContainer,
+            ) {
+                Column(Modifier.fillMaxHeight().padding(vertical = 12.dp)) {
+                    // Drawer header: app identity.
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp),
+                    ) {
+                        Text("Coding Sachet", style = MiuixTheme.textStyles.title1)
+                        Text(
+                            s.appTagline,
+                            style = MiuixTheme.textStyles.body2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    DrawerItem(
+                        label = { Text(s.chatNew) },
+                        icon = AddIcon,
+                        selected = false,
+                        onClick = {
+                            drawerOpen = false
+                            showNewProject = true
+                        },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    Text(
+                        s.sessionsTitle,
+                        style = MiuixTheme.textStyles.subtitle,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        modifier = Modifier.padding(start = 28.dp, top = 12.dp, bottom = 4.dp),
+                    )
+                    val sessions = remember(sessionsVersion) { Graph.chats.sessions }
+                    LazyColumn(Modifier.weight(1f)) {
+                        items(sessions, key = { it.id }) { sess ->
+                            DrawerItem(
+                                label = {
+                                    Column {
+                                        Text(
+                                            sess.title.ifBlank { "…" },
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = MiuixTheme.textStyles.main,
+                                        )
+                                        Text(
+                                            java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.getDefault())
+                                                .format(java.util.Date(sess.created))
+                                                + (sess.project?.let { "  ·  $it" } ?: ""),
+                                            style = MiuixTheme.textStyles.body2,
+                                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                },
+                                selected = sess.id == current?.id,
+                                onClick = {
+                                    current = sess
+                                    onSessionChange(sess)
+                                    drawerOpen = false
+                                },
+                                trailing = {
+                                    IconButton(onClick = {
+                                        // A running stream keeps persisting the
+                                        // session — without cancelling its engine
+                                        // the deleted chat file would be rewritten
+                                        // (resurrected) and the stream would keep
+                                        // burning tokens in the background.
+                                        engines.remove(sess.id)?.dispose()
+                                        Graph.chats.delete(sess)
+                                        Graph.chats.reload()
+                                        sessionsVersion++
+                                        if (current?.id == sess.id) {
+                                            // T-ML58 #3: pilih sesi terbaru
+                                            // berikutnya (konsisten dengan
+                                            // fallback restore AppState) —
+                                            // bukan layar kosong.
+                                            val next = Graph.chats.sessions.firstOrNull()
+                                            current = next
+                                            onSessionChange(next)
+                                        }
+                                    }) {
+                                        Icon(
+                                            DeleteIcon,
+                                            contentDescription = s.deleteSession,
+                                            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    // Top-bar buttons relocated here (T-ML28 #5): File and
+                    // Settings stay reachable from the drawer.
+                    // T-ML65 #1: salin percakapan penuh (transkrip teks).
+                    DrawerItem(
+                        label = { Text(s.copyChat) },
+                        icon = CopyIcon,
+                        selected = false,
+                        onClick = {
+                            drawerOpen = false
+                            val text = buildTranscript(
+                                current?.messages ?: emptyList(),
+                                s.transcriptUser,
+                                s.transcriptAssistant,
+                            )
+                            if (text.isNotBlank()) copyText(text)
+                        },
+                    )
+                    DrawerItem(
+                        label = { Text(s.filesTitle) },
+                        icon = TextFileIcon,
+                        selected = false,
+                        onClick = {
+                            drawerOpen = false
+                            onOpenFiles()
+                        },
+                    )
+                    DrawerItem(
+                        label = { Text(s.settingsTitle) },
+                        icon = SettingsIcon,
+                        selected = false,
+                        onClick = {
+                            drawerOpen = false
+                            onOpenSettings()
+                        },
+                    )
+                }
+            }
+        }
+    } // Box utama (drawer + Scaffold)
 
     if (showModels) {
         ModelPicker(
@@ -753,14 +763,14 @@ private fun TokenMeterRow(
         if (showSession) {
             Surface(
                 shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
+                color = MiuixTheme.colorScheme.surfaceVariant,
                 modifier = Modifier.heightIn(min = 32.dp),
             ) {
                 Text(
                     "${LocalStrings.current.sessionUsageLabel}: ${formatTokenCount(sessionTokens)}",
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -804,7 +814,7 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
     val chipShape = RoundedCornerShape(16.dp)
     Surface(
         shape = chipShape,
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = MiuixTheme.colorScheme.surfaceVariant,
         modifier = Modifier
             .heightIn(min = 32.dp)
             .clip(chipShape)
@@ -814,9 +824,9 @@ private fun QuotaChip(state: QuotaState, onRefresh: () -> Unit) {
         Text(
             "$label: $value",
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            style = MaterialTheme.typography.labelMedium,
-            color = if (state is QuotaState.Failed) MaterialTheme.colorScheme.error
-            else MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MiuixTheme.textStyles.body2,
+            color = if (state is QuotaState.Failed) MiuixTheme.colorScheme.error
+            else MiuixTheme.colorScheme.onSurfaceVariantSummary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -842,10 +852,10 @@ private fun MessageBubble(
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
                 Surface(
                     shape = RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
+                    color = MiuixTheme.colorScheme.primaryContainer,
                     modifier = Modifier.widthIn(max = 320.dp),
                 ) {
-                    Text(m.content, Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium)
+                    Text(m.content, Modifier.padding(12.dp), style = MiuixTheme.textStyles.main)
                 }
                 MessageActionRow(onCopy = onCopy, onEdit = onEdit)
             }
@@ -862,7 +872,7 @@ private fun MessageBubble(
                     // (long-press menu retired).
                     Surface(
                         shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        color = MiuixTheme.colorScheme.surfaceVariant,
                     ) {
                         Column(Modifier.padding(12.dp)) { Markdownish(m.content) }
                     }
@@ -899,16 +909,16 @@ private fun ModelTag(model: String?, role: String?) {
     val executor = role == ROLE_EXECUTOR
     Surface(
         shape = RoundedCornerShape(6.dp),
-        color = if (executor) MaterialTheme.colorScheme.secondaryContainer
-        else MaterialTheme.colorScheme.surfaceVariant,
+        color = if (executor) MiuixTheme.colorScheme.secondaryContainer
+        else MiuixTheme.colorScheme.surfaceVariant,
     ) {
         Text(
             "${if (executor) ROLE_EXECUTOR else ROLE_ORCHESTRATOR} · $model",
             Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-            style = MaterialTheme.typography.labelSmall,
+            style = MiuixTheme.textStyles.body2,
             fontFamily = FontFamily.Monospace,
-            color = if (executor) MaterialTheme.colorScheme.onSecondaryContainer
-            else MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (executor) MiuixTheme.colorScheme.onSecondaryContainer
+            else MiuixTheme.colorScheme.onSurfaceVariantSummary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -929,7 +939,7 @@ private fun MessageActionRow(
     if (onCopy == null && onEdit == null) return
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         onCopy?.let { act -> MessageActionButton(s.copyMessage, CopyIcon, act) }
-        onEdit?.let { act -> MessageActionButton(s.editMessage, Icons.Filled.Edit, act) }
+        onEdit?.let { act -> MessageActionButton(s.editMessage, EditIcon, act) }
     }
 }
 
@@ -937,7 +947,7 @@ private fun MessageActionRow(
  *  Variant colors so long transcripts stay readable. */
 @Composable
 private fun MessageActionButton(label: String, icon: ImageVector, onClick: () -> Unit) {
-    val tint = MaterialTheme.colorScheme.onSurfaceVariant
+    val tint = MiuixTheme.colorScheme.onSurfaceVariantSummary
     Row(
         Modifier
             .clip(RoundedCornerShape(12.dp))
@@ -947,13 +957,13 @@ private fun MessageActionButton(label: String, icon: ImageVector, onClick: () ->
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(icon, contentDescription = label, modifier = Modifier.size(14.dp), tint = tint)
-        Text(label, style = MaterialTheme.typography.labelSmall, color = tint, maxLines = 1)
+        Text(label, style = MiuixTheme.textStyles.body2, color = tint, maxLines = 1)
     }
 }
 
 /** T-ML65 #1 (murni, teruji JVM): transkrip teks "Salin percakapan" —
- * hanya pesan user/assistant yang berisi teks (hasil tool dan putaran
- * tool-tanpa-teks sudah diringkas di UI, tidak masuk transkrip). */
+ *  hanya pesan user/assistant yang berisi teks (hasil tool dan putaran
+ *  tool-tanpa-teks sudah diringkas di UI, tidak masuk transkrip). */
 internal fun buildTranscript(
     msgs: List<Msg>,
     userLabel: String,
@@ -1042,8 +1052,8 @@ private fun LiveBubble(l: LiveTurn, onResume: () -> Unit = {}) {
         l.waiting?.let {
             Text(
                 "${s.rateLimitWaiting} (${it}s)",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.tertiary,
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.primaryVariant,
                 modifier = Modifier.padding(horizontal = 4.dp),
             )
         }
@@ -1055,8 +1065,8 @@ private fun LiveBubble(l: LiveTurn, onResume: () -> Unit = {}) {
         l.reconnect?.let {
             Text(
                 "${s.reconnecting} ${l.reconnectTo ?: "gateway"} ($it/${l.reconnectMax ?: 3})…",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.tertiary,
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.primaryVariant,
                 modifier = Modifier.padding(horizontal = 4.dp),
             )
         }
@@ -1066,8 +1076,8 @@ private fun LiveBubble(l: LiveTurn, onResume: () -> Unit = {}) {
         if (l.restarting) {
             Text(
                 s.serverRestarting,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.tertiary,
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.primaryVariant,
                 modifier = Modifier.padding(horizontal = 4.dp),
             )
         }
@@ -1075,7 +1085,7 @@ private fun LiveBubble(l: LiveTurn, onResume: () -> Unit = {}) {
         if (l.text.isNotBlank()) {
             Surface(
                 shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
+                color = MiuixTheme.colorScheme.surfaceVariant,
             ) {
                 Column(Modifier.padding(12.dp)) { Markdownish(l.text) }
             }
@@ -1090,12 +1100,12 @@ private fun LiveBubble(l: LiveTurn, onResume: () -> Unit = {}) {
         }
         l.cards.takeLast(tailCount).forEach { ToolCard(it) }
         if (l.error != null) {
-            Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.errorContainer) {
+            Surface(shape = RoundedCornerShape(12.dp), color = MiuixTheme.colorScheme.errorContainer) {
                 Column(Modifier.padding(10.dp)) {
                     Text(
                         l.error!!,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        style = MaterialTheme.typography.bodySmall,
+                        color = MiuixTheme.colorScheme.onErrorContainer,
+                        style = MiuixTheme.textStyles.body2,
                     )
                     // T-ML37 P1-3 + T-ML68 #2: tombol Lanjutkan/retry tetap
                     // tampil di SEMUA kartu error (truncated, lost connection,
@@ -1128,8 +1138,8 @@ private fun ThinkingBlock(thinking: String?) {
     Text(
         if (open) thinking else LocalStrings.current.thinking + " ▾",
         fontFamily = FontFamily.Monospace,
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MiuixTheme.textStyles.body2,
+        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         maxLines = if (open) 40 else 1,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
@@ -1139,7 +1149,6 @@ private fun ThinkingBlock(thinking: String?) {
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
     val s = LocalStrings.current
@@ -1176,16 +1185,20 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
         models?.let { Graph.verify.ensure(provider, Graph.prefs.apiKey, it, current) }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    OverlayBottomSheet(
+        show = true,
+        title = s.selectModel,
+        onDismissRequest = onDismiss,
+    ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(s.selectModel, style = MaterialTheme.typography.titleMedium)
             // Legend for the live dots: green = answered the sweep, red =
             // refused/hung, gray = not checked (yet).
-            Text(s.modelVerifiedNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            OutlinedTextField(
+            Text(s.modelVerifiedNote, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            TextField(
                 value = query,
                 onValueChange = { query = it },
-                placeholder = { Text(s.modelSearch) },
+                label = s.modelSearch,
+                useLabelAsPlaceholder = true,
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -1194,54 +1207,50 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                 // sweep's free flag is only trusted for providers WITHOUT a
                 // prefix (NIM) — see ModelStatus.isFree; the APInex
                 // allowFree catalogue flag is no longer a free indicator.
-                FilterChip(
-                    selected = freeOnly,
-                    onClick = { freeOnly = !freeOnly },
-                    label = { Text(s.modelFreeOnly) },
-                )
+                // MIGRATION.md §3.2: FilterChip toggle → Switch miuix.
+                Switch(checked = freeOnly, onCheckedChange = { freeOnly = it })
+                Text(s.modelFreeOnly, style = MiuixTheme.textStyles.body2)
                 val loaded = models
                 if (loaded != null) {
                     val n = loaded.count { !freeOnly || ModelStatus.passesFreeFilter(provider, it) }
-                    Text("$n / ${loaded.size} · ${provider.label}", style = MaterialTheme.typography.bodySmall)
+                    Text("$n / ${loaded.size} · ${provider.label}", style = MiuixTheme.textStyles.body2)
                 }
             }
             // Sweep status row: progress + cancel while running, timestamp
             // + recheck button when idle (T-ML26).
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (Graph.verify.isRunning(provider.id)) {
-                    CircularProgressIndicator(Modifier.width(18.dp), strokeWidth = 2.dp)
+                    CircularProgressIndicator(strokeWidth = 2.dp, size = 18.dp)
                     val p = Graph.verify.progress(provider.id)
                     Text(
                         if (p != null) String.format(s.modelCheckingFmt, p.first, p.second) else s.modelChecking,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MiuixTheme.textStyles.body2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
-                    TextButton(onClick = { Graph.verify.cancel(provider.id) }) { Text(s.cancel) }
+                    TextButton(text = s.cancel, onClick = { Graph.verify.cancel(provider.id) })
                 } else {
                     val last = ModelStatus.lastCheckedAt(provider.id)
                     if (last != null) {
                         val stamp = java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.getDefault()).format(java.util.Date(last))
                         Text(
                             String.format(s.modelLastCheckedFmt, stamp),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MiuixTheme.textStyles.body2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                     }
                     val loaded = models
                     if (loaded != null) {
-                        TextButton(onClick = { Graph.verify.ensure(provider, Graph.prefs.apiKey, loaded, current, force = true) }) {
-                            Text(s.modelRecheck)
-                        }
+                        TextButton(text = s.modelRecheck, onClick = { Graph.verify.ensure(provider, Graph.prefs.apiKey, loaded, current, force = true) })
                     }
                 }
             }
             when {
                 error != null -> Column {
-                    Text("${s.modelFetchError}: $error", color = MaterialTheme.colorScheme.error)
-                    TextButton(onClick = { attempt++ }) { Text(s.retry) }
+                    Text("${s.modelFetchError}: $error", color = MiuixTheme.colorScheme.error)
+                    TextButton(text = s.retry, onClick = { attempt++ })
                 }
                 models == null -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CircularProgressIndicator(Modifier.width(18.dp), strokeWidth = 2.dp)
+                    CircularProgressIndicator(strokeWidth = 2.dp, size = 18.dp)
                     Text(s.modelFetching)
                 }
                 else -> LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
@@ -1278,48 +1287,47 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
 
 /** One model row: live dot (green/red/gray), name, billing badge
  *  (T-ML49: free = jatah harian · langganan = butuh paket · top-up =
- *  saldo USD; dari flag tier sweep katalog), current check. */
+ *  saldo USD; dari flag tier sweep katalog), current check.
+ *  MIGRATION.md §3.2: ListItem M3 → baris Surface kustom miuix. */
 @Composable
 private fun ModelRow(model: String, state: ModelStatus.State, tier: ModelStatus.Tier?, free: Boolean, current: String, onPick: () -> Unit) {
     val s = LocalStrings.current
-    ListItem(
-        modifier = Modifier.clickable(onClick = onPick),
-        colors = if (model == current) {
-            ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-        } else {
-            ListItemDefaults.colors()
-        },
-        leadingContent = {
+    Surface(
+        color = if (model == current) MiuixTheme.colorScheme.primaryContainer else Color.Transparent,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onPick),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             Box(
                 Modifier
                     .size(10.dp)
                     .background(
                         when (state) {
                             ModelStatus.State.OK -> sachetSuccess()
-                            ModelStatus.State.DEAD -> MaterialTheme.colorScheme.error
-                            ModelStatus.State.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
+                            ModelStatus.State.DEAD -> MiuixTheme.colorScheme.error
+                            ModelStatus.State.UNKNOWN -> MiuixTheme.colorScheme.onSurfaceVariantSummary
                         },
                         CircleShape,
                     ),
             )
-        },
-        headlineContent = {
             Text(
                 model,
                 fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MiuixTheme.textStyles.main,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
-        },
-        trailingContent = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 // Badge billing: hanya SATU per model. Tier sweep menang
                 // (langganan/top-up); fallback lama = flag free (prefix).
-                val badge: Pair<String, androidx.compose.ui.graphics.Color>? = when (tier) {
-                    ModelStatus.Tier.SUBSCRIPTION -> s.modelSubBadge to MaterialTheme.colorScheme.secondaryContainer
-                    ModelStatus.Tier.TOPUP -> s.modelTopupBadge to MaterialTheme.colorScheme.surfaceVariant
-                    else -> if (free) s.modelFreeBadge to MaterialTheme.colorScheme.tertiaryContainer else null
+                val badge: Pair<String, Color>? = when (tier) {
+                    ModelStatus.Tier.SUBSCRIPTION -> s.modelSubBadge to MiuixTheme.colorScheme.secondaryContainer
+                    ModelStatus.Tier.TOPUP -> s.modelTopupBadge to MiuixTheme.colorScheme.surfaceVariant
+                    else -> if (free) s.modelFreeBadge to MiuixTheme.colorScheme.tertiaryContainer else null
                 }
                 badge?.let { (text, bg) ->
                     Surface(
@@ -1329,26 +1337,26 @@ private fun ModelRow(model: String, state: ModelStatus.State, tier: ModelStatus.
                         Text(
                             text,
                             Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                            style = MaterialTheme.typography.labelSmall,
+                            style = MiuixTheme.textStyles.body2,
                             color = when (tier) {
-                                ModelStatus.Tier.SUBSCRIPTION -> MaterialTheme.colorScheme.onSecondaryContainer
-                                ModelStatus.Tier.TOPUP -> MaterialTheme.colorScheme.onSurfaceVariant
-                                else -> MaterialTheme.colorScheme.onTertiaryContainer
+                                ModelStatus.Tier.SUBSCRIPTION -> MiuixTheme.colorScheme.onSecondaryContainer
+                                ModelStatus.Tier.TOPUP -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+                                else -> MiuixTheme.colorScheme.onTertiaryContainer
                             },
                         )
                     }
                 }
                 if (model == current) {
                     Icon(
-                        Icons.Filled.Check,
+                        CheckIcon,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                        tint = MiuixTheme.colorScheme.primary,
                         modifier = Modifier.size(18.dp),
                     )
                 }
             }
-        },
-    )
+        }
+    }
 }
 
 // ---------- new-project popup + project tree (T-ML28 #3/#4) ----------
@@ -1369,36 +1377,36 @@ private fun NewProjectDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit)
     val s = LocalStrings.current
     var name by remember { mutableStateOf("") }
     val folder = Graph.prefs.workdirHint.ifBlank { "/sdcard/coding-sachet" }
-    AlertDialog(
+    OverlayDialog(
+        show = true,
         onDismissRequest = onDismiss,
-        title = { Text(s.newProjectTitle) },
-        text = {
-            Column {
-                Text(s.newProjectHint, style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text(s.newProjectName) },
-                    singleLine = true,
-                )
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "${s.newProjectFolder}: $folder/" +
-                        (if (name.isBlank()) "…" else ProjectNames.sanitize(name)),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontFamily = FontFamily.Monospace,
-                )
+        title = s.newProjectTitle,
+    ) {
+        Column {
+            Text(s.newProjectHint, style = MiuixTheme.textStyles.body2)
+            Spacer(Modifier.height(10.dp))
+            TextField(
+                value = name,
+                onValueChange = { name = it },
+                label = s.newProjectName,
+                useLabelAsPlaceholder = true,
+                singleLine = true,
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "${s.newProjectFolder}: $folder/" +
+                    (if (name.isBlank()) "…" else ProjectNames.sanitize(name)),
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontFamily = FontFamily.Monospace,
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(text = s.newProjectCreate, onClick = { onConfirm(name.trim()) }, enabled = name.isNotBlank())
+                TextButton(text = s.cancel, onClick = onDismiss)
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(name.trim()) }, enabled = name.isNotBlank()) {
-                Text(s.newProjectCreate)
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(s.cancel) } },
-    )
+        }
+    }
 }
 
 /** T-ML65 #1: edit-and-resend — dialog dengan teks asli yang bisa
@@ -1407,29 +1415,28 @@ private fun NewProjectDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit)
 private fun EditMessageDialog(initial: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
     val s = LocalStrings.current
     var text by remember { mutableStateOf(initial) }
-    AlertDialog(
+    OverlayDialog(
+        show = true,
         onDismissRequest = onDismiss,
-        title = { Text(s.editResendTitle) },
-        text = {
-            Column {
-                Text(s.editResendHint, style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 3,
-                    maxLines = 10,
-                )
+        title = s.editResendTitle,
+    ) {
+        Column {
+            Text(s.editResendHint, style = MiuixTheme.textStyles.body2)
+            Spacer(Modifier.height(10.dp))
+            TextField(
+                value = text,
+                onValueChange = { text = it },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 3,
+                maxLines = 10,
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(text = s.editResendSend, onClick = { onConfirm(text.trim()) }, enabled = text.isNotBlank())
+                TextButton(text = s.cancel, onClick = onDismiss)
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(text.trim()) }, enabled = text.isNotBlank()) {
-                Text(s.editResendSend)
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(s.cancel) } },
-    )
+        }
+    }
 }
 
 /** Read-only file preview for the project tree (editing stays in File tab). */
@@ -1451,42 +1458,45 @@ private fun TreeFileViewer(path: String, onClose: () -> Unit) {
             .onFailure { error = it.message }
     }
 
-    AlertDialog(
+    OverlayDialog(
+        show = true,
         onDismissRequest = onClose,
-        title = { Text(path.substringAfterLast('/'), style = MaterialTheme.typography.titleSmall) },
-        text = {
-            Column {
-                Text(path, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
-                Spacer(Modifier.height(8.dp))
-                when {
-                    error != null -> Text(s.fileLoadError + ": " + error, color = MaterialTheme.colorScheme.error)
-                    content == null -> CircularProgressIndicator()
-                    binary -> Text(s.fileBinary)
-                    else -> {
-                        if (truncated) {
-                            Text(s.fileTooLarge, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                        ) {
-                            Text(
-                                content ?: "",
-                                fontFamily = FontFamily.Monospace,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(320.dp)
-                                    .verticalScroll(rememberScrollState())
-                                    .padding(8.dp),
-                            )
-                        }
+        title = path.substringAfterLast('/'),
+    ) {
+        Column {
+            Text(path, style = MiuixTheme.textStyles.body2, fontFamily = FontFamily.Monospace)
+            Spacer(Modifier.height(8.dp))
+            when {
+                error != null -> Text(s.fileLoadError + ": " + error, color = MiuixTheme.colorScheme.error)
+                content == null -> CircularProgressIndicator()
+                binary -> Text(s.fileBinary)
+                else -> {
+                    if (truncated) {
+                        Text(s.fileTooLarge, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.error)
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MiuixTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Text(
+                            content ?: "",
+                            fontFamily = FontFamily.Monospace,
+                            style = MiuixTheme.textStyles.body2,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(320.dp)
+                                .verticalScroll(rememberScrollState())
+                                .padding(8.dp),
+                        )
                     }
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onClose) { Text(s.cancel) } },
-    )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(text = s.cancel, onClick = onClose)
+            }
+        }
+    }
 }
 
 /** The "Project tree" tab: lazily-expanded folder tree of the session's
@@ -1564,7 +1574,7 @@ private fun ProjectTreePanel(rootPath: String, isProject: Boolean, version: Int)
 
     Column(Modifier.fillMaxSize()) {
         // Header: resolved root path + refresh.
-        Surface(tonalElevation = 1.dp) {
+        Surface(color = MiuixTheme.colorScheme.surfaceContainer) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1573,27 +1583,27 @@ private fun ProjectTreePanel(rootPath: String, isProject: Boolean, version: Int)
                     Text(
                         resolvedRoot.ifBlank { s.treeNoProject },
                         fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MiuixTheme.textStyles.body2,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     if (!isProject) {
                         Text(
                             s.treeNoProject,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MiuixTheme.textStyles.body2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                     }
                 }
                 IconButton(onClick = { loadRoot() }) {
-                    Icon(Icons.Filled.Refresh, contentDescription = s.treeRefresh)
+                    Icon(RefreshIcon, contentDescription = s.treeRefresh)
                 }
             }
         }
         when {
             error != null -> Column(Modifier.padding(16.dp)) {
-                Text(s.treeLoadError, color = MaterialTheme.colorScheme.error)
-                Text(error ?: "", style = MaterialTheme.typography.bodySmall)
+                Text(s.treeLoadError, color = MiuixTheme.colorScheme.error)
+                Text(error ?: "", style = MiuixTheme.textStyles.body2)
                 TextButton(onClick = { loadRoot() }) { Text(s.retry) }
             }
             roots == null -> Row(
@@ -1603,8 +1613,8 @@ private fun ProjectTreePanel(rootPath: String, isProject: Boolean, version: Int)
             roots!!.isEmpty() -> Text(
                 s.treeEmpty,
                 Modifier.fillMaxWidth().padding(24.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MiuixTheme.textStyles.main,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
             else -> {
                 val visible = buildList {
@@ -1638,10 +1648,10 @@ private fun ProjectTreePanel(rootPath: String, isProject: Boolean, version: Int)
                         ) {
                             if (e.dir) {
                                 Icon(
-                                    if (expanded[e.path] == true) Icons.Filled.KeyboardArrowDown
-                                    else Icons.Filled.KeyboardArrowRight,
+                                    if (expanded[e.path] == true) KeyboardArrowDownIcon
+                                    else KeyboardArrowRightIcon,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                                     modifier = Modifier.size(18.dp),
                                 )
                             } else {
@@ -1650,22 +1660,22 @@ private fun ProjectTreePanel(rootPath: String, isProject: Boolean, version: Int)
                             Icon(
                                 if (e.dir) FolderIcon else TextFileIcon,
                                 contentDescription = null,
-                                tint = if (e.dir) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                tint = if (e.dir) MiuixTheme.colorScheme.primary
+                                else MiuixTheme.colorScheme.onSurfaceVariantSummary,
                             )
                             Text(
                                 e.name + if (e.symlink) " →" else "",
                                 Modifier.weight(1f),
                                 fontFamily = FontFamily.Monospace,
-                                style = MaterialTheme.typography.bodyMedium,
+                                style = MiuixTheme.textStyles.main,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
                             if (!e.dir) {
                                 Text(
                                     treeFileSize(e.size),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MiuixTheme.textStyles.body2,
+                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                                 )
                             }
                         }
@@ -1684,4 +1694,44 @@ private fun treeFileSize(n: Long): String = when {
     n < 1024 -> "$n B"
     n < 1024 * 1024 -> "%.1f KB".format(n / 1024.0)
     else -> "%.1f MB".format(n / (1024.0 * 1024.0))
+}
+
+/**
+ * MIGRATION.md §3.2: baris item side drawer — pengganti NavigationDrawerItem
+ * M3, dibangun dari primitif miuix (Surface + Row). selected memberi warna
+ * container sekunder (sama dengan perilaku M3 lama), trailing menampung
+ * aksi (mis. tombol hapus sesi).
+ */
+@Composable
+private fun DrawerItem(
+    label: @Composable () -> Unit,
+    icon: ImageVector?,
+    selected: Boolean,
+    onClick: () -> Unit,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    Surface(
+        color = if (selected) MiuixTheme.colorScheme.secondaryContainer else Color.Transparent,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .clickable(onClick = onClick),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (icon != null) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = if (selected) MiuixTheme.colorScheme.primary
+                    else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+                Spacer(Modifier.width(12.dp))
+            }
+            Box(Modifier.weight(1f)) { label() }
+            trailing?.invoke()
+        }
+    }
 }
