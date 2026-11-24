@@ -21,23 +21,22 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
+import top.yukonga.miuix.kmp.overlay.OverlayDialog
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.basic.Surface
+import top.yukonga.miuix.kmp.basic.TabRow
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -62,6 +61,7 @@ import id.codingsachet.mobile.api.Provider
 import id.codingsachet.mobile.api.Providers
 import id.codingsachet.mobile.runtime.LogcatDump
 import id.codingsachet.mobile.runtime.RuntimeState
+import id.codingsachet.mobile.ui.ArrowBackIcon
 import id.codingsachet.mobile.ui.LocalStrings
 import id.codingsachet.mobile.ui.PiOptions
 import kotlinx.coroutines.Dispatchers
@@ -74,7 +74,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
     val s = LocalStrings.current
@@ -101,66 +100,65 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
     var workdir by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { workdir = Graph.api.workdir() }
 
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        TopAppBar(
-            title = { Text(s.settingsTitle) },
-            navigationIcon = {
-                IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = s.settingsTitle) }
-            },
-        )
-
+    // Scaffold miuix: host untuk OverlayDialog/OverlayBottomSheet (MIGRATION.md §7)
+    Scaffold(
+        topBar = {
+            SmallTopAppBar(
+                title = s.settingsTitle,
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(ArrowBackIcon, contentDescription = s.settingsTitle) }
+                },
+            )
+        },
+    ) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
+                .background(MiuixTheme.colorScheme.background)
+                .padding(padding)
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             // ---- language ----
             SectionTitle(s.language)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = Graph.prefs.lang == "id",
-                    onClick = { Graph.prefs.lang = "id"; onLangChange("id") },
-                    label = { Text("Bahasa Indonesia") },
-                )
-                FilterChip(
-                    selected = Graph.prefs.lang == "en",
-                    onClick = { Graph.prefs.lang = "en"; onLangChange("en") },
-                    label = { Text("English") },
-                )
-            }
+            // FilterChip → TabRow miuix (MIGRATION.md §3.2)
+            val langs = listOf("id" to "Bahasa Indonesia", "en" to "English")
+            TabRow(
+                tabs = langs.map { it.second },
+                selectedTabIndex = langs.indexOfFirst { it.first == Graph.prefs.lang }.coerceAtLeast(0),
+                onTabSelected = { i ->
+                    Graph.prefs.lang = langs[i].first
+                    onLangChange(langs[i].first)
+                },
+            )
 
             // ---- provider ----
             SectionTitle(s.providerSection)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Providers.ALL.forEach { p: Provider ->
-                    FilterChip(
-                        selected = provider.id == p.id,
-                        onClick = {
-                            provider = p
-                            Graph.prefs.provider = p.id
-                            key = Graph.prefs.keyFor(p.id)
-                            keyNote = null
-                        },
-                        label = { Text(p.label) },
-                    )
-                }
-            }
+            TabRow(
+                tabs = Providers.ALL.map { it.label },
+                selectedTabIndex = Providers.ALL.indexOfFirst { it.id == provider.id }.coerceAtLeast(0),
+                onTabSelected = { i ->
+                    val p = Providers.ALL[i]
+                    provider = p
+                    Graph.prefs.provider = p.id
+                    key = Graph.prefs.keyFor(p.id)
+                    keyNote = null
+                },
+            )
             Text(
                 "${provider.docsUrl.removePrefix("https://")}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
-            Text(s.providerSwitchNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(s.providerSwitchNote, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
 
             // ---- api key ----
             SectionTitle(s.apiKeySection)
-            OutlinedTextField(
+            TextField(
                 value = key,
                 onValueChange = { key = it.trim(); keyNote = null },
-                label = { Text("${s.apiKeyLabel} ${provider.label}") },
-                placeholder = { Text(provider.keyPrefix + "…") },
+                label = "${s.apiKeyLabel} ${provider.label}",
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -184,10 +182,10 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                     },
                     enabled = key.isNotBlank() && !checking,
                 ) {
-                    if (checking) CircularProgressIndicator(Modifier.width(16.dp), strokeWidth = 2.dp)
+                    if (checking) CircularProgressIndicator(strokeWidth = 2.dp, size = 16.dp)
                     else Text(s.validateKey)
                 }
-                keyNote?.let { Text(it, Modifier.align(Alignment.CenterVertically), style = MaterialTheme.typography.labelMedium) }
+                keyNote?.let { Text(it, Modifier.align(Alignment.CenterVertically), style = MiuixTheme.textStyles.body2) }
             }
 
             // ---- json config (request body options) ----
@@ -202,7 +200,7 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                 is RuntimeState.Installing -> (runtimeState as RuntimeState.Installing).step
                 else -> s.runtimeStopped
             }
-            Text("${s.serverState}: $stateLabel", style = MaterialTheme.typography.bodyMedium)
+            Text("${s.serverState}: $stateLabel", style = MiuixTheme.textStyles.main)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { Graph.runtime.startServer() }) { Text(s.serverStart) }
                 TextButton(onClick = { Graph.runtime.stopServer() }) { Text(s.serverStopLabel) }
@@ -260,11 +258,11 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
 
             // ---- dev tools ----
             SectionTitle(s.devTools)
-            Text(s.devToolsHint, style = MaterialTheme.typography.bodySmall)
+            Text(s.devToolsHint, style = MiuixTheme.textStyles.body2)
             if (installingTools) {
-                Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                Surface(shape = RoundedCornerShape(8.dp), color = MiuixTheme.colorScheme.surfaceVariant) {
                     Column(Modifier.padding(8.dp)) {
-                        toolLog.takeLast(14).forEach { Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall, maxLines = 1) }
+                        toolLog.takeLast(14).forEach { Text(it, fontFamily = FontFamily.Monospace, style = MiuixTheme.textStyles.body2, maxLines = 1) }
                     }
                 }
             }
@@ -281,17 +279,17 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                     }
                 },
                 enabled = !installingTools,
-            ) { if (installingTools) CircularProgressIndicator(Modifier.width(16.dp), strokeWidth = 2.dp) else Text(s.devTools) }
+            ) { if (installingTools) CircularProgressIndicator(strokeWidth = 2.dp, size = 16.dp) else Text(s.devTools) }
 
             // ---- server log ----
             SectionTitle(s.serverLog)
-            Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+            Surface(shape = RoundedCornerShape(8.dp), color = MiuixTheme.colorScheme.surfaceVariant) {
                 Column(Modifier.padding(8.dp)) {
                     if (serverLog.isEmpty()) {
-                        Text("—", style = MaterialTheme.typography.labelSmall)
+                        Text("—", style = MiuixTheme.textStyles.body2)
                     } else {
                         serverLog.takeLast(30).forEach {
-                            Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall, maxLines = 2)
+                            Text(it, fontFamily = FontFamily.Monospace, style = MiuixTheme.textStyles.body2, maxLines = 2)
                         }
                     }
                 }
@@ -299,7 +297,7 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
 
             // ---- logcat dump (the app's debug log, owner-defined) ----
             SectionTitle(s.logcatSection)
-            Text(s.logcatHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(s.logcatHint, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
             var dumping by remember { mutableStateOf(false) }
             var dump by remember { mutableStateOf<LogcatDump.Result?>(null) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -328,24 +326,24 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                     },
                     enabled = !dumping,
                 ) {
-                    if (dumping) CircularProgressIndicator(Modifier.width(16.dp), strokeWidth = 2.dp)
+                    if (dumping) CircularProgressIndicator(strokeWidth = 2.dp, size = 16.dp)
                     else Text(s.logcatDump)
                 }
                 dump?.file?.let { f ->
-                    TextButton(onClick = { LogcatDump.share(context, f) }) { Text(s.logcatShare) }
+                    TextButton(text = s.logcatShare, onClick = { LogcatDump.share(context, f) })
                 }
             }
             dump?.let { r ->
                 when {
-                    r.error != null -> Text("${s.logcatFailed}: ${r.error}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                    r.lines.isEmpty() -> Text(s.logcatEmpty, style = MaterialTheme.typography.bodySmall)
+                    r.error != null -> Text("${s.logcatFailed}: ${r.error}", style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.error)
+                    r.lines.isEmpty() -> Text(s.logcatEmpty, style = MiuixTheme.textStyles.body2)
                     else -> {
-                        Text("${r.lines.size} ${s.logcatLinesUnit} · ${r.file?.absolutePath ?: "—"}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (r.trimmed) Text(s.logcatTrimmed, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                        Text("${r.lines.size} ${s.logcatLinesUnit} · ${r.file?.absolutePath ?: "—"}", style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        if (r.trimmed) Text(s.logcatTrimmed, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.error)
+                        Surface(shape = RoundedCornerShape(8.dp), color = MiuixTheme.colorScheme.surfaceVariant) {
                             Column(Modifier.padding(8.dp)) {
                                 r.lines.takeLast(15).forEach {
-                                    Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall, maxLines = 2)
+                                    Text(it, fontFamily = FontFamily.Monospace, style = MiuixTheme.textStyles.body2, maxLines = 2)
                                 }
                             }
                         }
@@ -355,41 +353,50 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
 
             // ---- reset ----
             SectionTitle(s.resetRuntime)
-            Button(onClick = { showReset = true }, colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.error,
-            )) { Text(s.resetRuntime) }
+            Button(
+                onClick = { showReset = true },
+                colors = ButtonDefaults.buttonColors(color = MiuixTheme.colorScheme.error),
+            ) { Text(s.resetRuntime) }
 
             // ---- about ----
             SectionTitle(s.about)
-            Text("Coding Sachet ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium)
-            Text("${s.gateway}: ${provider.label} — ${provider.baseUrl}", style = MaterialTheme.typography.bodySmall)
+            Text("Coding Sachet ${BuildConfig.VERSION_NAME}", style = MiuixTheme.textStyles.main)
+            Text("${s.gateway}: ${provider.label} — ${provider.baseUrl}", style = MiuixTheme.textStyles.body2)
             Providers.ALL.filter { it.id != provider.id }.forEach { other ->
-                Text("${other.label}: ${other.baseUrl}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${other.label}: ${other.baseUrl}", style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
             }
-            Text("${s.workdirLabel}: ${workdir ?: "…"}", style = MaterialTheme.typography.bodySmall)
+            Text("${s.workdirLabel}: ${workdir ?: "…"}", style = MiuixTheme.textStyles.body2)
             Spacer(Modifier.height(24.dp))
         }
     }
 
     if (showReset) {
-        AlertDialog(
+        OverlayDialog(
+            show = true,
             onDismissRequest = { showReset = false },
-            title = { Text(s.resetRuntime) },
-            text = { Text(s.resetRuntimeConfirm) },
-            confirmButton = {
-                TextButton(onClick = {
-                    Graph.runtime.resetRuntime()
-                    showReset = false
-                }) { Text(s.delete) }
-            },
-            dismissButton = { TextButton(onClick = { showReset = false }) { Text(s.cancel) } },
-        )
+            title = s.resetRuntime,
+        ) {
+            Column {
+                Text(s.resetRuntimeConfirm, style = MiuixTheme.textStyles.main)
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        text = s.delete,
+                        onClick = {
+                            Graph.runtime.resetRuntime()
+                            showReset = false
+                        },
+                    )
+                    TextButton(text = s.cancel, onClick = { showReset = false })
+                }
+            }
+        }
     }
 }
 
 @Composable
 private fun SectionTitle(t: String) {
-    Text(t, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+    Text(t, style = MiuixTheme.textStyles.title2, color = MiuixTheme.colorScheme.primary)
 }
 
 /**
@@ -513,62 +520,58 @@ private fun JsonConfigSection() {
     }
 
     SectionTitle(s.jsonConfigSection)
-    Text(s.jsonConfigHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text(s.jsonConfigHint, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
 
-    Text(s.schemeSection, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.horizontalScroll(rememberScrollState()),
-    ) {
-        id.codingsachet.mobile.ui.Schemes.ALL.forEach { sc ->
-            FilterChip(
-                selected = schemeId == sc.id,
-                onClick = { applyScheme(sc) },
-                label = { Text(if (Graph.prefs.lang == "en") sc.labelEn else sc.labelId) },
-            )
-        }
-    }
-    Text(s.schemeHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text(s.schemeSection, style = MiuixTheme.textStyles.main, color = MiuixTheme.colorScheme.primary)
+    // FilterChip skema → TabRow miuix (scrollable bila panjang, MIGRATION.md §3.2)
+    val schemeList = id.codingsachet.mobile.ui.Schemes.ALL
+    TabRow(
+        tabs = schemeList.map { sc -> if (Graph.prefs.lang == "en") sc.labelEn else sc.labelId },
+        selectedTabIndex = schemeList.indexOfFirst { it.id == schemeId }.coerceAtLeast(0),
+        onTabSelected = { i -> applyScheme(schemeList[i]) },
+    )
+    Text(s.schemeHint, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
 
     val numKeyboard = KeyboardOptions(keyboardType = KeyboardType.Number)
-    OutlinedTextField(value = optTemp, onValueChange = { optTemp = it; savedNote = null },
-        label = { Text(s.optTemperature) }, singleLine = true, isError = validateStructured() == s.optTemperature,
+    TextField(value = optTemp, onValueChange = { optTemp = it; savedNote = null },
+        label = s.optTemperature, singleLine = true,
         keyboardOptions = numKeyboard, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(value = optTopP, onValueChange = { optTopP = it; savedNote = null },
-        label = { Text(s.optTopP) }, singleLine = true,
+    TextField(value = optTopP, onValueChange = { optTopP = it; savedNote = null },
+        label = s.optTopP, singleLine = true,
         keyboardOptions = numKeyboard, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(value = optMaxTok, onValueChange = { optMaxTok = it; savedNote = null },
-        label = { Text(s.optMaxTokens) }, singleLine = true,
+    TextField(value = optMaxTok, onValueChange = { optMaxTok = it; savedNote = null },
+        label = s.optMaxTokens, singleLine = true,
         keyboardOptions = numKeyboard, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(value = optPresence, onValueChange = { optPresence = it; savedNote = null },
-        label = { Text(s.optPresencePenalty) }, singleLine = true,
+    TextField(value = optPresence, onValueChange = { optPresence = it; savedNote = null },
+        label = s.optPresencePenalty, singleLine = true,
         keyboardOptions = numKeyboard, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(value = optFrequency, onValueChange = { optFrequency = it; savedNote = null },
-        label = { Text(s.optFrequencyPenalty) }, singleLine = true,
+    TextField(value = optFrequency, onValueChange = { optFrequency = it; savedNote = null },
+        label = s.optFrequencyPenalty, singleLine = true,
         keyboardOptions = numKeyboard, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(value = optSeed, onValueChange = { optSeed = it; savedNote = null },
-        label = { Text(s.optSeed) }, singleLine = true,
+    TextField(value = optSeed, onValueChange = { optSeed = it; savedNote = null },
+        label = s.optSeed, singleLine = true,
         keyboardOptions = numKeyboard, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(value = optStop, onValueChange = { optStop = it; savedNote = null },
-        label = { Text(s.optStop) },
+    TextField(value = optStop, onValueChange = { optStop = it; savedNote = null },
+        label = s.optStop,
         modifier = Modifier.fillMaxWidth())
 
-    Text(s.optReasoningEffort, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-        listOf("" to s.optReasoningNone, "minimal" to "minimal", "low" to "low", "medium" to "medium", "high" to "high").forEach { (v, label) ->
-            FilterChip(selected = optReasoning == v, onClick = { optReasoning = v; savedNote = null }, label = { Text(label) })
-        }
-    }
+    Text(s.optReasoningEffort, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+    val reasonings = listOf("" to s.optReasoningNone, "minimal" to "minimal", "low" to "low", "medium" to "medium", "high" to "high")
+    TabRow(
+        tabs = reasonings.map { it.second },
+        selectedTabIndex = reasonings.indexOfFirst { it.first == optReasoning }.coerceAtLeast(0),
+        onTabSelected = { i -> optReasoning = reasonings[i].first; savedNote = null },
+    )
 
     // T-ML70 (owner order: "kolom opsi model selectable orchestrator &
     // executor di settings"): selector dual-model — pilihan dipersist
     // langsung; baris preview di bawah membuktikan kunci "pi" benar-benar
     // akan terkirim (akar insiden: konfigurasi tak pernah tiba + tak
     // terlihat). Opsi pertama tiap selector = mode non-aktif.
-    Text(s.dualModelSection, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
-    Text(s.dualModelHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text(s.dualModelSection, style = MiuixTheme.textStyles.main, color = MiuixTheme.colorScheme.primary)
+    Text(s.dualModelHint, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
     if (Graph.prefs.piProvider.isNotBlank() && Graph.prefs.piProvider != Graph.prefs.active.id) {
-        Text(s.dualProviderNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        Text(s.dualProviderNote, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.error)
     }
     DualModelRow(
         label = s.dualOrchestrator,
@@ -602,14 +605,14 @@ private fun JsonConfigSection() {
     }
 
     // Live preview of the exact object that will be merged into the request.
-    Text(s.jsonPreview, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+    Text(s.jsonPreview, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+    Surface(shape = RoundedCornerShape(8.dp), color = MiuixTheme.colorScheme.surfaceVariant) {
         Text(
             error?.let { "✗ $it — ${s.jsonInvalid}" } ?: (if (preview != null && preview.keys.isEmpty()) "—" else pretty),
             Modifier.padding(8.dp).fillMaxWidth(),
             fontFamily = FontFamily.Monospace,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+            style = MiuixTheme.textStyles.body2,
+            color = if (error != null) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurface,
         )
     }
 
@@ -643,7 +646,7 @@ private fun JsonConfigSection() {
             Graph.prefs.schemePrompt = ""
             savedNote = s.jsonSaved
         }) { Text(s.jsonReset) }
-        savedNote?.let { Text(it, Modifier.align(Alignment.CenterVertically), style = MaterialTheme.typography.labelMedium) }
+        savedNote?.let { Text(it, Modifier.align(Alignment.CenterVertically), style = MiuixTheme.textStyles.body2) }
     }
 }
 
@@ -653,15 +656,15 @@ private fun JsonConfigSection() {
 private fun DualModelRow(label: String, value: String, selected: Boolean, onClick: () -> Unit) {
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        color = if (selected) MiuixTheme.colorScheme.secondaryContainer else MiuixTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
     ) {
         Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(label, style = MaterialTheme.typography.labelMedium)
-                Text(value, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                Text(label, style = MiuixTheme.textStyles.body2)
+                Text(value, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, maxLines = 1)
             }
-            Text("›", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("›", style = MiuixTheme.textStyles.title2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
         }
     }
 }
@@ -669,7 +672,6 @@ private fun DualModelRow(label: String, value: String, selected: Boolean, onClic
 /** T-ML70: sheet pemilih model orchestrator/executor — daftar model dari
  *  provider AKTIF (batas v1: satu provider per run), dengan pencarian dan
  *  baris non-aktif di paling atas. Pilihan dipersist oleh caller. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PiModelSheet(isExecutor: Boolean, current: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
     val s = LocalStrings.current
@@ -687,26 +689,27 @@ private fun PiModelSheet(isExecutor: Boolean, current: String, onPick: (String) 
             .onFailure { error = it.message }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    OverlayBottomSheet(
+        show = true,
+        title = if (isExecutor) s.dualExecutor else s.dualOrchestrator,
+        onDismissRequest = onDismiss,
+    ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                if (isExecutor) s.dualExecutor else s.dualOrchestrator,
-                style = MaterialTheme.typography.titleMedium,
-            )
-            OutlinedTextField(
+            TextField(
                 value = query,
                 onValueChange = { query = it },
-                placeholder = { Text(s.modelSearch) },
+                label = s.modelSearch,
+                useLabelAsPlaceholder = true,
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
             when {
                 error != null -> Column {
-                    Text("${s.modelFetchError}: $error", color = MaterialTheme.colorScheme.error)
-                    TextButton(onClick = { attempt++ }) { Text(s.retry) }
+                    Text("${s.modelFetchError}: $error", color = MiuixTheme.colorScheme.error)
+                    TextButton(text = s.retry, onClick = { attempt++ })
                 }
                 models == null -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CircularProgressIndicator(Modifier.width(18.dp), strokeWidth = 2.dp)
+                    CircularProgressIndicator(strokeWidth = 2.dp, size = 18.dp)
                     Text(s.modelFetching)
                 }
                 else -> LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
@@ -739,28 +742,28 @@ private fun PiModelSheet(isExecutor: Boolean, current: String, onPick: (String) 
 private fun PiModelRow(label: String, sub: String, selected: Boolean, onPick: () -> Unit) {
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+        color = if (selected) MiuixTheme.colorScheme.secondaryContainer else Color.Transparent,
         modifier = Modifier.fillMaxWidth().clickable(onClick = onPick),
     ) {
         Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(label, style = MaterialTheme.typography.bodyMedium)
+                Text(label, style = MiuixTheme.textStyles.main)
                 if (sub.isNotBlank()) {
-                    Text(sub, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    Text(sub, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.primary)
                 }
             }
-            if (selected) Text("✓", style = MaterialTheme.typography.titleMedium)
+            if (selected) Text("✓", style = MiuixTheme.textStyles.title2)
         }
     }
 }
 
 @Composable
 private fun SwitchRow(label: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(label, style = MaterialTheme.typography.bodyMedium)
-            Text(hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Switch(checked = checked, onCheckedChange = onChange)
-    }
+    // MIGRATION.md §3.2: baris switch M3 → SwitchPreference miuix
+    SwitchPreference(
+        title = label,
+        summary = hint,
+        checked = checked,
+        onCheckedChange = onChange,
+    )
 }
