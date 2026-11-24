@@ -12,9 +12,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
-import androidx.compose.material3.MaterialTheme
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.Surface
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Modifier
@@ -121,7 +121,7 @@ fun AppRoot(state: AppState) {
 
     SachetTheme {
         CompositionLocalProvider(LocalStrings provides stringsFor(lang)) {
-            Surface(color = MaterialTheme.colorScheme.background) {
+            Surface(color = MiuixTheme.colorScheme.background) {
                 if (needsSetup) {
                     OnboardingScreen(
                         onDone = {

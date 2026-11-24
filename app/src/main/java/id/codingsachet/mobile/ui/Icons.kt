@@ -105,40 +105,40 @@ val StorageIcon: ImageVector
     ).apply {
         path(fill = SolidColor(Color.Black)) {
             moveTo(2.0f, 20.0f)
-            lineToRelative(20.0f, 0.0f)
-            lineToRelative(0.0f, -4.0f)
-            lineToRelative(-20.0f, 0.0f)
-            lineToRelative(0.0f, 4.0f)
+            lineTo_relative(20.0f, 0.0f)
+            lineTo_relative(0.0f, -4.0f)
+            lineTo_relative(-20.0f, 0.0f)
+            lineTo_relative(0.0f, 4.0f)
             close()
             moveTo(4.0f, 17.0f)
-            lineToRelative(2.0f, 0.0f)
-            lineToRelative(0.0f, 2.0f)
-            lineToRelative(-2.0f, 0.0f)
-            lineToRelative(0.0f, -2.0f)
+            lineTo_relative(2.0f, 0.0f)
+            lineTo_relative(0.0f, 2.0f)
+            lineTo_relative(-2.0f, 0.0f)
+            lineTo_relative(0.0f, -2.0f)
             close()
             moveTo(2.0f, 4.0f)
-            lineToRelative(0.0f, 4.0f)
-            lineToRelative(20.0f, 0.0f)
-            lineToRelative(0.0f, -4.0f)
-            lineToRelative(-20.0f, 0.0f)
+            lineTo_relative(0.0f, 4.0f)
+            lineTo_relative(20.0f, 0.0f)
+            lineTo_relative(0.0f, -4.0f)
+            lineTo_relative(-20.0f, 0.0f)
             close()
             moveTo(6.0f, 7.0f)
-            lineToRelative(-2.0f, 0.0f)
-            lineToRelative(0.0f, -2.0f)
-            lineToRelative(2.0f, 0.0f)
-            lineToRelative(0.0f, 2.0f)
+            lineTo_relative(-2.0f, 0.0f)
+            lineTo_relative(0.0f, -2.0f)
+            lineTo_relative(2.0f, 0.0f)
+            lineTo_relative(0.0f, 2.0f)
             close()
             moveTo(2.0f, 14.0f)
-            lineToRelative(20.0f, 0.0f)
-            lineToRelative(0.0f, -4.0f)
-            lineToRelative(-20.0f, 0.0f)
-            lineToRelative(0.0f, 4.0f)
+            lineTo_relative(20.0f, 0.0f)
+            lineTo_relative(0.0f, -4.0f)
+            lineTo_relative(-20.0f, 0.0f)
+            lineTo_relative(0.0f, 4.0f)
             close()
             moveTo(4.0f, 11.0f)
-            lineToRelative(2.0f, 0.0f)
-            lineToRelative(0.0f, 2.0f)
-            lineToRelative(-2.0f, 0.0f)
-            lineToRelative(0.0f, -2.0f)
+            lineTo_relative(2.0f, 0.0f)
+            lineTo_relative(0.0f, 2.0f)
+            lineTo_relative(-2.0f, 0.0f)
+            lineTo_relative(0.0f, -2.0f)
             close()
         }
     }.build().also { storageIcon = it }
@@ -154,30 +154,30 @@ val CreateNewFolderIcon: ImageVector
     ).apply {
         path(fill = SolidColor(Color.Black)) {
             moveTo(20.0f, 6.0f)
-            lineToRelative(-8.0f, 0.0f)
-            lineToRelative(-2.0f, -2.0f)
+            lineTo_relative(-8.0f, 0.0f)
+            lineTo_relative(-2.0f, -2.0f)
             lineTo(4.0f, 4.0f)
-            curveToRelative(-1.1f, 0.0f, -1.99f, 0.9f, -1.99f, 2.0f)
+            curveTo_relative(-1.1f, 0.0f, -1.99f, 0.9f, -1.99f, 2.0f)
             lineTo(2.0f, 18.0f)
-            curveToRelative(0.0f, 1.1f, 0.9f, 2.0f, 2.0f, 2.0f)
-            lineToRelative(16.0f, 0.0f)
-            curveToRelative(1.1f, 0.0f, 2.0f, -0.9f, 2.0f, -2.0f)
+            curveTo_relative(0.0f, 1.1f, 0.9f, 2.0f, 2.0f, 2.0f)
+            lineTo_relative(16.0f, 0.0f)
+            curveTo_relative(1.1f, 0.0f, 2.0f, -0.9f, 2.0f, -2.0f)
             lineTo(22.0f, 8.0f)
-            curveToRelative(0.0f, -1.1f, -0.9f, -2.0f, -2.0f, -2.0f)
+            curveTo_relative(0.0f, -1.1f, -0.9f, -2.0f, -2.0f, -2.0f)
             close()
             moveTo(19.0f, 14.0f)
-            lineToRelative(-3.0f, 0.0f)
-            lineToRelative(0.0f, 3.0f)
-            lineToRelative(-2.0f, 0.0f)
-            lineToRelative(0.0f, -3.0f)
-            lineToRelative(-3.0f, 0.0f)
-            lineToRelative(0.0f, -2.0f)
-            lineToRelative(3.0f, 0.0f)
-            lineToRelative(0.0f, -3.0f)
-            lineToRelative(2.0f, 0.0f)
-            lineToRelative(0.0f, 3.0f)
-            lineToRelative(3.0f, 0.0f)
-            lineToRelative(0.0f, 2.0f)
+            lineTo_relative(-3.0f, 0.0f)
+            lineTo_relative(0.0f, 3.0f)
+            lineTo_relative(-2.0f, 0.0f)
+            lineTo_relative(0.0f, -3.0f)
+            lineTo_relative(-3.0f, 0.0f)
+            lineTo_relative(0.0f, -2.0f)
+            lineTo_relative(3.0f, 0.0f)
+            lineTo_relative(0.0f, -3.0f)
+            lineTo_relative(2.0f, 0.0f)
+            lineTo_relative(0.0f, 3.0f)
+            lineTo_relative(3.0f, 0.0f)
+            lineTo_relative(0.0f, 2.0f)
             close()
         }
     }.build().also { createNewFolderIcon = it }
@@ -195,28 +195,407 @@ val CopyIcon: ImageVector
         path(fill = SolidColor(Color.Black)) {
             moveTo(16.0f, 1.0f)
             lineTo(4.0f, 1.0f)
-            curveToRelative(-1.1f, 0.0f, -2.0f, 0.9f, -2.0f, 2.0f)
-            lineToRelative(0.0f, 14.0f)
-            lineToRelative(2.0f, 0.0f)
+            curveTo_relative(-1.1f, 0.0f, -2.0f, 0.9f, -2.0f, 2.0f)
+            lineTo_relative(0.0f, 14.0f)
+            lineTo_relative(2.0f, 0.0f)
             lineTo(4.0f, 3.0f)
-            lineToRelative(12.0f, 0.0f)
+            lineTo_relative(12.0f, 0.0f)
             lineTo(16.0f, 1.0f)
             close()
             moveTo(19.0f, 5.0f)
             lineTo(8.0f, 5.0f)
-            curveToRelative(-1.1f, 0.0f, -2.0f, 0.9f, -2.0f, 2.0f)
-            lineToRelative(0.0f, 14.0f)
-            curveToRelative(0.0f, 1.1f, 0.9f, 2.0f, 2.0f, 2.0f)
-            lineToRelative(11.0f, 0.0f)
-            curveToRelative(1.1f, 0.0f, 2.0f, -0.9f, 2.0f, -2.0f)
+            curveTo_relative(-1.1f, 0.0f, -2.0f, 0.9f, -2.0f, 2.0f)
+            lineTo_relative(0.0f, 14.0f)
+            curveTo_relative(0.0f, 1.1f, 0.9f, 2.0f, 2.0f, 2.0f)
+            lineTo_relative(11.0f, 0.0f)
+            curveTo_relative(1.1f, 0.0f, 2.0f, -0.9f, 2.0f, -2.0f)
             lineTo(21.0f, 7.0f)
-            curveToRelative(0.0f, -1.1f, -0.9f, -2.0f, -2.0f, -2.0f)
+            curveTo_relative(0.0f, -1.1f, -0.9f, -2.0f, -2.0f, -2.0f)
             close()
             moveTo(19.0f, 21.0f)
             lineTo(8.0f, 21.0f)
             lineTo(8.0f, 7.0f)
-            lineToRelative(11.0f, 0.0f)
-            lineToRelative(0.0f, 14.0f)
+            lineTo_relative(11.0f, 0.0f)
+            lineTo_relative(0.0f, 14.0f)
             close()
         }
     }.build().also { copyIcon = it }
+
+// ---------------------------------------------------------------------------
+// Icons below (MIGRATION.md §6): standard Material Design icon paths
+// (Apache-2.0), inlined so the app no longer needs material-icons-core
+// after the miuix migration. Same builder pattern as the icons above.
+
+private var _addIcon: ImageVector? = null
+val AddIcon: ImageVector
+    get() = _addIcon ?: ImageVector.Builder(
+        name = "SachetAdd",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(19.0f, 13.0f)
+            lineTo(13.0f, 13.0f)
+            lineTo(13.0f, 19.0f)
+            lineTo(11.0f, 19.0f)
+            lineTo(11.0f, 13.0f)
+            lineTo(5.0f, 13.0f)
+            lineTo(5.0f, 11.0f)
+            lineTo(11.0f, 11.0f)
+            lineTo(11.0f, 5.0f)
+            lineTo(13.0f, 5.0f)
+            lineTo(13.0f, 11.0f)
+            lineTo(19.0f, 11.0f)
+            lineTo(19.0f, 13.0f)
+            close()
+        }
+    }.build().also { _addIcon = it }
+
+private var _arrowBackIcon: ImageVector? = null
+val ArrowBackIcon: ImageVector
+    get() = _arrowBackIcon ?: ImageVector.Builder(
+        name = "SachetArrowBack",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(20.0f, 11.0f)
+            lineTo(7.83f, 11.0f)
+            lineTo(13.42f, 5.41f)
+            lineTo(12.0f, 4.0f)
+            lineTo(4.0f, 12.0f)
+            lineTo(12.0f, 20.0f)
+            lineTo(13.41f, 18.59f)
+            lineTo(7.83f, 13.0f)
+            lineTo(20.0f, 13.0f)
+            lineTo(20.0f, 11.0f)
+            close()
+        }
+    }.build().also { _arrowBackIcon = it }
+
+private var _arrowDropDownIcon: ImageVector? = null
+val ArrowDropDownIcon: ImageVector
+    get() = _arrowDropDownIcon ?: ImageVector.Builder(
+        name = "SachetArrowDropDown",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(7.0f, 10.0f)
+            lineTo(12.0f, 15.0f)
+            lineTo(17.0f, 10.0f)
+            close()
+        }
+    }.build().also { _arrowDropDownIcon = it }
+
+private var _checkIcon: ImageVector? = null
+val CheckIcon: ImageVector
+    get() = _checkIcon ?: ImageVector.Builder(
+        name = "SachetCheck",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(9.0f, 16.17f)
+            lineTo(4.83f, 12.0f)
+            lineTo(3.41f, 13.41f)
+            lineTo(9.0f, 19.0f)
+            lineTo(21.0f, 7.0f)
+            lineTo(19.59f, 5.59f)
+            close()
+        }
+    }.build().also { _checkIcon = it }
+
+private var _closeIcon: ImageVector? = null
+val CloseIcon: ImageVector
+    get() = _closeIcon ?: ImageVector.Builder(
+        name = "SachetClose",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(19.0f, 6.41f)
+            lineTo(17.59f, 5.0f)
+            lineTo(12.0f, 10.59f)
+            lineTo(6.41f, 5.0f)
+            lineTo(5.0f, 6.41f)
+            lineTo(10.59f, 12.0f)
+            lineTo(5.0f, 17.59f)
+            lineTo(6.41f, 19.0f)
+            lineTo(12.0f, 13.41f)
+            lineTo(17.59f, 19.0f)
+            lineTo(19.0f, 17.59f)
+            lineTo(13.41f, 12.0f)
+            close()
+        }
+    }.build().also { _closeIcon = it }
+
+private var _deleteIcon: ImageVector? = null
+val DeleteIcon: ImageVector
+    get() = _deleteIcon ?: ImageVector.Builder(
+        name = "SachetDelete",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(6.0f, 19.0f)
+            curveTo(6.0f, 20.1f, 6.9f, 21.0f, 8.0f, 21.0f)
+            lineTo(16.0f, 21.0f)
+            curveTo(17.1f, 21.0f, 18.0f, 20.1f, 18.0f, 19.0f)
+            lineTo(18.0f, 7.0f)
+            lineTo(6.0f, 7.0f)
+            lineTo(6.0f, 19.0f)
+            close()
+            moveTo(19.0f, 4.0f)
+            lineTo(15.5f, 4.0f)
+            lineTo(14.5f, 3.0f)
+            lineTo(9.5f, 3.0f)
+            lineTo(8.5f, 4.0f)
+            lineTo(5.0f, 4.0f)
+            lineTo(5.0f, 6.0f)
+            lineTo(19.0f, 6.0f)
+            lineTo(19.0f, 4.0f)
+            close()
+        }
+    }.build().also { _deleteIcon = it }
+
+private var _editIcon: ImageVector? = null
+val EditIcon: ImageVector
+    get() = _editIcon ?: ImageVector.Builder(
+        name = "SachetEdit",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(3.0f, 17.25f)
+            lineTo(3.0f, 21.0f)
+            lineTo(6.75f, 21.0f)
+            lineTo(17.81f, 9.94f)
+            lineTo(14.06f, 6.19f)
+            lineTo(3.0f, 17.25f)
+            close()
+            moveTo(20.71f, 7.04f)
+            curveTo(21.1f, 6.65f, 21.1f, 6.02f, 20.71f, 5.63f)
+            lineTo(18.37f, 3.29f)
+            curveTo(17.98f, 2.9f, 17.35f, 2.9f, 16.96f, 3.29f)
+            lineTo(15.13f, 5.12f)
+            lineTo(18.88f, 8.87f)
+            lineTo(20.71f, 7.04f)
+            close()
+        }
+    }.build().also { _editIcon = it }
+
+private var _keyboardArrowDownIcon: ImageVector? = null
+val KeyboardArrowDownIcon: ImageVector
+    get() = _keyboardArrowDownIcon ?: ImageVector.Builder(
+        name = "SachetKbdDown",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(7.41f, 8.59f)
+            lineTo(12.0f, 13.17f)
+            lineTo(16.59f, 8.59f)
+            lineTo(18.0f, 10.0f)
+            lineTo(12.0f, 16.0f)
+            lineTo(6.0f, 10.0f)
+            lineTo(7.41f, 8.59f)
+            close()
+        }
+    }.build().also { _keyboardArrowDownIcon = it }
+
+private var _keyboardArrowRightIcon: ImageVector? = null
+val KeyboardArrowRightIcon: ImageVector
+    get() = _keyboardArrowRightIcon ?: ImageVector.Builder(
+        name = "SachetKbdRight",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(8.59f, 16.59f)
+            lineTo(13.17f, 12.0f)
+            lineTo(8.59f, 7.41f)
+            lineTo(10.0f, 6.0f)
+            lineTo(16.0f, 12.0f)
+            lineTo(10.0f, 18.0f)
+            lineTo(8.59f, 16.59f)
+            close()
+        }
+    }.build().also { _keyboardArrowRightIcon = it }
+
+private var _keyboardArrowUpIcon: ImageVector? = null
+val KeyboardArrowUpIcon: ImageVector
+    get() = _keyboardArrowUpIcon ?: ImageVector.Builder(
+        name = "SachetKbdUp",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(7.41f, 15.41f)
+            lineTo(12.0f, 10.83f)
+            lineTo(16.59f, 15.41f)
+            lineTo(18.0f, 14.0f)
+            lineTo(12.0f, 8.0f)
+            lineTo(6.0f, 14.0f)
+            lineTo(7.41f, 15.41f)
+            close()
+        }
+    }.build().also { _keyboardArrowUpIcon = it }
+
+private var _menuIcon: ImageVector? = null
+val MenuIcon: ImageVector
+    get() = _menuIcon ?: ImageVector.Builder(
+        name = "SachetMenu",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(3.0f, 18.0f)
+            lineTo(21.0f, 18.0f)
+            lineTo(21.0f, 16.0f)
+            lineTo(3.0f, 16.0f)
+            lineTo(3.0f, 18.0f)
+            close()
+            moveTo(3.0f, 13.0f)
+            lineTo(21.0f, 13.0f)
+            lineTo(21.0f, 11.0f)
+            lineTo(3.0f, 11.0f)
+            lineTo(3.0f, 13.0f)
+            close()
+            moveTo(3.0f, 6.0f)
+            lineTo(3.0f, 8.0f)
+            lineTo(21.0f, 8.0f)
+            lineTo(21.0f, 6.0f)
+            lineTo(3.0f, 6.0f)
+            close()
+        }
+    }.build().also { _menuIcon = it }
+
+private var _refreshIcon: ImageVector? = null
+val RefreshIcon: ImageVector
+    get() = _refreshIcon ?: ImageVector.Builder(
+        name = "SachetRefresh",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(17.65f, 6.35f)
+            curveTo(16.2f, 4.9f, 14.21f, 4.0f, 12.0f, 4.0f)
+            curveTo(7.58f, 4.0f, 4.01f, 7.58f, 4.01f, 12.0f)
+            curveTo(4.01f, 16.42f, 7.58f, 20.0f, 12.0f, 20.0f)
+            curveTo(15.73f, 20.0f, 18.84f, 17.45f, 19.73f, 14.0f)
+            lineTo(17.65f, 14.0f)
+            curveTo(16.83f, 16.33f, 14.61f, 18.0f, 12.0f, 18.0f)
+            curveTo(8.69f, 18.0f, 6.0f, 15.31f, 6.0f, 12.0f)
+            curveTo(6.0f, 8.69f, 8.69f, 6.0f, 12.0f, 6.0f)
+            curveTo(13.66f, 6.0f, 15.14f, 6.69f, 16.22f, 7.78f)
+            lineTo(13.0f, 11.0f)
+            lineTo(20.0f, 11.0f)
+            lineTo(20.0f, 4.0f)
+            lineTo(17.65f, 6.35f)
+            close()
+        }
+    }.build().also { _refreshIcon = it }
+
+private var _sendIcon: ImageVector? = null
+val SendIcon: ImageVector
+    get() = _sendIcon ?: ImageVector.Builder(
+        name = "SachetSend",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(2.01f, 21.0f)
+            lineTo(23.0f, 12.0f)
+            lineTo(2.01f, 3.0f)
+            lineTo(2.0f, 10.0f)
+            lineTo(17.0f, 12.0f)
+            lineTo(2.0f, 14.0f)
+            close()
+        }
+    }.build().also { _sendIcon = it }
+
+private var _settingsIcon: ImageVector? = null
+val SettingsIcon: ImageVector
+    get() = _settingsIcon ?: ImageVector.Builder(
+        name = "SachetSettings",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(19.14f, 12.94f)
+            curveTo(19.18f, 12.64f, 19.2f, 12.33f, 19.2f, 12.0f)
+            curveTo(19.2f, 11.68f, 19.18f, 11.36f, 19.13f, 11.06f)
+            lineTo(21.16f, 9.48f)
+            curveTo(21.34f, 9.34f, 21.39f, 9.07f, 21.28f, 8.87f)
+            lineTo(19.36f, 5.55f)
+            curveTo(19.24f, 5.33f, 18.99f, 5.26f, 18.77f, 5.33f)
+            lineTo(16.38f, 6.29f)
+            curveTo(15.88f, 5.91f, 15.35f, 5.59f, 14.76f, 5.35f)
+            lineTo(14.4f, 2.81f)
+            curveTo(14.36f, 2.57f, 14.16f, 2.4f, 13.92f, 2.4f)
+            lineTo(10.08f, 2.4f)
+            curveTo(9.84f, 2.4f, 9.65f, 2.57f, 9.61f, 2.81f)
+            lineTo(9.25f, 5.35f)
+            curveTo(8.66f, 5.59f, 8.12f, 5.92f, 7.63f, 6.29f)
+            lineTo(5.24f, 5.33f)
+            curveTo(5.02f, 5.25f, 4.77f, 5.33f, 4.65f, 5.55f)
+            lineTo(2.74f, 8.87f)
+            curveTo(2.62f, 9.08f, 2.66f, 9.34f, 2.86f, 9.48f)
+            lineTo(4.89f, 11.06f)
+            curveTo(4.84f, 11.36f, 4.8f, 11.69f, 4.8f, 12.0f)
+            curveTo(4.8f, 12.31f, 4.82f, 12.64f, 4.87f, 12.94f)
+            lineTo(2.84f, 14.52f)
+            curveTo(2.66f, 14.66f, 2.61f, 14.93f, 2.72f, 15.13f)
+            lineTo(4.64f, 18.45f)
+            curveTo(4.76f, 18.67f, 5.01f, 18.74f, 5.23f, 18.67f)
+            lineTo(7.62f, 17.71f)
+            curveTo(8.12f, 18.09f, 8.65f, 18.41f, 9.24f, 18.65f)
+            lineTo(9.6f, 21.19f)
+            curveTo(9.65f, 21.43f, 9.84f, 21.6f, 10.08f, 21.6f)
+            lineTo(13.92f, 21.6f)
+            curveTo(14.16f, 21.6f, 14.36f, 21.43f, 14.39f, 21.19f)
+            lineTo(14.75f, 18.65f)
+            curveTo(15.34f, 18.41f, 15.88f, 18.09f, 16.37f, 17.71f)
+            lineTo(18.76f, 18.67f)
+            curveTo(18.98f, 18.75f, 19.23f, 18.67f, 19.35f, 18.45f)
+            lineTo(21.27f, 15.13f)
+            curveTo(21.39f, 14.91f, 21.34f, 14.66f, 21.15f, 14.52f)
+            lineTo(19.14f, 12.94f)
+            close()
+            moveTo(12.0f, 15.6f)
+            curveTo(10.02f, 15.6f, 8.4f, 13.98f, 8.4f, 12.0f)
+            curveTo(8.4f, 10.02f, 10.02f, 8.4f, 12.0f, 8.4f)
+            curveTo(13.98f, 8.4f, 15.6f, 10.02f, 15.6f, 12.0f)
+            curveTo(15.6f, 13.98f, 13.98f, 15.6f, 12.0f, 15.6f)
+            close()
+        }
+    }.build().also { _settingsIcon = it }
