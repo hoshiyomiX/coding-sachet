@@ -134,12 +134,17 @@ fun AppRoot(state: AppState) {
                     // System back handling. These handlers are composed
                     // BEFORE the screens, so a screen-level handler (e.g. the
                     // chat drawer) registered later still wins when enabled.
-                    // 1) A pushed screen (Chat/Settings/Files) pops normally —
-                    //    from the chat, back returns to the homepage (T-ML65).
-                    BackHandler(enabled = state.backstack.size > 1) { state.pop() }
-                    // 2) On the homepage root, back MINIMIZES the app instead
-                    //    of finishing the activity.
-                    BackHandler(enabled = state.backstack.size <= 1) {
+                    // 1) A pushed utility screen (Files/Settings) pops back to
+                    //    the chat. The chat itself never pops to the Home
+                    //    overlay (T-ML72 fix) — back di dalam chat tidak boleh
+                    //    menampilkan homepage [Proyek baru]/[Proyek berjalan].
+                    BackHandler(enabled = state.backstack.size > 1 && state.top != Screen.Chat) {
+                        state.pop()
+                    }
+                    // 2) On the homepage root or inside a chat, back MINIMIZES
+                    //    the app instead of finishing the activity — chat yang
+                    //    aktif tetap hidup dan dibuka lagi saat app kembali.
+                    BackHandler(enabled = state.backstack.size <= 1 || state.top == Screen.Chat) {
                         (context as? Activity)?.moveTaskToBack(true)
                     }
 
