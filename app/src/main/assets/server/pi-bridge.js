@@ -474,6 +474,16 @@ async function runPiChat({ apiKey, providerId, model, executor, messages, signal
     const prompt = promptFor(messages, piFresh ? 0 : st.seen, piFresh);
     log.inf('pi', `prompt ${prompt.length}ch (history ${messages.length} msg, pi-seen ${st.seen}${attempt > 1 ? `, percobaan ${attempt}` : ''})`);
 
+    // T-ML70 fix: set_model executor PERSISTEN di child Pi. Sesi yang dipakai
+    // ulang masih membawa model executor dari run sebelumnya → turn berikutnya
+    // melewati orchestrator (hanya executor jalan). Reset ke orchestrator di
+    // awal tiap run agar orchestrator selalu memimpin putaran pertama.
+    if (dualExecutor && !piFresh) {
+      const mr = await rpc.send({ type: 'set_model', provider: providerId, modelId: model }, 15000);
+      if (!mr.success) log.wrn('pi', `reset model ke orchestrator gagal: ${mr.error || 'tidak diketahui'}`);
+      else log.inf('pi', `model direset ke orchestrator ${model} (sesi dipakai ulang)`);
+    }
+
     const pr = await rpc.send({ type: 'prompt', message: prompt }, 30000);
     if (!pr.success) throw new Error(`prompt ditolak Pi: ${pr.error || pr.data}`);
     if (pr.data && pr.data.disposition === 'handled') {

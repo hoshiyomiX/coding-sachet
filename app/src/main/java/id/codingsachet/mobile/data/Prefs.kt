@@ -75,6 +75,23 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("engineOc", true)
         set(v) = sp.edit().putBoolean("engineOc", v).apply()
 
+    /** Engine oc & pi saling eksklusif sebagai primary (oc → pi → legacy).
+     *  Normalisasi state tersimpan: bila keduanya true (mis. instalasi lama
+     *  dengan enginePi=true yang bertemu default engineOc=true setelah
+     *  upgrade), oc menang dan pi dimatikan — konsisten dengan pemilihan
+     *  SACHET_ENGINE di RuntimeController yang selalu mengutamakan oc. */
+    fun normalizeEngine() {
+        if (engineOc && enginePi) enginePi = false
+    }
+
+    /** Normalisasi di startup: instalasi lama dengan enginePi=true bertemu
+     *  default engineOc=true setelah upgrade → keduanya true dan kedua
+     *  switch di Settings menyala bersamaan. Ini memperbaiki state
+     *  tersimpan sebelum dibaca RuntimeController maupun UI. */
+    init {
+        normalizeEngine()
+    }
+
     // T-ML70 (oc): konfigurasi dual-model engine OpenCode — kunci "oc" di
     // options /api/chat, mirip Pi tapi untuk engine oc-bridge.js.
     /** Model orchestrator (perencana + putaran tool) untuk engine oc.

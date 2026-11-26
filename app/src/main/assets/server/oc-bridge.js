@@ -77,6 +77,15 @@ const APPEND_SYSTEM =
   '- Keep conversational answers short. Write code carefully but concisely; do not restate file contents in the reply.\n' +
   '- If two consecutive rounds make no progress, stop exploring and report the blocker.';
 
+// Prompt lanjutan untuk fase executor setelah handoff deterministik. OpenCode
+// sudah menyimpan riwayat sesi (rencana + hasil tool putaran pertama
+// orchestrator) di sisi server, jadi cukup instruksi singkat agar executor
+// melanjutkan dari titik terakhir tanpa mengulang.
+const OC_CONTINUE_PROMPT =
+  'Lanjutkan pekerjaan dari titik terakhir. Rencana dan hasil tool putaran ' +
+  'pertama sudah ada di riwayat sesi — jangan ulangi langkah yang sudah selesai. ' +
+  'Selesaikan tugas sampai tuntas dan verifikasi dengan menjalankan kode.';
+
 /** System prompt ringkas yang *mengganti* prompt bawaan OpenCode (~4,8K tok
  *  baseline) agar biaya per-task turun (Path B, AUDIT-OPENCODE.md §10).
  *  Dipakai sebagai `systemPrompt` di opencode.json. Bahasa Inggris (OpenCode
@@ -426,15 +435,17 @@ function translate(rec, st) {
           totalTokens: (u.input ?? 0) + (u.output ?? 0),
         });
       }
-      // Dual-model: putaran tool pertama selesai → serahkan ke executor.
+      // Dual-model: putaran tool pertama selesai → minta handoff ke executor.
+      // OpenCode MENGUNCI model untuk seluruh durasi satu run `prompt` (loop
+      // otonom); POST /model di tengah run DIABAIKAN untuk run yang sedang
+      // jalan (hanya berlaku untuk prompt berikutnya). Maka handoff harus
+      // deterministik: tandai handoffPending, lalu runAttempt meng-interrupt
+      // run orchestrator, switch model, dan re-prompt executor (lihat
+      // runAttempt). Cukup sekali (executorHanded).
       if (st.dualExecutor && !st.executorHanded && acc.toolCalls.length) {
         st.executorHanded = true;
-        log.inf('oc', `dual-model: putaran tool selesai — serahkan sisa run ke executor ${st.dualExecutor}`);
-        st.emit({ type: 'model', model: st.dualExecutor, role: 'executor' });
-        ocRequest(st.port, st.password, 'POST', `/api/session/${st.sid}/model`,
-          { model: { providerID: OC_PROVIDER_ID, id: st.dualExecutor } }, 15000)
-          .then((r) => { if (r.status !== 204 && r.status !== 200) log.wrn('oc', `switch model executor gagal: HTTP ${r.status} ${r.body.slice(0, 120)}`); })
-          .catch(() => { /* fire-and-forget */ });
+        st.handoffPending = true;
+        log.inf('oc', `dual-model: putaran tool orchestrator selesai — siap serahkan ke executor ${st.dualExecutor}`);
       }
       break;
     }
@@ -511,6 +522,7 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
 
     // Sesi: buat baru bila belum ada / kosong.
     let sid = st.sid;
+    const reused = !!sid;
     if (!sid) {
       const r = await ocRequest(port, password, 'POST', '/api/session',
         { title: 'sachet', model: { providerID: OC_PROVIDER_ID, id: model } });
@@ -518,6 +530,18 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
       sid = JSON.parse(r.body).data.id;
       st.sid = sid;
       log.inf('oc', `sesi baru ${sid} (gen=${st.gen})`);
+    } else if (dualExecutor) {
+      // T-ML70 fix: switch model ke executor PERSISTEN di sesi OpenCode.
+      // Sesi yang dipakai ulang masih membawa model executor dari run
+      // sebelumnya, sehingga turn berikutnya melewati orchestrator sepenuhnya
+      // (hanya executor yang jalan). Setel ulang ke orchestrator di AWAL tiap
+      // run agar orchestrator selalu memimpin putaran pertama.
+      const mr = await ocRequest(port, password, 'POST', `/api/session/${sid}/model`,
+        { model: { providerID: OC_PROVIDER_ID, id: model } }, 15000);
+      if (mr.status !== 204 && mr.status !== 200)
+        log.wrn('oc', `reset model ke orchestrator gagal: HTTP ${mr.status} ${mr.body.slice(0, 120)}`);
+      else
+        log.inf('oc', `model sesi direset ke orchestrator ${model} (sesi dipakai ulang)`);
     }
 
     const prompt = promptFor(messages, fresh ? 0 : st.seen, fresh);
@@ -527,51 +551,94 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
     const stream = openEventStream(port, password, (rec) => (rec.data && rec.data.sessionID ? rec.data.sessionID === sid : true));
     const tstate = {
       toolName: new Map(), msgs: new Map(), emitted: new Set(),
-      dualExecutor, executorHanded: false, turns: 0, added,
+      dualExecutor, executorHanded: false, handoffPending: false, turns: 0, added,
       emit, port, password, sid,
     };
 
     const onAbort = () => { ocRequest(port, password, 'POST', `/api/session/${sid}/interrupt`, null, 8000).catch(() => {}); };
     signal && signal.addEventListener('abort', onAbort, { once: true });
 
+    // `consumed` dibagi lintas fase: stream.events kumulatif, jadi jangan
+    // menerjemahkan ulang event lama saat fase executor mulai.
+    let consumed = 0;
     let terminal = null;
-    try {
-      const pr = await ocRequest(port, password, 'POST', `/api/session/${sid}/prompt`, { text: prompt }, 30000);
+
+    // Satu fase = satu prompt + pompa event sampai terminal ATAU handoffPending.
+    const runPhase = (text) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timeout menunggu session.execution terminal')), config.requestTimeoutMs * 12);
+      const pump = () => {
+        if (stream.isClosed()) {
+          if (!terminal) { clearTimeout(timer); reject(new Error('stream event opencode putus (koneksi)')); }
+          else { clearTimeout(timer); resolve(); }
+          return;
+        }
+        try {
+          while (consumed < stream.events.length) {
+            const rec = stream.events[consumed++];
+            if (rec.type === 'session.execution.succeeded' || rec.type === 'session.execution.failed' || rec.type === 'session.error') {
+              if (rec.type === 'session.error') {
+                const m = (rec.data && (rec.data.error || rec.data.message)) || 'session error';
+                terminal = { type: 'error', message: typeof m === 'string' ? m : JSON.stringify(m) };
+              } else {
+                terminal = { type: 'done' };
+              }
+              break;
+            }
+            translate(rec, tstate);
+          }
+        } catch (err) { clearTimeout(timer); reject(err); return; }
+        if (terminal || tstate.handoffPending) { clearTimeout(timer); resolve(); return; }
+        stream.waiters.push(pump);
+      };
+      stream.waiters.push(pump);
+      pump();
+    });
+
+    // Jalankan prompt (orchestrator) lalu, bila handoff diminta, drain terminal
+    // run orchestrator yang di-interrupt sebelum switch model + re-prompt.
+    const sendPrompt = async (text) => {
+      const pr = await ocRequest(port, password, 'POST', `/api/session/${sid}/prompt`, { text }, 30000);
       if (pr.status !== 200 && pr.status !== 201) {
         throw new Error(`prompt ditolak: HTTP ${pr.status} ${pr.body.slice(0, 200)}`);
       }
+    };
 
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('timeout menunggu session.execution terminal')), config.requestTimeoutMs * 12);
-        let consumed = 0;
-        const pump = () => {
-          if (stream.isClosed()) {
-            // SSE putus — bila belum terminal, anggap error jaringan.
-            if (!terminal) { clearTimeout(timer); reject(new Error('stream event opencode putus (koneksi)')); }
-            else { clearTimeout(timer); resolve(); }
-            return;
+    try {
+      await sendPrompt(prompt);
+      await runPhase(prompt);
+
+      // Handoff deterministik: OpenCode mengunci model per-run, jadi tak bisa
+      // switch di tengah. Interrupt run orchestrator, buang terminal-nya, switch
+      // model ke executor, lalu re-prompt agar executor melanjutkan.
+      if (tstate.handoffPending && dualExecutor && !terminal) {
+        log.inf('oc', `dual-model: interrupt run orchestrator untuk serahkan ke executor ${dualExecutor}`);
+        await ocRequest(port, password, 'POST', `/api/session/${sid}/interrupt`, null, 8000).catch(() => {});
+        // Beri jeda singkat & drain event yang sudah tiba (terminal run
+        // orchestrator yang di-interrupt). Time-bounded — jangan gantung bila
+        // OpenCode tak mengirim terminal setelah interrupt.
+        tstate.handoffPending = false;
+        await new Promise((r) => setTimeout(r, 1500));
+        try {
+          while (consumed < stream.events.length) {
+            const rec = stream.events[consumed++];
+            if (rec.type === 'session.execution.succeeded' || rec.type === 'session.execution.failed' || rec.type === 'session.error') break;
+            translate(rec, tstate);
           }
-          try {
-            while (consumed < stream.events.length) {
-              const rec = stream.events[consumed++];
-              if (rec.type === 'session.execution.succeeded' || rec.type === 'session.execution.failed' || rec.type === 'session.error') {
-                if (rec.type === 'session.error') {
-                  const m = (rec.data && (rec.data.error || rec.data.message)) || 'session error';
-                  terminal = { type: 'error', message: typeof m === 'string' ? m : JSON.stringify(m) };
-                } else {
-                  terminal = { type: 'done' };
-                }
-                break;
-              }
-              translate(rec, tstate);
-            }
-          } catch (err) { clearTimeout(timer); reject(err); return; }
-          if (terminal) { clearTimeout(timer); resolve(); return; }
-          stream.waiters.push(pump);
-        };
-        stream.waiters.push(pump);
-        pump();
-      });
+        } catch { /* abaikan sisa event orchestrator */ }
+        terminal = null; // terminal orchestrator bukan terminal run kita
+
+        const mr = await ocRequest(port, password, 'POST', `/api/session/${sid}/model`,
+          { model: { providerID: OC_PROVIDER_ID, id: dualExecutor } }, 15000);
+        if (mr.status !== 204 && mr.status !== 200)
+          log.wrn('oc', `switch model executor gagal: HTTP ${mr.status} ${mr.body.slice(0, 120)}`);
+        else {
+          log.inf('oc', `dual-model: model sesi → executor ${dualExecutor}`);
+          emit({ type: 'model', model: dualExecutor, role: 'executor' });
+        }
+        // Fase executor: lanjutkan dari titik terakhir (riwayat tersimpan server).
+        await sendPrompt(OC_CONTINUE_PROMPT);
+        await runPhase(OC_CONTINUE_PROMPT);
+      }
     } finally {
       signal && signal.removeEventListener('abort', onAbort);
       stream.close();

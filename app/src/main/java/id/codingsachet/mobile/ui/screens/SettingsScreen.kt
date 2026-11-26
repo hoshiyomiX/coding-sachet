@@ -92,6 +92,10 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
     var noSeccomp by remember { mutableStateOf(Graph.prefs.noSeccomp) }
     var enginePi by remember { mutableStateOf(Graph.prefs.enginePi) }
     var engineOc by remember { mutableStateOf(Graph.prefs.engineOc) }
+    // oc & pi saling eksklusif sebagai primary — dinormalisasi di
+    // Prefs.init() (instalasi lama dengan enginePi=true + default
+    // engineOc=true setelah upgrade), jadi state tersimpan di sini sudah
+    // konsisten: tidak ada keduanya true sejak composition pertama.
     var rootAccess by remember { mutableStateOf(Graph.prefs.rootAccess) }
     var showReset by remember { mutableStateOf(false) }
     var installingTools by remember { mutableStateOf(false) }
@@ -442,6 +446,12 @@ private fun JsonConfigSection() {
     var optSeed by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "seed")) }
     var optStop by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "stop")) }
     var optReasoning by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "reasoning_effort")) }
+    // Engine aktif dibaca langsung dari prefs — sudah dinormalisasi di
+    // Prefs.init() (oc & pi saling eksklusif), jadi cukup satu yang true.
+    // Seksi dual-model hanya tampil untuk engine yang benar-benar berjalan.
+    val enginePiActive = Graph.prefs.enginePi
+    val engineOcActive = Graph.prefs.engineOc
+
     // T-ML70: selector dual-model engine Pi — menggantikan kolom "JSON
     // tambahan". Persist langsung saat dipilih (tanpa tombol Simpan);
     // preview di bawah dibangun dari builder yang SAMA dengan yang
@@ -585,6 +595,10 @@ private fun JsonConfigSection() {
     // langsung; baris preview di bawah membuktikan kunci "pi" benar-benar
     // akan terkirim (akar insiden: konfigurasi tak pernah tiba + tak
     // terlihat). Opsi pertama tiap selector = mode non-aktif.
+    // Seksi ini hanya relevan bila engine Pi adalah primary — disembunyikan
+    // saat engine oc aktif agar konfigurasi yang tampil selalu milik engine
+    // yang benar-benar berjalan.
+    if (enginePiActive) {
     Text(s.dualModelSection, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
     Text(s.dualModelHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     if (Graph.prefs.piProvider.isNotBlank() && Graph.prefs.piProvider != Graph.prefs.active.id) {
@@ -620,11 +634,13 @@ private fun JsonConfigSection() {
             onDismiss = { piSheet = null },
         )
     }
+    } // if (enginePiActive) — seksi dual-model Pi
 
     // ---- dual-model engine OpenCode (oc) ----
     // Selector orchestrator/executor untuk engine oc (oc-bridge.js). Mirip
     // engine Pi tapi kunci "oc" danPrefs-nya terpisah (ocOrchestrator,
-    // ocExecutor, ocProvider). Hanya aktif bila engine oc dipilih.
+    // ocExecutor, ocProvider). Hanya tampil bila engine oc adalah primary.
+    if (engineOcActive) {
     SectionTitle(s.ocDualModelSection)
     Text(s.ocDualModelHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     if (Graph.prefs.ocProvider.isNotBlank() && Graph.prefs.ocProvider != Graph.prefs.active.id) {
@@ -658,6 +674,7 @@ private fun JsonConfigSection() {
             onDismiss = { ocSheet = null },
         )
     }
+    } // if (engineOcActive) — seksi dual-model oc
 
     // Live preview of the exact object that will be merged into the request.
     Text(s.jsonPreview, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
