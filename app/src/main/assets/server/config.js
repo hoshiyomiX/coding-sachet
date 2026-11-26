@@ -292,7 +292,10 @@ const config = {
   // File API sandbox: paths must resolve under one of these roots.
   allowedRoots: [HOME, '/tmp', '/sdcard', '/storage/emulated/0', ...extraRoots],
 
-  jsonBodyLimit: 5 * 1024 * 1024,
+  // Sesi coding long-context mengirim ulang seluruh riwayat tiap turn; 5MB
+  // lama bikin body > limit → server req.destroy() → app terima EOF/reset.
+  // 50MB cukup untuk sesi sangat panjang tanpa membuka pintu abuse berlebih.
+  jsonBodyLimit: Number(process.env.SACHET_JSON_BODY_LIMIT || 50 * 1024 * 1024),
 
   // Where the /api/dns route writes the guest resolver config. The Android
   // app pushes the system's (VPN-aware) DNS servers there; public

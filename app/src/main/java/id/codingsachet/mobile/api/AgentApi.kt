@@ -43,9 +43,13 @@ class AgentApi(private val port: () -> Int) {
         .readTimeout(35, TimeUnit.SECONDS)
         .build()
 
-    /** No read timeout: chat responses are long-lived SSE streams. */
+    /** No read timeout: chat responses are long-lived SSE streams.
+     *  Write timeout 120s (bukan default 10s): upload body konteks besar di
+     *  jaringan mobile lambat bisa > 10s per write → tanpa ini koneksi putus
+     *  saat sesi long-context. */
     private val sseClient: OkHttpClient = client.newBuilder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
         .build()
 
     fun baseUrl(): String = "http://127.0.0.1:${port()}"

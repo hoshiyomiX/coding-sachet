@@ -451,7 +451,7 @@ function isRetryableError(msg) {
   if (/biner opencode tidak ditemukan|Provider tidak dikenal|masih sibuk/.test(msg)) return false;
   if (/serve keluar saat boot|tidak menjawab \/api\/config/.test(msg)) return false;
   if (/\b4\d\d\b/.test(msg) && !/\b5\d\d\b/.test(msg)) return false;
-  return /\b5\d{2}\b|bad gateway|service unavailable|upstream|overloaded|econnreset|etimedout|socket hang up|eai_again|fetch failed|network error|terminated/i.test(msg);
+  return /\b5\d{2}\b|bad gateway|service unavailable|upstream|overloaded|econnreset|etimedout|socket hang up|eai_again|fetch failed|network error|terminated|stream event opencode putus|stream putus|connection (reset|refused|closed)|socket hang up/i.test(msg);
 }
 
 function waitAbortable(ms, signal) {
