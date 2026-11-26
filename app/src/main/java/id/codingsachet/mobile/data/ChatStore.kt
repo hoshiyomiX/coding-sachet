@@ -57,6 +57,20 @@ data class Session(
     fun wireHistory(): List<Msg> = messages.toList()
 }
 
+/**
+ * T-ML71: judul percakapan — input nama project bila ada, else baris
+ * pertama dari pesan user pertama, else "Chat". Nama project adalah
+ * identitas percakapan (T-ML28 #4: satu project satu folder), bukan hanya
+ * penentu folder kerja. Murni agar kontrak judul bisa di-pin unit test
+ * tanpa Context.
+ */
+internal fun conversationTitle(project: String?, firstUserMessage: String?): String {
+    val p = project?.trim()?.takeIf { it.isNotEmpty() }
+    if (p != null) return p.take(48)
+    val line = firstUserMessage?.lineSequence()?.firstOrNull()?.take(48)
+    return line?.takeIf { it.isNotBlank() } ?: "Chat"
+}
+
 /** Sessions persisted as one JSON file each under filesDir/sessions. */
 class ChatStore(ctx: Context) {
     private val dir: File = File(ctx.filesDir, "sessions").apply { mkdirs() }
@@ -80,12 +94,16 @@ class ChatStore(ctx: Context) {
     }
 
     fun create(model: String, project: String? = null): Session {
+        val p = project?.trim()?.takeIf { it.isNotEmpty() }
         val s = Session(
             id = UUID.randomUUID().toString().replace("-", "").take(16),
-            title = "",
+            // T-ML71: sesi berbasis project langsung berjudul nama project
+            // sejak dibuat — drawer & header menampilkan input nama project,
+            // bukan "…"/"Chat Baru" sampai pesan pertama terkirim.
+            title = p?.let { conversationTitle(it, null) } ?: "",
             created = System.currentTimeMillis(),
             model = model,
-            project = project?.trim()?.takeIf { it.isNotEmpty() },
+            project = p,
         )
         index[s.id] = s
         save(s)
@@ -113,11 +131,13 @@ class ChatStore(ctx: Context) {
         File(dir, s.id + ".json.tmp").delete()
     }
 
-    /** Keep a short, human title derived from the first user message. */
+    /** Keep a short, human title derived from the project name or the first
+     *  user message (T-ML71: nama project menang — bug "judul tidak pakai
+     *  input nama project"). */
     fun autoTitle(s: Session) {
         if (s.title.isNotBlank()) return
-        val first = s.messages.firstOrNull { it.role == "user" }?.content ?: return
-        s.title = first.lineSequence().firstOrNull()?.take(48)?.ifBlank { "Chat" } ?: "Chat"
+        val first = s.messages.firstOrNull { it.role == "user" }?.content
+        s.title = conversationTitle(s.project, first)
     }
 }
 

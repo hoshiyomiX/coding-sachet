@@ -5,6 +5,7 @@ import id.codingsachet.mobile.api.Providers
 import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
 import id.codingsachet.mobile.data.ToolCall
+import id.codingsachet.mobile.data.conversationTitle
 import id.codingsachet.mobile.data.snapshotSession
 import id.codingsachet.mobile.data.writeSessionFile
 import id.codingsachet.mobile.runtime.DumpFormat
@@ -348,6 +349,58 @@ class CodingSachetUnitTest {
     // ---------- Chat persistence wire format ----------
 
     private val json = Json { ignoreUnknownKeys = true }
+
+    // ---------- T-ML71: judul percakapan memakai input nama project ----------
+
+    @Test
+    fun conversationTitlePrefersProjectName() {
+        // Nama project adalah identitas percakapan — menang atas pesan user.
+        assertEquals(
+            "aplikasi kalkulator",
+            conversationTitle("aplikasi kalkulator", "tolong buatkan game ular"),
+        )
+    }
+
+    @Test
+    fun conversationTitleTrimsProjectAndCapsAt48() {
+        assertEquals("proy-a", conversationTitle("  proy-a  ", null))
+        assertEquals(48, conversationTitle("x".repeat(80), null).length)
+        assertEquals("x".repeat(48), conversationTitle("x".repeat(80), null))
+    }
+
+    @Test
+    fun conversationTitleFallsBackToFirstUserLine() {
+        // Tanpa project: baris pertama pesan user pertama, max 48 char.
+        assertEquals("buat toko online", conversationTitle(null, "buat toko online\nlengkap dengan keranjang"))
+        assertEquals(48, conversationTitle(null, "y".repeat(80)).length)
+    }
+
+    @Test
+    fun conversationTitleBlankInputsYieldChat() {
+        assertEquals("Chat", conversationTitle(null, null))
+        assertEquals("Chat", conversationTitle("", "   \n  "))
+        assertEquals("Chat", conversationTitle("   ", ""))
+        // Project kosong/spasi = tanpa project — fallback pesan user.
+        assertEquals("hai", conversationTitle("  ", "hai"))
+    }
+
+    @Test
+    fun autoTitleUsesProjectOverMessage() {
+        // Simulasi jalur ChatStore.create + ChatEngine.send: sesi dibuat
+        // berjudul nama project; autoTitle tak boleh menimpanya.
+        val s = Session(
+            id = "t1", title = conversationTitle("proyek uji", null),
+            created = 0L, model = "m", project = "proyek uji",
+        )
+        s.messages += Msg(role = "user", content = "pesan pertama user")
+        snapshotSession(s).let { snap ->
+            assertEquals("proyek uji", snap.title)
+        }
+        // Legacy sesi tanpa project & tanpa judul → dari pesan user.
+        val legacy = Session(id = "t2", title = "", created = 0L, model = "m")
+        legacy.messages += Msg(role = "user", content = "pesan pertama user")
+        assertEquals("pesan pertama user", conversationTitle(legacy.project, legacy.messages[0].content))
+    }
 
     @Test
     fun sessionRoundTripsThroughJson() {
