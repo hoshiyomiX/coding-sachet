@@ -241,8 +241,8 @@ class ChatEngine(val session: Session) {
     }
 
     /** Konfigurasi JSON (Settings): structured options + seksi "pi" dual-model
-     *  (T-ML70: dibangun dari selector Settings via PiOptions — kini satu
-     *  sumber kebenaran bersama preview). Blank/invalid values never block
+     *  (engine Pi) + seksi "oc" dual-model (engine OpenCode). Satu sumber
+     *  kebenaran bersama preview Settings. Blank/invalid values never block
      *  sending — the agent server re-sanitizes everything anyway. */
     private fun requestOptions(): JsonObject? {
         val structured = parsePref(Graph.prefs.requestOptions)
@@ -252,10 +252,17 @@ class ChatEngine(val session: Session) {
             Graph.prefs.piOrchestrator,
             Graph.prefs.piExecutor,
         )
-        if (structured == null && pi == null) return null
+        val oc = OcOptions.build(
+            Graph.prefs.active.id,
+            Graph.prefs.ocProvider,
+            Graph.prefs.ocOrchestrator,
+            Graph.prefs.ocExecutor,
+        )
+        if (structured == null && pi == null && oc == null) return null
         return buildJsonObject {
             structured?.forEach { (k, v) -> put(k, v) }
             pi?.forEach { (k, v) -> put(k, v) }
+            oc?.forEach { (k, v) -> put(k, v) }
         }
     }
 

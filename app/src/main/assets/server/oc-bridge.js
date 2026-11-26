@@ -1,0 +1,621 @@
+'use strict';
+// oc-bridge.js — engine KETIGA: jembatan OpenCode (v2.2.0, di-vendor + patch
+// evil "Hapus Guardrails" via scripts/vendor-opencode.sh).
+//
+// Menjalankan `opencode serve` sebagai CHILD PROCESS di dalam guest proot,
+// dikendalikan lewat HTTP (Basic auth, base path /api), lalu menerjemahkan
+// event SSE OpenCode menjadi event SSE yang SUDAH dipakai aplikasi —
+// ChatScreen/ChatEngine TIDAK berubah sama sekali (kontrak sama dengan
+// pi-bridge.js / agent.js).
+//
+// Kontrak API v2.2.0 (DIVERIFIKASI LIVE di guest proot, lihat AUDIT-OPENCODE.md):
+//   auth      : HTTP Basic base64("opencode:" + OPENCODE_SERVER_PASSWORD)
+//   boot      : spawn `opencode serve --hostname 127.0.0.1 --port <p>`;
+//               health = GET /api/config → 200
+//   sesi      : POST /api/session {title, model:{providerID,id}} → {data:{id}}
+//   prompt    : POST /api/session/:id/prompt {text}
+//   model     : POST /api/session/:id/model {model:{providerID,id}} → 204 (switch)
+//   interrupt : POST /api/session/:id/interrupt
+//   event     : GET /api/event  (SSE global; data:{id,type,created,data,...})
+//
+// Peta translasi event → SSE app (bentuk diverifikasi dari run nyata):
+//   session.reasoning.delta {delta}          → {type:'think', delta}
+//   session.text.delta {delta}               → {type:'text', delta}
+//   session.tool.input.started {id,name}     → (ingat nama tool)
+//   session.tool.called {id,input}           → {type:'tool', id, name, args}
+//   session.tool.success {id,content,meta}   → {type:'toolend'} + {type:'toolresult'}
+//   session.step.ended {assistantMessageID,finish,tokens}
+//                                            → {type:'message', msg} + toolresult + usage
+//   POST /model sukses (dual)                → {type:'model', model, role:'executor'}
+//   session.execution.succeeded              → {type:'done'}
+//   session.error                            → {type:'error'} + {type:'done'}
+//
+// Kontinuitas: SATU `opencode serve` HIDUP lintas permintaan /api/chat per
+// kunci provider|model|executor|workdir|keyhash (opencode melayani banyak
+// sesi dalam satu serve). Riwayat TIDAK dikirim ulang tiap turn — hanya
+// prompt user baru. State sesi (sessionID + seen + prefix + gen) dipersist;
+// penyimpangan history app (pesan diedit/dihapus) terdeteksi via hash prefix
+// kanonik → sesi OpenCode baru (gen++), konteks lama dibuang (jelas di log).
+//
+// Dual-model (padanan T-ML68): orchestrator = model sesi; setelah putaran
+// tool pertama selesai (step.ended finish='tool-calls'), bridge POST /model →
+// executor mengambil alih putaran berikutnya. Batas v1: executor satu provider
+// dengan orchestrator (satu API key per run) — sama seperti Pi.
+
+const { spawn } = require('child_process');
+const http = require('http');
+const net = require('net');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { config, providerById } = require('./config');
+const log = require('./log');
+
+const OC_BIN = process.env.SACHET_OC_BIN || '/opt/sachet/opencode/bin/opencode';
+const STATE_DIR = process.env.SACHET_OC_STATE_DIR || '/opt/sachet/opencode/bridge';
+// Provider id di sisi OpenCode untuk gateway app (OpenAI-compatible). Satu
+// serve = satu provider app, jadi id tetap "sachet" aman.
+const OC_PROVIDER_ID = 'sachet';
+
+function envInt(name, dflt) {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : dflt;
+}
+const RETRY_DELAY_MS = envInt('SACHET_OC_RETRY_DELAY_MS', 15000);
+const RETRY_MAX = envInt('SACHET_OC_RETRY_MAX', 2);
+
+// Prompt sistem hemat-token yang sama dengan Pi (T-ML58 #1) — OpenCode
+// memakai prompt bawaannya; kita hanya menambah aturan bahasa + disiplin.
+const APPEND_SYSTEM =
+  'Always answer in the same language as the user message. ' +
+  'Finish coding tasks end-to-end with the tools available.\n' +
+  'Work economically — every additional round is slow on this device and re-sends the whole conversation as input tokens:\n' +
+  '- Batch independent commands into ONE bash call (&& or ;) or several tool calls in a single reply.\n' +
+  '- Never re-read a file you already read this session; read only the line ranges you need (view_range).\n' +
+  '- Prefer targeted searches (grep, glob) over dumping whole files or directories.\n' +
+  '- Do not narrate or announce steps before doing them — act first, then summarize at the end.\n' +
+  '- Keep conversational answers short. Write code carefully but concisely; do not restate file contents in the reply.\n' +
+  '- If two consecutive rounds make no progress, stop exploring and report the blocker.';
+
+/** System prompt ringkas yang *mengganti* prompt bawaan OpenCode (~4,8K tok
+ *  baseline) agar biaya per-task turun (Path B, AUDIT-OPENCODE.md §10).
+ *  Dipakai sebagai `systemPrompt` di opencode.json. Bahasa Inggris (OpenCode
+ *  lebih stabil dengan instruksi Inggris), inti protokol coding saja. */
+const OC_SYSTEM_PROMPT =
+  'You are a coding agent in Ubuntu 24.04 proot on the user\'s phone. ' +
+  'Work folder: session project folder, or /sdcard/coding-sachet. ' +
+  'Tools: bash, read_file, read_lines, write_file, list_dir, todo. ' +
+  'Always answer in the user\'s language. Finish coding tasks end-to-end. ' +
+  'Work economically: batch independent commands into ONE bash call; never re-read files; ' +
+  'targeted grep/glob over dumping; no narration, no restating files; short answers. ' +
+  'Multi-step work: write RENCANA.md (checklist), do steps one at a time, mark with todo tool, ' +
+  'verify by running code. Write MEMORI.md (one fact per line with [tag]) at end of multi-step work. ' +
+  'Do not claim done while RENCANA.md has open steps. Stop and report blocker after two rounds without progress.';
+
+/** Apakah biner opencode tersedia di guest (dipakai server.js memilih rute +
+ *  /health). */
+function ocBundleAvailable() {
+  try { return fs.statSync(OC_BIN).isFile(); } catch { return false; }
+}
+
+// ---------------------------------------------------------------- util
+
+function sha(s) {
+  return crypto.createHash('sha256').update(String(s)).digest('hex');
+}
+
+function canonicalMsg(m) {
+  const calls = Array.isArray(m && m.toolCalls) ? m.toolCalls : [];
+  return [
+    m && m.role,
+    m && m.content,
+    (m && m.thinking) || '',
+    calls.map((c) => `${c.id}\u001f${c.name}\u001f${JSON.stringify(c.args ?? {})}`).join('\u001e'),
+    (m && m.toolCallId) || '',
+    (m && m.name) || '',
+  ].join('\u0000');
+}
+
+function hashPrefix(messages, n) {
+  const h = crypto.createHash('sha256');
+  for (let i = 0; i < n && i < messages.length; i++) h.update(canonicalMsg(messages[i]) + '\u0001');
+  return h.digest('hex');
+}
+
+function resolveWorkdir(workdir) {
+  if (typeof workdir !== 'string' || !workdir.trim()) return config.workdir;
+  try { fs.mkdirSync(workdir, { recursive: true }); return workdir; }
+  catch (e) {
+    log.wrn('oc', `workdir sesi tidak terpakai (${e.message}) — fallback ${config.workdir}`);
+    return config.workdir;
+  }
+}
+
+/** Parse konfigurasi dual-model dari options JSON app, kunci "oc".
+ *  Bentuk: {"oc":{"orchestrator":"…","executor":"…"}}. */
+function parseDualConfig(options) {
+  const oc = options && typeof options === 'object' && !Array.isArray(options) ? options.oc : null;
+  if (!oc || typeof oc !== 'object' || Array.isArray(oc)) return null;
+  const clean = (v) => (typeof v === 'string' ? v.trim().slice(0, 120) : '');
+  const orchestrator = clean(oc.orchestrator);
+  const executor = clean(oc.executor);
+  if (!orchestrator && !executor) return null;
+  if (orchestrator && executor && orchestrator === executor) return null;
+  return { orchestrator: orchestrator || null, executor: executor || null };
+}
+
+function readState(dir) {
+  try { return JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf8')); }
+  catch { return { sid: '', seen: 0, prefix: '', gen: 0 }; }
+}
+function writeState(dir, st) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify(st));
+}
+
+// ---------------------------------------------------------------- config
+
+/** Tulis opencode.json untuk satu kunci: guardrails removed (permission allow)
+ *  + provider gateway app (OpenAI-compatible) dengan model primer + executor
+ *  terdaftar. XDG_CONFIG_HOME=<dir>, file di <dir>/opencode/opencode.json. */
+function writeOpencodeConfig(dir, { provider, model, apiKey, executor }) {
+  const models = { [model]: { name: model } };
+  if (executor && executor !== model) models[executor] = { name: executor };
+  const spec = {
+    $schema: 'https://opencode.ai/config.json',
+    // Path B: system prompt ringkas mengganti built-in OpenCode (~4,8K tok
+    // baseline) → biaya per-task turun drastis. APPEND_SYSTEM masih dikirim
+    // per-turn di prompt (non-fresh sesi) sebagai pelengkap bahasa+disiplin.
+    systemPrompt: OC_SYSTEM_PROMPT,
+    permission: {
+      bash: 'allow', edit: 'allow', write: 'allow', read: 'allow',
+      list: 'allow', glob: 'allow', grep: 'allow', task: 'allow',
+      webfetch: 'allow', todowrite: 'allow', todoread: 'allow',
+    },
+    provider: {
+      [OC_PROVIDER_ID]: {
+        npm: '@ai-sdk/openai-compatible',
+        name: provider.label || 'app',
+        options: { baseURL: provider.baseUrl, apiKey },
+        models,
+      },
+    },
+  };
+  const cfgDir = path.join(dir, 'opencode');
+  fs.mkdirSync(cfgDir, { recursive: true });
+  fs.writeFileSync(path.join(cfgDir, 'opencode.json'), JSON.stringify(spec, null, 2));
+}
+function providerId(p) { return p && p.id ? p.id : 'app'; }
+
+// ---------------------------------------------------------------- serve child
+
+let active = null; // { key, keyhash, dir, proc, port, password, exiting }
+
+/** Cari port bebas (bind :0 lalu tutup — race kecil, dapat diterima). */
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.on('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const p = srv.address().port;
+      srv.close(() => resolve(p));
+    });
+  });
+}
+
+/** Satu request HTTP ke serve opencode (Basic auth). Mengembalikan
+ *  {status, body} teks; tidak melempar untuk status non-2xx. */
+function ocRequest(port, password, method, urlPath, body, timeoutMs = 30000) {
+  return new Promise((resolve) => {
+    const data = body != null ? JSON.stringify(body) : null;
+    const headers = {
+      authorization: 'Basic ' + Buffer.from('opencode:' + password).toString('base64'),
+    };
+    if (data != null) {
+      headers['content-type'] = 'application/json';
+      headers['content-length'] = Buffer.byteLength(data);
+    }
+    const req = http.request({ host: '127.0.0.1', port, path: urlPath, method, headers }, (res) => {
+      let s = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { s += c; if (s.length > 8_000_000) req.destroy(); });
+      res.on('end', () => resolve({ status: res.statusCode, body: s }));
+    });
+    req.on('error', (e) => resolve({ status: 0, body: '', error: e.message }));
+    req.setTimeout(timeoutMs, () => { req.destroy(new Error(`timeout ${timeoutMs}ms`)); });
+    if (data != null) req.write(data);
+    req.end();
+  });
+}
+
+/** Koneksi SSE ke /api/event; event diurai → {type,data}. Predikat filter
+ *  opsional (mis. hanya sessionID tertentu). Return {close, events, waiters}. */
+function openEventStream(port, password, filter) {
+  const events = [];
+  const waiters = [];
+  let buf = '';
+  let closed = false;
+  const req = http.request({ host: '127.0.0.1', port, path: '/api/event', method: 'GET', headers: {
+    authorization: 'Basic ' + Buffer.from('opencode:' + password).toString('base64'),
+  } }, (res) => {
+    res.setEncoding('utf8');
+    res.on('data', (chunk) => {
+      buf += chunk;
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          let rec;
+          try { rec = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (!rec || typeof rec.type !== 'string') continue;
+          if (filter && !filter(rec)) continue;
+          events.push(rec);
+          for (const w of waiters.splice(0)) w();
+        }
+      }
+    });
+  });
+  req.on('error', () => { closed = true; for (const w of waiters.splice(0)) w(); });
+  req.end();
+  return {
+    events,
+    waiters,
+    isClosed: () => closed || req.destroyed,
+    close: () => { closed = true; try { req.destroy(); } catch { /* ignore */ } },
+  };
+}
+
+function sessionKey(providerId, model, executor, workdir, keyHash) {
+  const base = [providerId, model, workdir, keyHash].join('|');
+  return executor && executor !== model ? `${base}|dual:${executor}` : base;
+}
+
+/** Matikan serve lama dengan sopan. */
+async function killServe() {
+  const a = active;
+  active = null;
+  if (!a) return;
+  const t0 = Date.now();
+  while (a.proc.exitCode === null && Date.now() - t0 < 3000) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (a.proc.exitCode === null) a.proc.kill('SIGKILL');
+  log.dbg('oc', `serve ${a.keyhash} dihentikan (${Date.now() - t0}ms)`);
+}
+
+/** Pastikan serve untuk kunci ini hidup & sehat. Melempar bila biner hilang. */
+async function ensureServe({ apiKey, providerId, model, executor, workdir }) {
+  const key = sessionKey(providerId, model, executor, workdir, sha(apiKey).slice(0, 12));
+  const keyhash = sha(key).slice(0, 16);
+  const dir = path.join(STATE_DIR, keyhash);
+  if (active && active.key === key && active.proc.exitCode === null) return active;
+
+  if (!ocBundleAvailable()) {
+    throw new Error(`biner opencode tidak ditemukan di ${OC_BIN} (aset APK gagal diekstrak?)`);
+  }
+  const provider = providerById(providerId);
+  if (!provider) throw new Error(`Provider tidak dikenal: ${providerId}`);
+
+  await killServe();
+  writeOpencodeConfig(dir, { provider, model, apiKey, executor });
+
+  const port = await freePort();
+  const password = crypto.randomBytes(24).toString('base64url');
+  const args = [
+    'serve', '--hostname', '127.0.0.1', '--port', String(port), '--print-logs',
+  ];
+  log.inf('oc', `spawn serve ${keyhash} port=${port} model=${model}${executor && executor !== model ? ` executor=${executor}` : ''} workdir=${workdir}`);
+  const proc = spawn(OC_BIN, args, {
+    cwd: workdir,
+    env: {
+      ...process.env,
+      OPENCODE_SERVER_PASSWORD: password,
+      XDG_CONFIG_HOME: dir,
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+      OPENCODE_DISABLE_MODELS_FETCH: '1',
+      NO_COLOR: '1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let errTail = '';
+  proc.stderr.setEncoding('utf8');
+  proc.stderr.on('data', (d) => { errTail = (errTail + d).slice(-4000); });
+  proc.stdout.setEncoding('utf8');
+  proc.stdout.on('data', (d) => {
+    for (const line of String(d).split('\n')) if (line.trim()) log.dbg('oc', 'serve:', line.slice(0, 200));
+  });
+  const entry = { key, keyhash, dir, proc, port, password, errTail: () => errTail };
+  active = entry;
+
+  // Health: GET /api/config → 200 (Basic). Maks ~30s (cold start Bun).
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    if (proc.exitCode !== null) {
+      await killServe();
+      throw new Error(`opencode serve keluar saat boot (kode ${proc.exitCode})${errTail ? ' — ' + errTail.slice(-300) : ''}`);
+    }
+    const r = await ocRequest(port, password, 'GET', '/api/config', null, 4000);
+    if (r.status === 200) { log.dbg('oc', `serve ${keyhash} siap`); return entry; }
+    await new Promise((res) => setTimeout(res, 400));
+  }
+  await killServe();
+  throw new Error('opencode serve tidak menjawab /api/config dalam 30s');
+}
+
+// ---------------------------------------------------------------- translasi
+
+/** Ubah satu event OpenCode (rec) menjadi 0..N event app, dikirim live.
+ *  state: { toolName:Map, msgs:Map assistantMessageID→akumulator, emitted:Set,
+ *           dualExecutor, executorHanded, turns, added, emit, request } */
+function translate(rec, st) {
+  const d = rec.data || {};
+  switch (rec.type) {
+    case 'session.reasoning.delta':
+      if (d.delta) st.emit({ type: 'think', delta: d.delta });
+      break;
+    case 'session.text.delta': {
+      if (d.delta) st.emit({ type: 'text', delta: d.delta });
+      const acc = st.msgs.get(d.assistantMessageID) || newAcc();
+      acc.text += d.delta || '';
+      st.msgs.set(d.assistantMessageID, acc);
+      break;
+    }
+    case 'session.tool.input.started':
+      if (d.id && d.name) st.toolName.set(d.id, d.name);
+      break;
+    case 'session.tool.called': {
+      const name = st.toolName.get(d.id) || 'tool';
+      const args = d.input ?? {};
+      const acc = st.msgs.get(d.assistantMessageID) || newAcc();
+      acc.toolCalls.push({ id: d.id, name, args });
+      st.msgs.set(d.assistantMessageID, acc);
+      st.emit({ type: 'tool', id: d.id, name, args });
+      break;
+    }
+    case 'session.tool.success': {
+      const content = Array.isArray(d.content)
+        ? d.content.filter((b) => b && b.type === 'text').map((b) => b.text).join('')
+        : '';
+      const ok = !d.metadata || d.metadata.status !== 'error';
+      st.emit({ type: 'toolend', id: d.id, ok, output: (content || '(kosong)').slice(0, 4000) });
+      const acc = st.msgs.get(d.assistantMessageID) || newAcc();
+      acc.results.set(d.id, { content: content || '(kosong)', ok });
+      st.msgs.set(d.assistantMessageID, acc);
+      break;
+    }
+    case 'session.tool.error': {
+      const content = d.error || d.message || '(tool error)';
+      st.emit({ type: 'toolend', id: d.id, ok: false, output: String(content).slice(0, 4000) });
+      const acc = st.msgs.get(d.assistantMessageID) || newAcc();
+      acc.results.set(d.id, { content: String(content), ok: false });
+      st.msgs.set(d.assistantMessageID, acc);
+      break;
+    }
+    case 'session.step.ended': {
+      const id = d.assistantMessageID;
+      if (!id || st.emitted.has(id)) break;
+      st.emitted.add(id);
+      const acc = st.msgs.get(id) || newAcc();
+      // Event 'message' (assistant) — history app dibangun dari sini.
+      const msg = {
+        role: 'assistant',
+        content: acc.text,
+        ...(acc.thinking ? { thinking: acc.thinking } : {}),
+        ...(acc.toolCalls.length ? { toolCalls: acc.toolCalls } : {}),
+      };
+      st.emit({ type: 'message', msg });
+      st.added.push(msg);
+      // toolresult untuk tiap tool call pada putaran ini.
+      for (const tc of acc.toolCalls) {
+        const r = acc.results.get(tc.id) || { content: '(kosong)', ok: true };
+        const toolMsg = { role: 'tool', content: r.content, toolCallId: tc.id, name: tc.name };
+        st.emit({ type: 'toolresult', msg: toolMsg });
+        st.added.push(toolMsg);
+      }
+      // Usage per putaran.
+      const u = d.tokens;
+      if (u && (u.input || u.output || u.reasoning)) {
+        st.emit({
+          type: 'usage',
+          promptTokens: u.input ?? 0,
+          completionTokens: u.output ?? 0,
+          ...(u.reasoning != null ? { reasoningTokens: u.reasoning } : {}),
+          totalTokens: (u.input ?? 0) + (u.output ?? 0),
+        });
+      }
+      // Dual-model: putaran tool pertama selesai → serahkan ke executor.
+      if (st.dualExecutor && !st.executorHanded && acc.toolCalls.length) {
+        st.executorHanded = true;
+        log.inf('oc', `dual-model: putaran tool selesai — serahkan sisa run ke executor ${st.dualExecutor}`);
+        st.emit({ type: 'model', model: st.dualExecutor, role: 'executor' });
+        ocRequest(st.port, st.password, 'POST', `/api/session/${st.sid}/model`,
+          { model: { providerID: OC_PROVIDER_ID, id: st.dualExecutor } }, 15000)
+          .then((r) => { if (r.status !== 204 && r.status !== 200) log.wrn('oc', `switch model executor gagal: HTTP ${r.status} ${r.body.slice(0, 120)}`); })
+          .catch(() => { /* fire-and-forget */ });
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+function newAcc() { return { text: '', thinking: '', toolCalls: [], results: new Map() }; }
+
+/** Error retryable: transient jaringan/gateway 5xx (bukan 4xx config, bukan
+ *  child mati). */
+function isRetryableError(msg) {
+  if (!msg) return false;
+  if (/biner opencode tidak ditemukan|Provider tidak dikenal|masih sibuk/.test(msg)) return false;
+  if (/serve keluar saat boot|tidak menjawab \/api\/config/.test(msg)) return false;
+  if (/\b4\d\d\b/.test(msg) && !/\b5\d\d\b/.test(msg)) return false;
+  return /\b5\d{2}\b|bad gateway|service unavailable|upstream|overloaded|econnreset|etimedout|socket hang up|eai_again|fetch failed|network error|terminated/i.test(msg);
+}
+
+function waitAbortable(ms, signal) {
+  if (signal && signal.aborted) return Promise.resolve();
+  if (!signal) return new Promise((r) => setTimeout(r, ms));
+  return new Promise((r) => {
+    const fin = () => { clearTimeout(t); signal.removeEventListener('abort', fin); r(); };
+    const t = setTimeout(fin, ms);
+    signal.addEventListener('abort', fin, { once: true });
+  });
+}
+
+/** Prompt untuk turn ini (sama semantik dengan pi-bridge.promptFor). */
+function promptFor(messages, seen, fresh) {
+  const tail = messages.slice(seen);
+  const lastUser = [...tail].reverse().find((m) => m && m.role === 'user');
+  const sys = APPEND_SYSTEM;
+  if (fresh && seen === 0 && messages.length > 1) {
+    const lines = messages
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => `${m.role === 'user' ? 'Pengguna' : 'Asisten'}: ${(m.content || '').slice(0, 400)}`)
+      .join('\n');
+    const trimmed = lines.length > 8000 ? lines.slice(0, 4000) + '\n…(dipangkas)…\n' + lines.slice(-4000) : lines;
+    const body = lastUser
+      ? `Konteks percakapan sebelumnya (ringkas):\n${trimmed}\n\nPesan terbaru pengguna: ${lastUser.content}`
+      : `Konteks percakapan sebelumnya (ringkas):\n${trimmed}\n\nLanjutkan pekerjaan dari titik terakhir.`;
+    return `${sys}\n\n${body}`;
+  }
+  if (lastUser) return `${sys}\n\n${String(lastUser.content || '')}`;
+  return `${sys}\n\n[lanjutan] Lanjutkan pekerjaan dari titik terakhir. Jangan mengulang langkah yang sudah selesai.`;
+}
+
+// ---------------------------------------------------------------- API utama
+
+/** Satu run chat lewat engine OpenCode — kontrak sama dengan runPiChat. */
+async function runOcChat({ apiKey, providerId, model, executor, messages, signal, emit, workdir }) {
+  if (!Array.isArray(messages)) throw new Error('messages wajib array');
+  const wd = resolveWorkdir(workdir);
+
+  const probeKey = sessionKey(providerId, model, executor, wd, sha(apiKey).slice(0, 12));
+  const probeHash = sha(probeKey).slice(0, 16);
+  const probeDir = path.join(STATE_DIR, probeHash);
+  let st = readState(probeDir);
+  if (st.seen > 0 && (messages.length < st.seen || hashPrefix(messages, st.seen) !== st.prefix)) {
+    st = { sid: '', seen: 0, prefix: '', gen: (st.gen || 0) + 1 };
+    writeState(probeDir, st);
+    log.wrn('oc', `history app menyimpang dari sesi OpenCode — sesi baru gen=${st.gen} (konteks lama dibuang)`);
+  }
+  const fresh = st.seen === 0;
+
+  const added = [];
+
+  const runAttempt = async (attempt) => {
+    const entry = await ensureServe({ apiKey, providerId, model, executor, workdir: wd });
+    const { port, password } = entry;
+    const dualExecutor = executor && executor !== model ? executor : null;
+
+    // Sesi: buat baru bila belum ada / kosong.
+    let sid = st.sid;
+    if (!sid) {
+      const r = await ocRequest(port, password, 'POST', '/api/session',
+        { title: 'sachet', model: { providerID: OC_PROVIDER_ID, id: model } });
+      if (r.status !== 200 && r.status !== 201) throw new Error(`buat sesi gagal: HTTP ${r.status} ${r.body.slice(0, 160)}`);
+      sid = JSON.parse(r.body).data.id;
+      st.sid = sid;
+      log.inf('oc', `sesi baru ${sid} (gen=${st.gen})`);
+    }
+
+    const prompt = promptFor(messages, fresh ? 0 : st.seen, fresh);
+    log.inf('oc', `prompt ${prompt.length}ch (history ${messages.length} msg, seen ${st.seen}${attempt > 1 ? `, percobaan ${attempt}` : ''})`);
+
+    // Buka SSE SEBELUM prompt agar tidak ada event awal yang terlewat.
+    const stream = openEventStream(port, password, (rec) => (rec.data && rec.data.sessionID ? rec.data.sessionID === sid : true));
+    const tstate = {
+      toolName: new Map(), msgs: new Map(), emitted: new Set(),
+      dualExecutor, executorHanded: false, turns: 0, added,
+      emit, port, password, sid,
+    };
+
+    const onAbort = () => { ocRequest(port, password, 'POST', `/api/session/${sid}/interrupt`, null, 8000).catch(() => {}); };
+    signal && signal.addEventListener('abort', onAbort, { once: true });
+
+    let terminal = null;
+    try {
+      const pr = await ocRequest(port, password, 'POST', `/api/session/${sid}/prompt`, { text: prompt }, 30000);
+      if (pr.status !== 200 && pr.status !== 201) {
+        throw new Error(`prompt ditolak: HTTP ${pr.status} ${pr.body.slice(0, 200)}`);
+      }
+
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('timeout menunggu session.execution terminal')), config.requestTimeoutMs * 12);
+        let consumed = 0;
+        const pump = () => {
+          if (stream.isClosed()) {
+            // SSE putus — bila belum terminal, anggap error jaringan.
+            if (!terminal) { clearTimeout(timer); reject(new Error('stream event opencode putus (koneksi)')); }
+            else { clearTimeout(timer); resolve(); }
+            return;
+          }
+          try {
+            while (consumed < stream.events.length) {
+              const rec = stream.events[consumed++];
+              if (rec.type === 'session.execution.succeeded' || rec.type === 'session.execution.failed' || rec.type === 'session.error') {
+                if (rec.type === 'session.error') {
+                  const m = (rec.data && (rec.data.error || rec.data.message)) || 'session error';
+                  terminal = { type: 'error', message: typeof m === 'string' ? m : JSON.stringify(m) };
+                } else {
+                  terminal = { type: 'done' };
+                }
+                break;
+              }
+              translate(rec, tstate);
+            }
+          } catch (err) { clearTimeout(timer); reject(err); return; }
+          if (terminal) { clearTimeout(timer); resolve(); return; }
+          stream.waiters.push(pump);
+        };
+        stream.waiters.push(pump);
+        pump();
+      });
+    } finally {
+      signal && signal.removeEventListener('abort', onAbort);
+      stream.close();
+    }
+
+    if (terminal && terminal.type === 'error') {
+      emit({ type: 'error', message: terminal.message });
+      emit({ type: 'done' });
+      // Bukan return added — server menghitung added hanya saat sukses; error
+      // sudah disurface ke app lewat event.
+      throw new Error(terminal.message);
+    }
+    emit({ type: 'done' });
+
+    // State sesi maju hanya setelah sukses.
+    const seen = messages.length + added.length;
+    const combined = messages.concat(added);
+    writeState(entry.dir, { sid, seen, prefix: hashPrefix(combined, seen), gen: readState(entry.dir).gen });
+    return added;
+  };
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await runAttempt(attempt);
+    } catch (e) {
+      log.err('oc', 'run gagal — serve dibuang agar respawn bersih:', e.message);
+      await killServe();
+      // Sesi yang setengah jalan tidak dipercaya → buang sid agar sesi baru.
+      if (st.sid) { st.sid = ''; }
+      if (attempt <= RETRY_MAX && !(signal && signal.aborted) && isRetryableError(e.message)) {
+        log.inf('oc', `error retryable — ulang otomatis ${attempt}/${RETRY_MAX} setelah ${Math.round(RETRY_DELAY_MS / 1000)}s`);
+        await waitAbortable(RETRY_DELAY_MS, signal);
+        if (signal && signal.aborted) throw new Error('dibatalkan');
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+module.exports = {
+  runOcChat,
+  ocBundleAvailable,
+  parseDualConfig,
+  killServe,
+  _internals: { canonicalMsg, hashPrefix, promptFor, writeOpencodeConfig, isRetryableError, APPEND_SYSTEM },
+};

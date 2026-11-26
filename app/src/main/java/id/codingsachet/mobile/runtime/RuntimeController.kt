@@ -61,11 +61,19 @@ class RuntimeController(
         // diekstrak dari APK ke sini; pi-bridge.js mem.spawn-nya per sesi.
         const val PI_BUNDLE_ASSET = "pi/pi-bundle.tar.xz"
         const val PI_BUNDLE_GUEST = "/opt/sachet/pi-bundle"
+        // Engine KETIGA (opencode): biner di-vendor per-ABI (assets/opencode),
+        // diekstrak ke sini + chmod +x. oc-bridge.js (server) yang men-spawn
+        // `opencode serve` per runtime — Fase 1 hanya menyiapkan biner+config.
+        // v7a tidak didukung opencode resmi → engine oc dilewati (fallback Pi).
+        const val OC_VERSION = "2.2.0"
+        const val OC_GUEST_DIR = "/opt/sachet/opencode"
+        const val OC_GUEST_BIN = "/opt/sachet/opencode/bin/opencode"
+        const val OC_CONFIG_GUEST_DIR = "/opt/sachet/opencode/config"
         // EVERY file the server requires at boot must be listed here: the
         // updater only copies these into the rootfs. T-ML11 incident: net.js
         // shipped inside the APK but was missing from this list, so the
         // 1.0.6 update crashed the server with MODULE_NOT_FOUND.
-        val SERVER_FILES = listOf("config.js", "agent.js", "tools.js", "server.js", "net.js", "ratelimit.js", "log.js", "pi-bridge.js")
+        val SERVER_FILES = listOf("config.js", "agent.js", "tools.js", "server.js", "net.js", "ratelimit.js", "log.js", "pi-bridge.js", "oc-bridge.js")
 
         // The pinned Node builds need libatomic.so.1, which the minimal
         // ubuntu-base rootfs does not ship (verified per-arch via readelf
@@ -145,6 +153,7 @@ class RuntimeController(
 
             writeServerFiles()
             installPiBundle()
+            installOpencode()
             ensureRuntimeLibs()
             ensureGitBaseline()
             smokeTest()
@@ -226,6 +235,9 @@ class RuntimeController(
         // marker versi tidak cocok atau rpc-entry hilang (T-ML45).
         runCatching { ensurePiBundle() }
             .onFailure { logLine("Gagal memasang bundle Pi: ${it.message}") }
+        // Engine OpenCode ikut di-heal tiap boot (murah, idempoten).
+        runCatching { ensureOpencode() }
+            .onFailure { logLine("Gagal memasang engine OpenCode: ${it.message}") }
         // T-ML59: heal baseline git setiap boot (murah, idempoten) — rootfs
         // lama yang dibuat sebelum fix ini tetap dapat safe.directory.
         runCatching { ensureGitBaseline() }
@@ -271,6 +283,68 @@ class RuntimeController(
         File(dir, ".version-${BuildConfig.VERSION_CODE}").writeText("pi")
     }
 
+    /** Target opencode untuk ABI build ini, atau null bila tidak tersedia
+     *  (opencode resmi hanya linux-arm64 / linux-x64; armhf tidak ada). */
+    private fun opencodeTarget(): String? = when (BuildConfig.GUEST_TRIPLET) {
+        "x86_64-linux-gnu" -> "linux-x64"
+        "aarch64-linux-gnu" -> "linux-arm64"
+        else -> null
+    }
+
+    /** Nama aset biner opencode yang benar-benar ada di APK (xz atau gz). */
+    private fun opencodeAsset(target: String): String? {
+        for (ext in listOf("xz", "gz")) {
+            val name = "opencode/opencode-$target-$OC_VERSION.$ext"
+            if (runCatching { app.assets.openFd(name).length }.getOrDefault(-1L) > 0L) return name
+        }
+        return null
+    }
+
+    /** Extract the vendored opencode binary + guardrails-removed config into
+     *  the guest rootfs (engine ketiga). Idempotent; no-op on unsupported ABI. */
+    private fun installOpencode() {
+        val target = opencodeTarget()
+        if (target == null) {
+            logLine("Engine OpenCode dilewati: ABI ${BuildConfig.GUEST_TRIPLET} tidak didukung opencode resmi")
+            return
+        }
+        val asset = opencodeAsset(target)
+        if (asset == null) {
+            logLine("Engine OpenCode dilewati: aset biner $target tidak ada di APK")
+            return
+        }
+        step("Memasang engine OpenCode", null)
+        val binDir = paths.host("$OC_GUEST_DIR/bin")
+        binDir.deleteRecursively()
+        binDir.mkdirs()
+        extractAsset(asset, binDir) { d, t -> step("Memasang engine OpenCode", frac(d, t), mb(d, t)) }
+        val bin = paths.host(OC_GUEST_BIN)
+        if (!bin.isFile) error("biner opencode tidak ditemukan setelah ekstraksi ($asset)")
+        bin.setExecutable(true, false)
+        // Config 'Hapus Guardrails' (permission=allow) — lihat AUDIT-OPENCODE.md §9.
+        val cfgDir = paths.host(OC_CONFIG_GUEST_DIR)
+        cfgDir.mkdirs()
+        val cfgText = app.assets.open("opencode/opencode-config.json").bufferedReader().readText()
+        File(cfgDir, "opencode.json").writeText(cfgText)
+        writeOcMarker()
+        logLine("Engine OpenCode terpasang: $OC_GUEST_BIN (guardrails removed, $target)")
+    }
+
+    private fun ensureOpencode() {
+        if (opencodeTarget() == null) return
+        val marker = paths.host("$OC_GUEST_DIR/.version-${BuildConfig.VERSION_CODE}")
+        val bin = paths.host(OC_GUEST_BIN)
+        val cfg = paths.host("$OC_CONFIG_GUEST_DIR/opencode.json")
+        if (bin.isFile && cfg.isFile && marker.isFile) return
+        installOpencode()
+    }
+
+    private fun writeOcMarker() {
+        val dir = paths.host(OC_GUEST_DIR)
+        dir.listFiles()?.filter { it.name.startsWith(".version-") }?.forEach { it.delete() }
+        File(dir, ".version-${BuildConfig.VERSION_CODE}").writeText("oc-$OC_VERSION")
+    }
+
     /** Copy the shared libraries bundled in the APK into the guest rootfs. */
     private fun ensureRuntimeLibs() {
         for (name in RUNTIME_LIBS) {
@@ -311,6 +385,19 @@ class RuntimeController(
             }
         }
         logLine("Node: ${out.trim()}")
+        // Best-effort: engine OpenCode (bila ABI didukung & terpasang) harus
+        // menjawab --version di guest — validasi W^X patch di perangkat nyata.
+        if (opencodeTarget() != null && paths.host(OC_GUEST_BIN).isFile) {
+            val ocOut = StringBuilder()
+            val ocCode = runCatching {
+                runGuest(listOf(OC_GUEST_BIN, "--version"), timeoutSec = 120) { ocOut.appendLine(it) }
+            }.getOrDefault(-1)
+            if (ocCode == 0 && ocOut.toString().contains("opencode v")) {
+                logLine("OpenCode: ${ocOut.trim()}")
+            } else {
+                logLine("PERINGATAN OpenCode --version gagal (kode $ocCode) — engine oc mungkin tak jalan")
+            }
+        }
     }
 
     private fun configureRootfs() {
@@ -379,7 +466,7 @@ class RuntimeController(
                 extraEnv = buildMap {
                     put("SACHET_PORT", prefs.serverPort.toString())
                     // T-ML45: pilihan engine agent untuk /api/chat.
-                    put("SACHET_ENGINE", if (prefs.enginePi) "pi" else "legacy")
+                    put("SACHET_ENGINE", if (prefs.engineOc) "oc" else if (prefs.enginePi) "pi" else "legacy")
                     if (rootMode) put("SACHET_EXTRA_ROOTS", "/,/device")
                 },
             )

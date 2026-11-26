@@ -1,0 +1,8 @@
+# opencode vendor (custom-patch evil GNU_STACK RX)
+source: https://github.com/sst/opencode/releases/tag/v2.2.0
+tarball: opencode-linux-arm64.tar.gz
+sha256 (tarball resmi, pra-patch): 1f1ce0fc07b9245a815ffa9d652dbb80e6b0f07e5bf74ea87d2b1c0339fbac52
+patch: PT_GNU_STACK PF_W|PF_R -> PF_X|PF_R (evil-opencode W^X fitur, 4 byte)
+smoke: opencode --version == "opencode v2.2.0" PASCA-patch
+archived: 2026-11-25
+e7b7c442ef414ac9864db6d40fa1907891df28c7990b0d0be37b6ecfa0ae40f8  opencode-linux-arm64-2.2.0.gz

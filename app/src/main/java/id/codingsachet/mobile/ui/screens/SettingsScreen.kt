@@ -63,6 +63,7 @@ import id.codingsachet.mobile.api.Providers
 import id.codingsachet.mobile.runtime.LogcatDump
 import id.codingsachet.mobile.runtime.RuntimeState
 import id.codingsachet.mobile.ui.LocalStrings
+import id.codingsachet.mobile.ui.OcOptions
 import id.codingsachet.mobile.ui.PiOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -90,6 +91,7 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
     var keepAwake by remember { mutableStateOf(Graph.prefs.keepAwake) }
     var noSeccomp by remember { mutableStateOf(Graph.prefs.noSeccomp) }
     var enginePi by remember { mutableStateOf(Graph.prefs.enginePi) }
+    var engineOc by remember { mutableStateOf(Graph.prefs.engineOc) }
     var rootAccess by remember { mutableStateOf(Graph.prefs.rootAccess) }
     var showReset by remember { mutableStateOf(false) }
     var installingTools by remember { mutableStateOf(false) }
@@ -227,9 +229,22 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                     Graph.prefs.noSeccomp = it
                 },
             )
-            // T-ML45 PoC: pilihan engine agent. Aktif = /api/chat dilayani
-            // Pi Coding Agent (pi-bridge.js); mati = loop agent lama.
-            // Nilai dibaca server saat BOOT — restart server setelah ganti.
+            // T-ML45: pilihan engine agent. Urutan prioritas: oc → pi →
+            // legacy. Nilai dibaca server saat BOOT lewat env
+            // SACHET_ENGINE — restart server setelah ganti.
+            SwitchRow(
+                label = s.engineOc,
+                hint = s.engineOcHint,
+                checked = engineOc,
+                onChange = {
+                    engineOc = it
+                    Graph.prefs.engineOc = it
+                    // enginePi dan engineOc saling eksklusif sebagai primary;
+                    // bila oc nyala, pi dimatikan (dan sebaliknya).
+                    if (it) enginePi = false
+                    Graph.prefs.enginePi = enginePi
+                },
+            )
             SwitchRow(
                 label = s.enginePi,
                 hint = s.enginePiHint,
@@ -237,6 +252,10 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
                 onChange = {
                     enginePi = it
                     Graph.prefs.enginePi = it
+                    if (it) {
+                        engineOc = false
+                        Graph.prefs.engineOc = false
+                    }
                 },
             )
             // Only offered when a su binary is present — toggling it on a
@@ -430,6 +449,7 @@ private fun JsonConfigSection() {
     var piOrch by remember { mutableStateOf(Graph.prefs.piOrchestrator) }
     var piExec by remember { mutableStateOf(Graph.prefs.piExecutor) }
     var piSheet by remember { mutableStateOf<String?>(null) } // "orch" | "exec" saat sheet terbuka
+    var ocSheet by remember { mutableStateOf<String?>(null) } // "orch" | "exec" saat sheet terbuka (engine oc)
     var savedNote by remember { mutableStateOf<String?>(null) }
 
     /** Validate the structured fields; null + the first offending label. */
@@ -598,6 +618,44 @@ private fun JsonConfigSection() {
                 piSheet = null
             },
             onDismiss = { piSheet = null },
+        )
+    }
+
+    // ---- dual-model engine OpenCode (oc) ----
+    // Selector orchestrator/executor untuk engine oc (oc-bridge.js). Mirip
+    // engine Pi tapi kunci "oc" danPrefs-nya terpisah (ocOrchestrator,
+    // ocExecutor, ocProvider). Hanya aktif bila engine oc dipilih.
+    SectionTitle(s.ocDualModelSection)
+    Text(s.ocDualModelHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    if (Graph.prefs.ocProvider.isNotBlank() && Graph.prefs.ocProvider != Graph.prefs.active.id) {
+        Text(s.dualProviderNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+    }
+    DualModelRow(
+        label = s.dualOrchestrator,
+        value = Graph.prefs.ocOrchestrator.ifBlank { s.dualOrchestratorChatModel },
+        selected = Graph.prefs.ocOrchestrator.isNotBlank(),
+        onClick = { ocSheet = "orch" },
+    )
+    DualModelRow(
+        label = s.dualExecutor,
+        value = Graph.prefs.ocExecutor.ifBlank { s.dualExecutorOff },
+        selected = Graph.prefs.ocExecutor.isNotBlank(),
+        onClick = { ocSheet = "exec" },
+    )
+    ocSheet?.let { which ->
+        PiModelSheet(
+            isExecutor = which == "exec",
+            current = if (which == "exec") Graph.prefs.ocExecutor else Graph.prefs.ocOrchestrator,
+            onPick = { m ->
+                if (which == "exec") {
+                    Graph.prefs.ocExecutor = m
+                } else {
+                    Graph.prefs.ocOrchestrator = m
+                }
+                Graph.prefs.ocProvider = Graph.prefs.active.id
+                ocSheet = null
+            },
+            onDismiss = { ocSheet = null },
         )
     }
 

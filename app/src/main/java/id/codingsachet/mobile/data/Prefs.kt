@@ -68,6 +68,33 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("enginePi", false)
         set(v) = sp.edit().putBoolean("enginePi", v).apply()
 
+    /** Engine utama /api/chat: "legacy" | "pi" | "oc". Dibaca server saat
+     *  boot lewat env SACHET_ENGINE. Default "oc" bila biner tersedia,
+     *  else "pi", else "legacy". Ganti nilai lalu restart server. */
+    var engineOc: Boolean
+        get() = sp.getBoolean("engineOc", true)
+        set(v) = sp.edit().putBoolean("engineOc", v).apply()
+
+    // T-ML70 (oc): konfigurasi dual-model engine OpenCode — kunci "oc" di
+    // options /api/chat, mirip Pi tapi untuk engine oc-bridge.js.
+    /** Model orchestrator (perencana + putaran tool) untuk engine oc.
+     *  Blank = model chat aktif. */
+    var ocOrchestrator: String
+        get() = sp.getString("ocOrchestrator", "") ?: ""
+        set(v) = sp.edit().putString("ocOrchestrator", v).apply()
+
+    /** Model executor (mengambil alih setelah putaran tool pertama) untuk
+     *  engine oc. Blank = single model. */
+    var ocExecutor: String
+        get() = sp.getString("ocExecutor", "") ?: ""
+        set(v) = sp.edit().putString("ocExecutor", v).apply()
+
+    /** Provider tempat kedua model di atas dipilih — oc hanya aktif bila
+     *  sama dengan provider aktif (batas v1: satu provider per run). */
+    var ocProvider: String
+        get() = sp.getString("ocProvider", "") ?: ""
+        set(v) = sp.edit().putString("ocProvider", v).apply()
+
     /** Rooted phones: run the server via su and expose /device in the
      *  file explorer. Only honored when a su binary is actually present. */
     var rootAccess: Boolean
