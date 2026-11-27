@@ -63,6 +63,9 @@ function envInt(name, dflt) {
 }
 const RETRY_DELAY_MS = envInt('SACHET_OC_RETRY_DELAY_MS', 15000);
 const RETRY_MAX = envInt('SACHET_OC_RETRY_MAX', 2);
+// Diam lebih dari SILENCE_MS tanpa event apa pun → anggap run selesai (OpenCode
+// v2.2.0 tidak selalu mengirim session.execution.succeeded pada run sukses).
+const SILENCE_MS = envInt('SACHET_OC_SILENCE_MS', 60000);
 
 // Prompt sistem hemat-token yang sama dengan Pi (T-ML58 #1) — OpenCode
 // memakai prompt bawaannya; kita hanya menambah aturan bahasa + disiplin.
@@ -249,6 +252,7 @@ function openEventStream(port, password, filter) {
     authorization: 'Basic ' + Buffer.from('opencode:' + password).toString('base64'),
   } }, (res) => {
     res.setEncoding('utf8');
+    const wake = () => { closed = true; for (const w of waiters.splice(0)) w(); };
     res.on('data', (chunk) => {
       buf += chunk;
       let idx;
@@ -267,6 +271,9 @@ function openEventStream(port, password, filter) {
         }
       }
     });
+    res.on('end', wake);
+    res.on('close', wake);
+    res.on('error', wake);
   });
   req.on('error', () => { closed = true; for (const w of waiters.splice(0)) w(); });
   req.end();
@@ -588,8 +595,22 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
     // Satu fase = satu prompt + pompa event sampai terminal ATAU handoffPending.
     const runPhase = (text) => new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('timeout menunggu session.execution terminal')), config.requestTimeoutMs * 12);
+      let lastEventTime = Date.now();
+      let silenceTimer = null;
+      const armSilence = () => {
+        if (silenceTimer) clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
+          if (!terminal && !tstate.handoffPending) {
+            log.dbg('oc', `silence ${Date.now() - lastEventTime}ms > ${SILENCE_MS}ms — selesaikan run (tanpa terminal event)`);
+            clearTimeout(timer);
+            silenceTimer = null;
+            resolve();
+          }
+        }, SILENCE_MS);
+      };
       const pump = () => {
         if (stream.isClosed()) {
+          if (silenceTimer) clearTimeout(silenceTimer);
           if (!terminal) { clearTimeout(timer); reject(new Error('stream event opencode putus (koneksi)')); }
           else { clearTimeout(timer); resolve(); }
           return;
@@ -597,6 +618,7 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
         try {
           while (consumed < stream.events.length) {
             const rec = stream.events[consumed++];
+            lastEventTime = Date.now();
             if (isTerminalEvent(rec)) {
               if (rec.type === 'session.error' || rec.type === 'error') {
                 terminal = { type: 'error', message: terminalError(rec) || 'session error' };
@@ -607,12 +629,19 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
             }
             translate(rec, tstate);
           }
-        } catch (err) { clearTimeout(timer); reject(err); return; }
-        if (terminal || tstate.handoffPending) { clearTimeout(timer); resolve(); return; }
+        } catch (err) { if (silenceTimer) clearTimeout(silenceTimer); clearTimeout(timer); reject(err); return; }
+        if (terminal || tstate.handoffPending) {
+          if (silenceTimer) clearTimeout(silenceTimer);
+          clearTimeout(timer);
+          resolve();
+          return;
+        }
+        armSilence();
         stream.waiters.push(pump);
       };
       stream.waiters.push(pump);
       pump();
+      armSilence();
     });
 
     // Jalankan prompt (orchestrator) lalu, bila handoff diminta, drain terminal
