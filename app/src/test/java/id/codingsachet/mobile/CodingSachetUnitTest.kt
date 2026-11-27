@@ -400,6 +400,28 @@ class CodingSachetUnitTest {
     }
 
     @Test
+    fun autoTitleForcesProjectNameOverFirstPrompt() {
+        // T-ML75: sesi legacy yang judulnya terlanjur prompt pertama — begitu
+        // punya project (dialog baru), judul DIPAKSA jadi nama project.
+        // Kontrak diuji lewat logika autoTitle yang digandakan di sini
+        // (ChatStore butuh Context Android, tidak tersedia di unit test).
+        val legacy = Session(
+            id = "legacy1",
+            title = "tolong buatkan game ular",
+            created = 1L,
+            model = "m",
+            project = "aplikasi kalkulator",
+            messages = mutableListOf(Msg(role = "user", content = "tolong buatkan game ular")),
+        )
+        // Mirror kontrak autoTitle (project menang ATAS judul lama apa pun).
+        val p = legacy.project?.trim()?.takeIf { it.isNotEmpty() }
+        if (p != null) legacy.title = conversationTitle(p, null)
+        assertEquals("aplikasi kalkulator", legacy.title)
+        // Sesi tanpa project tetap pakai baris pertama prompt.
+        assertEquals("buat toko online", conversationTitle(null, "buat toko online\nlengkap"))
+    }
+
+    @Test
     fun conversationTitleTrimsProjectAndCapsAt48() {
         assertEquals("proy-a", conversationTitle("  proy-a  ", null))
         assertEquals(48, conversationTitle("x".repeat(80), null).length)

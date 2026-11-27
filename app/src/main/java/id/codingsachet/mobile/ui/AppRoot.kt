@@ -80,8 +80,10 @@ class AppState(
      * session instead of a blank screen — the conversation reopens, it does
      * not read as "deleted".
      */
-    var currentSession: Session? = Graph.chats.get(Graph.prefs.lastSessionId)
-        ?: Graph.chats.sessions.firstOrNull()
+    var currentSession: Session? by mutableStateOf(
+        Graph.chats.get(Graph.prefs.lastSessionId)
+            ?: Graph.chats.sessions.firstOrNull()
+    )
         private set
 
     /** Switch the open session and persist it as the last one used. */

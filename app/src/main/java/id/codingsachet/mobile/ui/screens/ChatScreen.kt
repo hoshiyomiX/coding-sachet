@@ -277,7 +277,11 @@ fun ChatScreen(
 
     fun newChat(project: String? = null): Session {
         val ns = Graph.chats.create(Graph.prefs.orchestratorEffective, project)
-        Graph.chats.reload()
+        // T-ML75: reload() di sini dulu membangun ulang index dari disk —
+        // objek di index jadi BERBEDA referensi dari ns yang dipakai engine
+        // (autoTitle/persist menulis ns, drawer membaca objek disk: data
+        // judul terputus). create() sudah menaruh ns di index + menyimpan
+        // ke disk, jadi reload tidak diperlukan di jalur buat.
         sessionsVersion++
         current = ns
         onSessionChange(ns)

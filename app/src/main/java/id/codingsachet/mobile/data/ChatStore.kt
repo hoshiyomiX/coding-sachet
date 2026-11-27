@@ -133,11 +133,24 @@ class ChatStore(ctx: Context) {
 
     /** Keep a short, human title derived from the project name or the first
      *  user message (T-ML71: nama project menang — bug "judul tidak pakai
-     *  input nama project"). */
+     *  input nama project").
+     *  T-ML75 penguatan: bila sesi punya project, judul SELALU nama project
+     *  — bukan hanya saat masih blank. Ini memperbaiki sesi legacy yang
+     *  judulnya sudah terlanjur diisi prompt pertama (title blank guard lama
+     *  tidak pernah menimpa); prompt pertama tidak pernah lagi menjadi judul
+     *  untuk chat ber-project. */
     fun autoTitle(s: Session) {
+        val p = s.project?.trim()?.takeIf { it.isNotEmpty() }
+        if (p != null) {
+            // Project = identitas percakapan (T-ML28 #4) — judul mengikuti,
+            // diperbarui juga bila sebelumnya prompt/pengenal lama.
+            val t = conversationTitle(p, null)
+            if (s.title != t) s.title = t
+            return
+        }
         if (s.title.isNotBlank()) return
         val first = s.messages.firstOrNull { it.role == "user" }?.content
-        s.title = conversationTitle(s.project, first)
+        s.title = conversationTitle(null, first)
     }
 }
 
