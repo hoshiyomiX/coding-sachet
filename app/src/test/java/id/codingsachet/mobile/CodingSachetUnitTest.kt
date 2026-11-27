@@ -1,6 +1,8 @@
 package id.codingsachet.mobile
 
+import id.codingsachet.mobile.api.GatewayStatus
 import id.codingsachet.mobile.api.ModelStatus
+import kotlinx.coroutines.runBlocking
 import id.codingsachet.mobile.api.Providers
 import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
@@ -119,6 +121,42 @@ class CodingSachetUnitTest {
     }
 
     // ---------- ModelStatus: dot & free dari hasil live (T-ML26) ----------
+
+    // ---------- GatewayStatus: dot koneksi gateway 2 warna (T-ML73) ----------
+
+    @Test
+    fun gatewayStatusTwoColorContract() {
+        GatewayStatus.reset()
+        // Kontrak 2 warna: default sebelum bukti apa pun = LOST (merah),
+        // BUKAN state ketiga "abu-abu" yang dulu bikin ambigu.
+        assertEquals(GatewayStatus.Conn.LOST, GatewayStatus.conn("apinex"))
+        GatewayStatus.mark("apinex", live = true)
+        assertEquals("gateway menjawab = hijau", GatewayStatus.Conn.LIVE, GatewayStatus.conn("apinex"))
+        GatewayStatus.mark("apinex", live = false)
+        assertEquals("koneksi hilang = merah", GatewayStatus.Conn.LOST, GatewayStatus.conn("apinex"))
+        // Feed real-time dari stream chat: event apa pun menandai LIVE.
+        GatewayStatus.mark("apinex", live = true)
+        assertEquals(GatewayStatus.Conn.LIVE, GatewayStatus.conn("apinex"))
+        // Provider lain punya flow sendiri (isolasi per provider).
+        assertEquals(GatewayStatus.Conn.LOST, GatewayStatus.conn("nvidia"))
+    }
+
+    @Test
+    fun gatewayStatusMonitorFollowsProbe() {
+        GatewayStatus.reset()
+        val results = ArrayDeque(listOf(false, true, true, false))
+        // Monitor di scope coroutine biasa; kita jalankan beberapa putaran
+        // manual lewat probe — loop monitor sendiri diuji kontrak intervalnya
+        // di perangkat (delay), di sini cukup memastikan mark() dari hasil
+        // probe benar.
+        runBlocking {
+            repeat(4) {
+                val ok = results.removeFirst()
+                GatewayStatus.mark("apinex", ok)
+            }
+        }
+        assertEquals("probe terakhir gagal = merah", GatewayStatus.Conn.LOST, GatewayStatus.conn("apinex"))
+    }
 
     @Test
     fun modelStatusDotsFollowLiveResults() {

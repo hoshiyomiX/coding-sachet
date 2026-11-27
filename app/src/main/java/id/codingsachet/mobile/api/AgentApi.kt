@@ -56,6 +56,33 @@ class AgentApi(private val port: () -> Int) {
 
     // ---------- health ----------
 
+    /**
+     * T-ML73: probe KONEKSI GATEWAY real-time — GET /models LANGSUNG ke
+     * provider aktif (bypass server lokal), memakai timeout pendek. Ini
+     * sumber kebenaran dot 2 warna (GatewayStatus): jawaban apa pun dari
+     * gateway (termasuk 401/402/429 — transport hidup) = LIVE; gagal
+     * transport = LOST. HTTP 404/5xx dianggap hidup juga (server gateway
+     * menjawab; kesalahan bukan karena koneksi).
+     */
+    suspend fun pingGateway(apiKey: String, providerId: String): Boolean = withContext(Dispatchers.IO) {
+        val provider = id.codingsachet.mobile.api.Providers.byId(providerId)
+        try {
+            val probeClient = client.newBuilder()
+                .connectTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(8, TimeUnit.SECONDS)
+                .build()
+            val req = Request.Builder()
+                .url(provider.baseUrl + "/models")
+                .header("Authorization", "Bearer $apiKey")
+                .head()
+                .build()
+            probeClient.newCall(req).execute().use { true }
+        } catch (e: Exception) {
+            Logx.d("api", "probe gateway ${provider.label} gagal: ${e.javaClass.simpleName} ${e.message?.take(80)}")
+            false
+        }
+    }
+
     /** Returns the server version string, or null when it does not answer. */
     suspend fun health(): String? = withContext(Dispatchers.IO) {
         try {

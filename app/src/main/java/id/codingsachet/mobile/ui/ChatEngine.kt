@@ -3,6 +3,7 @@ package id.codingsachet.mobile.ui
 import id.codingsachet.mobile.Graph
 import id.codingsachet.mobile.Logx
 import id.codingsachet.mobile.api.AgentApi
+import id.codingsachet.mobile.api.GatewayStatus
 import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
 import id.codingsachet.mobile.data.ToolCall
@@ -311,6 +312,9 @@ class ChatEngine(val session: Session) {
 
     private suspend fun handle(ev: JsonObject) {
         bump() // event data apa pun = turn hidup (watchdog diam di-reset)
+        // T-ML73: data mengalir dari gateway → koneksi LIVE (dot hijau
+        // real-time, tanpa menunggu probe periodik berikutnya).
+        GatewayStatus.mark(Graph.prefs.provider, live = true)
         when (ev["type"]?.jsonPrimitive?.content) {
             "model" -> {
                 // T-ML69 #1: server berganti model mid-run (engine Pi
@@ -445,6 +449,9 @@ class ChatEngine(val session: Session) {
      *  refused) get ONE automatic retry after the runtime brings the server
      * back; everything else surfaces as before. */
     private suspend fun onStreamError(msg: String, kind: AgentApi.ErrorKind) {
+        // T-ML73: stream error (CONNECT/EOF/HTTP) = jalur ke gateway
+        // terputus → dot merah real-time. Probing periodik yang memulihkan.
+        GatewayStatus.mark(Graph.prefs.provider, live = false)
         val canRetry = retryCount < 1 &&
             (kind == AgentApi.ErrorKind.EOF || kind == AgentApi.ErrorKind.CONNECT)
         if (!canRetry) {

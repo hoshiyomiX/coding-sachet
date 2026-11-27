@@ -93,6 +93,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import id.codingsachet.mobile.Graph
+import id.codingsachet.mobile.api.GatewayStatus
 import id.codingsachet.mobile.api.ModelStatus
 import id.codingsachet.mobile.data.Msg
 import id.codingsachet.mobile.data.Session
@@ -231,6 +232,15 @@ fun ChatScreen(
     LaunchedEffect(engine) { engine?.onTurnFinished = { refreshQuota(); treeVersion++ } }
     LaunchedEffect(Unit) { refreshQuota() }
     LaunchedEffect(runtimeState) { if (runtimeState is RuntimeState.Running) refreshQuota() }
+
+    // T-ML73: dot koneksi gateway real-time (2 warna). Probe periodik
+    // GET /models langsung ke provider aktif + feed event stream chat.
+    LaunchedEffect(Unit) {
+        GatewayStatus.monitor(scope) {
+            Pair(Graph.prefs.provider, Graph.prefs.apiKey)
+        } { key, pid -> Graph.api.pingGateway(key, pid) }
+    }
+    val gatewayConn by GatewayStatus.flow(Graph.prefs.provider).collectAsState()
 
     val live by (engine?.live ?: nullLive).collectAsState()
     val sessionTokens by (engine?.sessionTokens ?: nullTokens).collectAsState()
@@ -477,6 +487,30 @@ fun ChatScreen(
                                         highlight = MaterialTheme.colorScheme.tertiary,
                                         onClick = { pickRole = "exec" },
                                     )
+                                    // T-ML73: indikator koneksi gateway API
+                                    // real-time — 2 warna saja (hijau =
+                                    // gateway OK & live, merah = putus).
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                        modifier = Modifier.padding(start = 2.dp),
+                                    ) {
+                                        Box(
+                                            Modifier
+                                                .size(8.dp)
+                                                .background(
+                                                    if (gatewayConn == GatewayStatus.Conn.LIVE) sachetSuccess()
+                                                    else MaterialTheme.colorScheme.error,
+                                                    CircleShape,
+                                                ),
+                                        )
+                                        Text(
+                                            if (gatewayConn == GatewayStatus.Conn.LIVE) s.gatewayOk else s.gatewayLost,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (gatewayConn == GatewayStatus.Conn.LIVE) sachetSuccess() else MaterialTheme.colorScheme.error,
+                                            maxLines = 1,
+                                        )
+                                    }
                                 }
                             }
                         },
@@ -1198,13 +1232,15 @@ private fun RoleModelChip(label: String, model: String, highlight: Color, onClic
 
 /** T-ML72: sheet pemilih model untuk satu peran (orchestrator/executor)
  *  dari top bar. Daftar model provider aktif + pencarian + baris
- *  "model chat aktif" (orchestrator) / "nonaktif" (executor). Status live
- *  (dot hijau/merah) dari sweep ModelStatus. */
+ *  "model chat aktif" (orchestrator) / "nonaktif" (executor). Dot baris =
+ *  koneksi gateway real-time, 2 warna (T-ML73). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DualRoleModelPicker(isExecutor: Boolean, current: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
     val s = LocalStrings.current
     val provider = Graph.prefs.active
+    // T-ML73: status koneksi gateway — satu dot untuk semua baris.
+    val gatewayConn by GatewayStatus.flow(provider.id).collectAsState()
     var models by remember { mutableStateOf<List<String>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var query by remember { mutableStateOf("") }
@@ -1249,23 +1285,22 @@ private fun DualRoleModelPicker(isExecutor: Boolean, current: String, onPick: (S
                     item {
                         ModelRow(
                             model = if (isExecutor) s.dualExecutorOff else s.dualOrchestratorChatModel,
-                            state = ModelStatus.State.OK,
                             tier = null,
                             free = false,
                             current = current.ifBlank { blankLabel },
                             onPick = { onPick("") },
+                            conn = gatewayConn,
                         )
                     }
                     val filtered = models!!.filter { it.contains(query, ignoreCase = true) }
-                    val snap = ModelStatus.snapshot(provider.id)
                     items(filtered) { m ->
                         ModelRow(
                             model = m,
-                            state = snap[m]?.state ?: ModelStatus.State.UNKNOWN,
                             tier = ModelStatus.tierOf(provider.id, m),
                             free = ModelStatus.isFree(provider, m),
                             current = current,
                             onPick = { onPick(m) },
+                            conn = gatewayConn,
                         )
                     }
                 }
@@ -1274,11 +1309,12 @@ private fun DualRoleModelPicker(isExecutor: Boolean, current: String, onPick: (S
     }
 }
 
-/** One model row: live dot (green/red/gray), name, billing badge
+/** One model row: gateway connection dot (2 warna, T-ML73 — hijau =
+ *  koneksi gateway OK & live, merah = putus), name, billing badge
  *  (T-ML49: free = jatah harian · langganan = butuh paket · top-up =
  *  saldo USD; dari flag tier sweep katalog), current check. */
 @Composable
-private fun ModelRow(model: String, state: ModelStatus.State, tier: ModelStatus.Tier?, free: Boolean, current: String, onPick: () -> Unit) {
+private fun ModelRow(model: String, tier: ModelStatus.Tier?, free: Boolean, current: String, onPick: () -> Unit, conn: GatewayStatus.Conn) {
     val s = LocalStrings.current
     ListItem(
         modifier = Modifier.clickable(onClick = onPick),
@@ -1288,15 +1324,15 @@ private fun ModelRow(model: String, state: ModelStatus.State, tier: ModelStatus.
             ListItemDefaults.colors()
         },
         leadingContent = {
+            // T-ML73: dot 2 warna — status KONEKSI gateway real-time
+            // (bukan verdict per-model). Hijau = gateway OK & live;
+            // merah = koneksi ke gateway terputus.
             Box(
                 Modifier
                     .size(10.dp)
                     .background(
-                        when (state) {
-                            ModelStatus.State.OK -> sachetSuccess()
-                            ModelStatus.State.DEAD -> MaterialTheme.colorScheme.error
-                            ModelStatus.State.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
-                        },
+                        if (conn == GatewayStatus.Conn.LIVE) sachetSuccess()
+                        else MaterialTheme.colorScheme.error,
                         CircleShape,
                     ),
             )
