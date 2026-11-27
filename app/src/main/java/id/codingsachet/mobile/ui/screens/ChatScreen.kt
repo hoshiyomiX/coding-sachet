@@ -235,12 +235,13 @@ fun ChatScreen(
 
     // T-ML73: dot koneksi gateway real-time (2 warna). Probe periodik
     // GET /models langsung ke provider aktif + feed event stream chat.
+    // Statusnya dibaca di picker model (ModelRow) — top bar tidak
+    // menampilkannya (owner order T-ML73b).
     LaunchedEffect(Unit) {
         GatewayStatus.monitor(scope) {
             Pair(Graph.prefs.provider, Graph.prefs.apiKey)
         } { key, pid -> Graph.api.pingGateway(key, pid) }
     }
-    val gatewayConn by GatewayStatus.flow(Graph.prefs.provider).collectAsState()
 
     val live by (engine?.live ?: nullLive).collectAsState()
     val sessionTokens by (engine?.sessionTokens ?: nullTokens).collectAsState()
@@ -487,30 +488,6 @@ fun ChatScreen(
                                         highlight = MaterialTheme.colorScheme.tertiary,
                                         onClick = { pickRole = "exec" },
                                     )
-                                    // T-ML73: indikator koneksi gateway API
-                                    // real-time — 2 warna saja (hijau =
-                                    // gateway OK & live, merah = putus).
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                        modifier = Modifier.padding(start = 2.dp),
-                                    ) {
-                                        Box(
-                                            Modifier
-                                                .size(8.dp)
-                                                .background(
-                                                    if (gatewayConn == GatewayStatus.Conn.LIVE) sachetSuccess()
-                                                    else MaterialTheme.colorScheme.error,
-                                                    CircleShape,
-                                                ),
-                                        )
-                                        Text(
-                                            if (gatewayConn == GatewayStatus.Conn.LIVE) s.gatewayOk else s.gatewayLost,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = if (gatewayConn == GatewayStatus.Conn.LIVE) sachetSuccess() else MaterialTheme.colorScheme.error,
-                                            maxLines = 1,
-                                        )
-                                    }
                                 }
                             }
                         },
