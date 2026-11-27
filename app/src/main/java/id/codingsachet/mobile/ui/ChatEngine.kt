@@ -9,10 +9,12 @@ import id.codingsachet.mobile.data.ToolCall
 import id.codingsachet.mobile.runtime.RuntimeState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -127,6 +129,42 @@ class ChatEngine(val session: Session) {
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    // T-ML71 (perbaikan permanen, bukan reset manual): watchdog diam SSE.
+    // Dulu satu-satunya penyembuh turn macet adalah reset server agent dari
+    // UI. Kini bila TIDAK ADA event data sama sekali (think/text/tool/…)
+    // selama [EVENT_SILENCE_MS] — melewati anggaran diam tool terpanjang
+    // sisi server (TOOL_SILENCE_MS 480s di oc-bridge) — turn dinyatakan
+    // macet: stream dibatalkan, jalur pemulihan kematian server mengambil
+    // alih (restart server → auto-retry sekali → error + Lanjutkan).
+    // Keep-alive ": ping" (server.js tiap 15s) TIDAK dihitung sebagai event.
+    // Nilai konstanta ada di companion object di bawah (berdampingan dengan
+    // SYSTEM_PROMPT).
+
+    // ---- T-ML71: watchdog diam event ----
+    private var watchdog: Job? = null
+    @Volatile private var lastEventAt = 0L
+
+    private fun armWatchdog() {
+        watchdog?.cancel()
+        lastEventAt = System.currentTimeMillis()
+        watchdog = scope.launch {
+            while (isActive && System.currentTimeMillis() - lastEventAt < EVENT_SILENCE_MS) {
+                delay(10_000)
+            }
+            if (!isActive || turnCancelled || retryPending) return@launch
+            if (live.value?.busy != true) return@launch
+            Logx.e("chat", "TIDAK ADA event ${EVENT_SILENCE_MS / 1000}s — turn dinyatakan macet; batalkan & pulihkan")
+            retryCount++
+            live.value = live.value?.copy(restarting = true, waiting = null, reconnect = null)
+            call?.cancel()
+            recoverOrFail("Turn macet tanpa keluaran (tidak ada event ${EVENT_SILENCE_MS / 1000}s). Cek status server, lalu kirim ulang pesanmu.")
+        }
+    }
+
+    private fun bump() {
+        lastEventAt = System.currentTimeMillis()
+    }
+
     /** Returns false (caller keeps the input) when a turn cannot start.
      *  Runs synchronously on the caller's (main) thread so the busy flag is
      *  visible before the next tap — a coroutine here once allowed a fast
@@ -214,6 +252,7 @@ class ChatEngine(val session: Session) {
             onError = { msg, kind -> scope.launch { onStreamError(msg, kind) } },
             onClosed = { scope.launch { finish() } },
         )
+        armWatchdog()
     }
 
     /** Per-session project folder (T-ML28 #4): <server workdir>/<sanitized
@@ -271,6 +310,7 @@ class ChatEngine(val session: Session) {
         else runCatching { json.parseToJsonElement(raw) }.getOrNull() as? JsonObject
 
     private suspend fun handle(ev: JsonObject) {
+        bump() // event data apa pun = turn hidup (watchdog diam di-reset)
         when (ev["type"]?.jsonPrimitive?.content) {
             "model" -> {
                 // T-ML69 #1: server berganti model mid-run (engine Pi
@@ -281,9 +321,13 @@ class ChatEngine(val session: Session) {
                 handoffModel = mdl
                 handoffIsExecutor = ev.str("role") == ROLE_EXECUTOR
                 Logx.i("chat", "model berganti mid-run: $mdl (peran=${if (handoffIsExecutor) ROLE_EXECUTOR else ROLE_ORCHESTRATOR})")
+                // T-ML71: teks/thinking yang sedang mengalir milik model LAMA —
+                // jangan biarkan menempel di bubble model baru (bisa tercampur
+                // atau dobel saat executor melanjutkan dari titik yang sama).
                 live.value = live.value?.copy(
                     model = mdl,
                     modelRole = if (handoffIsExecutor) ROLE_EXECUTOR else ROLE_ORCHESTRATOR,
+                    thinking = "", text = "",
                 )
             }
             "think" -> { receivedAnything = true; live.value = live.value?.copy(thinking = live.value!!.thinking + ev.str("delta"), waiting = null, reconnect = null, reconnectTo = null) }
@@ -458,6 +502,7 @@ class ChatEngine(val session: Session) {
     }
 
     private fun finish() {
+        watchdog?.cancel()
         if (retryPending) return // a server-death retry is in flight; the turn continues
         val l = live.value ?: return
         val durMs = if (turnStartedAt > 0) System.currentTimeMillis() - turnStartedAt else 0
@@ -533,6 +578,7 @@ class ChatEngine(val session: Session) {
 
     fun stop() {
         Logx.i("chat", "stop ditekan — batalkan stream session=${session.id}")
+        watchdog?.cancel()
         turnCancelled = true
         if (retryPending) {
             // Also abandon an in-flight auto-retry: the suspended recovery
@@ -548,6 +594,7 @@ class ChatEngine(val session: Session) {
     }
 
     fun dispose() {
+        watchdog?.cancel()
         call?.cancel()
         onTurnFinished = null
         scope.cancel()
@@ -567,6 +614,11 @@ class ChatEngine(val session: Session) {
     private fun JsonObject.boolean(key: String): Boolean = this[key]?.jsonPrimitive?.content == "true"
 
     companion object {
+        // T-ML71: anggaran diam SSE di sisi app — harus di atas anggaran diam
+        // tool sisi server (TOOL_SILENCE_MS 480s, oc-bridge) agar app tidak
+        // membatalkan turn yang masih sah menunggu eksekusi tool panjang.
+        private const val EVENT_SILENCE_MS = 540_000L
+
         // T-ML39 (owner order sesi 27: hasil coding "aimless, tanpa
         // workflow/protocol/harness"): the default coding prompt carries the
         // TODO-file protocol (RENCANA.md), the syntax-gate contract and the

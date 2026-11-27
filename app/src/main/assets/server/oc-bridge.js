@@ -66,6 +66,11 @@ const RETRY_MAX = envInt('SACHET_OC_RETRY_MAX', 2);
 // Diam lebih dari SILENCE_MS tanpa event apa pun → anggap run selesai (OpenCode
 // v2.2.0 tidak selalu mengirim session.execution.succeeded pada run sukses).
 const SILENCE_MS = envInt('SACHET_OC_SILENCE_MS', 60000);
+// T-ML71: saat tool masih dieksekusi (bash/apt panjang), OpenCode TIDAK
+// mengirim event apa pun — diam 60s generation TIDAK boleh membunuh run di
+// tengah tool. Anggaran diam terpisah untuk fase tool sebelum menyatakan
+// macet; harus > bash timeout terpanjang yang wajar di proot (legacy 120s).
+const TOOL_SILENCE_MS = envInt('SACHET_OC_TOOL_SILENCE_MS', 480000);
 
 // Prompt sistem hemat-token yang sama dengan Pi (T-ML58 #1) — OpenCode
 // memakai prompt bawaannya; kita hanya menambah aturan bahasa + disiplin.
@@ -386,49 +391,48 @@ async function ensureServe({ apiKey, providerId, model, executor, workdir }) {
  *  diangani sebagai fallback. */
 function translate(rec, st) {
   const d = rec.data || {};
+  // Akumulator pesan aktif — dipakai pompa fase utk mengenali "tool masih
+  // berjalan" (diam panjang saat eksekusi tool adalah normal, bukan macet).
+  const accOf = (msgId) => {
+    const a = st.msgs.get(msgId) || newAcc();
+    st.msgs.set(msgId, a);
+    st.lastAcc = a;
+    return a;
+  };
   switch (rec.type) {
     case 'session.reasoning.delta': {
-      const msgId = d.assistantMessageID;
-      const acc = st.msgs.get(msgId) || newAcc();
+      const acc = accOf(d.assistantMessageID);
       if (d.delta) {
         st.emit({ type: 'think', delta: d.delta });
         acc.thinking += d.delta;
       }
-      st.msgs.set(msgId, acc);
       break;
     }
     case 'session.text.delta': {
-      const msgId = d.assistantMessageID;
-      const acc = st.msgs.get(msgId) || newAcc();
+      const acc = accOf(d.assistantMessageID);
       if (d.delta) {
         st.emit({ type: 'text', delta: d.delta });
         acc.text += d.delta;
       }
-      st.msgs.set(msgId, acc);
       break;
     }
     case 'session.tool.input.started': {
-      const msgId = d.assistantMessageID;
-      const acc = st.msgs.get(msgId) || newAcc();
+      const acc = accOf(d.assistantMessageID);
       acc.toolIndex[d.id] = { name: d.name, args: {} };
-      st.msgs.set(msgId, acc);
       break;
     }
     case 'session.tool.called': {
-      const msgId = d.assistantMessageID;
-      const acc = st.msgs.get(msgId) || newAcc();
+      const acc = accOf(d.assistantMessageID);
       const info = acc.toolIndex[d.id];
       const name = (info && info.name) || 'tool';
       const args = d.input ?? {};
       if (info) info.args = args;
       acc.toolCalls.push({ id: d.id, name, args });
       st.emit({ type: 'tool', id: d.id, name, args });
-      st.msgs.set(msgId, acc);
       break;
     }
     case 'session.tool.succeeded': {
-      const msgId = d.assistantMessageID;
-      const acc = st.msgs.get(msgId) || newAcc();
+      const acc = accOf(d.assistantMessageID);
       const output = d.output != null ? String(d.output)
         : (d.content != null ? String(d.content) : '(kosong)');
       st.emit({ type: 'toolend', id: d.id, ok: true, output: output.slice(0, 4000) });
@@ -439,23 +443,19 @@ function translate(rec, st) {
         st.handoffPending = true;
         log.inf('oc', `dual-model: tool ${d.id} selesai — siap serahkan ke executor ${st.dualExecutor}`);
       }
-      st.msgs.set(msgId, acc);
       break;
     }
     case 'session.tool.failed': {
-      const msgId = d.assistantMessageID;
-      const acc = st.msgs.get(msgId) || newAcc();
+      const acc = accOf(d.assistantMessageID);
       const err = d.error || {};
       const message = typeof err === 'string' ? err
         : (err && err.message) ? err.message : String(err);
       st.emit({ type: 'toolend', id: d.id, ok: false, output: message.slice(0, 4000) });
       acc.results.set(d.id, { content: message, ok: false });
-      st.msgs.set(msgId, acc);
       break;
     }
     case 'session.step.ended': {
-      const msgId = d.assistantMessageID;
-      const acc = st.msgs.get(msgId) || newAcc();
+      const acc = accOf(d.assistantMessageID);
       const msg = {
         role: 'assistant',
         content: d.text != null ? d.text : acc.text,
@@ -471,7 +471,6 @@ function translate(rec, st) {
         st.emit({ type: 'toolresult', msg: toolMsg });
         st.added.push(toolMsg);
       }
-      st.msgs.set(msgId, acc);
       // Dual-model: handoff setelah putaran tool pertama selesai.
       const finish = d.finish || d.rawFinish || '';
       if (finish === 'tool-calls' && st.dualExecutor && !st.executorHanded && !st.handoffPending) {
@@ -529,13 +528,12 @@ function translate(rec, st) {
           break;
         }
       }
-      st.msgs.set(msgId, acc);
       break;
     }
     case 'message.updated': {
       if (d.message?.role !== 'assistant') break;
       const msgId = d.message.id;
-      const acc = st.msgs.get(msgId) || newAcc();
+      const acc = accOf(msgId);
       const msg = {
         role: 'assistant',
         content: d.message.content != null ? d.message.content : acc.text,
@@ -587,6 +585,25 @@ function isRetryableError(msg) {
   if (/serve keluar saat boot|tidak menjawab \/api\/config/.test(msg)) return false;
   if (/\b4\d\d\b/.test(msg) && !/\b5\d\d\b/.test(msg)) return false;
   return /\b5\d{2}\b|bad gateway|service unavailable|upstream|overloaded|econnreset|etimedout|socket hang up|eai_again|fetch failed|network error|terminated|stream event opencode putus|stream putus|connection (reset|refused|closed)|socket hang up/i.test(msg);
+}
+
+/** Sesi opencode sedang sibuk menjalankan prompt lain (zombie run)?
+ *  OpenCode menolak prompt baru saat run sebelumnya masih dieksekusi. */
+function isBusyRejection(status, body) {
+  if (status !== 409 && status !== 400) return false;
+  return /sibuk|busy|in progress|already running|conflict|concurrent/i.test(body || '');
+}
+
+/** Matikan run zombie di sesi opencode (interrupt) lalu beri waktu beres.
+ *  T-ML71: dulu satu-satunya penyembuh adalah reset server agent dari UI —
+ *  kini bridge menyembuhkan dirinya sendiri. */
+async function interruptSession(port, password, sid) {
+  try {
+    await ocRequest(port, password, 'POST', `/api/session/${sid}/interrupt`, null, 8000);
+    log.inf('oc', `interrupt sesi ${sid} terkirim (self-heal run zombie)`);
+  } catch { /* best effort */ }
+  // Beri OpenCode waktu menghentikan eksekusi sebelum prompt berikutnya.
+  await new Promise((r) => setTimeout(r, 1500));
 }
 
 function waitAbortable(ms, signal) {
@@ -670,7 +687,6 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
 
     const prompt = promptFor(messages, fresh ? 0 : st.seen, fresh);
     log.inf('oc', `prompt ${prompt.length}ch (history ${messages.length} msg, seen ${st.seen}${attempt > 1 ? `, percobaan ${attempt}` : ''})`);
-
     // Buka SSE SEBELUM prompt agar tidak ada event awal yang terlewat.
     const stream = openEventStream(port, password, (rec) => (rec.data && rec.data.sessionID ? rec.data.sessionID === sid : true));
     const tstate = {
@@ -688,20 +704,24 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
     let terminal = null;
 
     // Satu fase = satu prompt + pompa event sampai terminal ATAU handoffPending.
+    // T-ML71: `openTools` = tool call yang belum punya hasil — selama itu
+    // berjalan, diam adalah NORMAL (bash/apt panjang tidak mengirim event),
+    // jadi silence timer memakai TOOL_SILENCE_MS yang jauh lebih longgar.
     const runPhase = (text) => new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('timeout menunggu session.execution terminal')), config.requestTimeoutMs * 12);
       let lastEventTime = Date.now();
       let silenceTimer = null;
-      const armSilence = () => {
+      const armSilence = (openTools) => {
         if (silenceTimer) clearTimeout(silenceTimer);
+        const budget = openTools ? TOOL_SILENCE_MS : SILENCE_MS;
         silenceTimer = setTimeout(() => {
           if (!terminal && !tstate.handoffPending) {
-            log.dbg('oc', `silence ${Date.now() - lastEventTime}ms > ${SILENCE_MS}ms — selesaikan run (tanpa terminal event)`);
+            log.wrn('oc', `diam ${Date.now() - lastEventTime}ms > ${Math.round(budget / 1000)}s tanpa terminal (openTools=${openTools}) — run dinyatakan macet`);
             clearTimeout(timer);
             silenceTimer = null;
             resolve();
           }
-        }, SILENCE_MS);
+        }, budget);
       };
       const pump = () => {
         if (stream.isClosed()) {
@@ -731,22 +751,37 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
           resolve();
           return;
         }
-        armSilence();
+        // Tool berjalan tanpa hasil = diam yang sah; beri anggaran lebih.
+        const openTools = tstate.lastAcc ? tstate.lastAcc.toolCalls.some((tc) => !tstate.lastAcc.results.has(tc.id)) : false;
+        armSilence(openTools);
         stream.waiters.push(pump);
       };
       stream.waiters.push(pump);
       pump();
-      armSilence();
+      armSilence(false);
     });
 
     // Jalankan prompt (orchestrator) lalu, bila handoff diminta, drain terminal
     // run orchestrator yang di-interrupt sebelum switch model + re-prompt.
+    // T-ML71: sesi sibuk (run zombie dari turn sebelumnya) menyembuhkan diri —
+    // interrupt, tunggu, coba prompt LAGI; dulu satu-satunya obat adalah reset
+    // server agent dari UI. `sendPrompt` melempar 'sesi-sibuk' agar loop retry
+    // luar menangani respawn bila interrupt pun gagal.
     const sendPrompt = async (text) => {
-      const pr = await ocRequest(port, password, 'POST', `/api/session/${sid}/prompt`, { text }, 30000);
-      if (pr.status !== 200 && pr.status !== 201) {
+      for (let i = 0; i < 2; i++) {
+        const pr = await ocRequest(port, password, 'POST', `/api/session/${sid}/prompt`, { text }, 30000);
+        if (pr.status === 200 || pr.status === 201) {
+          log.dbg('oc', `prompt terkirim sid=${sid}, status=${pr.status}${i ? ' (setelah self-heal)' : ''}`);
+          return;
+        }
+        if (i === 0 && isBusyRejection(pr.status, pr.body)) {
+          log.wrn('oc', `prompt ditolak: sesi sibuk (HTTP ${pr.status}) — interrupt zombie lalu coba lagi`);
+          await interruptSession(port, password, sid);
+          continue;
+        }
         throw new Error(`prompt ditolak: HTTP ${pr.status} ${pr.body.slice(0, 200)}`);
       }
-      log.dbg('oc', `prompt terkirim sid=${sid}, status=${pr.status}`);
+      throw new Error('prompt ditolak: sesi tetap sibuk setelah interrupt');
     };
 
     try {
@@ -785,6 +820,32 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
         await sendPrompt(OC_CONTINUE_PROMPT);
         await runPhase(OC_CONTINUE_PROMPT);
       }
+
+      // T-ML71: fase berakhir TANPA terminal event = run macet (silence/timeout
+      // fase) ATAU run masih dieksekusi di server OpenCode (zombie). Dulu bridge
+      // memalsukan {type:'done'} — turn "selesai bersih" dengan teks setengah
+      // jadi, atau diam total saat belum ada output; user harus reset server
+      // manual. Sekarang: interrupt zombie, buang sesi setengah jalan, dan
+      // laporkan error TERLIHAT (app menawarkan Lanjutkan bila ada pekerjaan
+      // yang sudah tersimpan) — stuck tidak lagi butuh campur tangan manusia.
+      if (!terminal && !tstate.handoffPending) {
+        await interruptSession(port, password, sid);
+        st.sid = ''; // sesi setengah jalan tidak dipercaya → turn berikutnya sesi baru
+        // T-ML71: error di-EMIT (bukan throw) agar app menerima error + done
+        // dalam satu stream yang rapi — throw hanya disurface server.js dan
+        // membuang `added`; dengan emit, keluaran sebagian yang sudah
+        // ter-persist lewat event message/toolresult tetap hidup (tombol
+        // Lanjutkan), dan kasus tanpa keluaran pun berakhir tertib.
+        const produced = added.some((m) => m.role === 'assistant');
+        emit({
+          type: 'error',
+          message: produced
+            ? 'run OpenCode berhenti di tengah (tidak ada event terminal) — tekan Lanjutkan untuk meneruskan'
+            : 'run OpenCode macet tanpa keluaran (tidak ada terminal event) — sesi direset, coba lagi',
+        });
+        emit({ type: 'done' });
+        return added;
+      }
     } finally {
       signal && signal.removeEventListener('abort', onAbort);
       stream.close();
@@ -793,6 +854,9 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
     if (terminal && terminal.type === 'error') {
       emit({ type: 'error', message: terminal.message });
       emit({ type: 'done' });
+      // Sesi yang mengalami error mid-run tidak dipercaya — turn berikutnya
+      // pakai sesi baru (run zombie bisa masih hidup di dalamnya).
+      st.sid = '';
       // Bukan return added — server menghitung added hanya saat sukses; error
       // sudah disurface ke app lewat event.
       throw new Error(terminal.message);
@@ -830,5 +894,5 @@ module.exports = {
   ocBundleAvailable,
   parseDualConfig,
   killServe,
-  _internals: { canonicalMsg, hashPrefix, promptFor, writeOpencodeConfig, isRetryableError, APPEND_SYSTEM, translate, newAcc, isTerminalEvent, terminalError },
+  _internals: { canonicalMsg, hashPrefix, promptFor, writeOpencodeConfig, isRetryableError, APPEND_SYSTEM, translate, newAcc, isTerminalEvent, terminalError, isBusyRejection, interruptSession, SILENCE_MS, TOOL_SILENCE_MS },
 };
