@@ -262,6 +262,7 @@ function openEventStream(port, password, filter) {
           if (!rec || typeof rec.type !== 'string') continue;
           if (filter && !filter(rec)) continue;
           events.push(rec);
+          log.dbg('oc', `event ${rec.type} sid=${rec.data && rec.data.sessionID}`);
           for (const w of waiters.splice(0)) w();
         }
       }
@@ -357,67 +358,79 @@ async function ensureServe({ apiKey, providerId, model, executor, workdir }) {
 // ---------------------------------------------------------------- translasi
 
 /** Ubah satu event OpenCode (rec) menjadi 0..N event app, dikirim live.
- *  state: { toolName:Map, msgs:Map assistantMessageID→akumulator, emitted:Set,
- *           dualExecutor, executorHanded, turns, added, emit, request } */
+ *  state: { msgs:Map messageID→akumulator, emitted:Set, dualExecutor,
+ *           executorHanded, handoffPending, added, emit }
+ *
+ *  OpenCode v2.2.0 emits event SSE dengan tipe:
+ *    message.part.updated  — delta bertahap (part.type: reasoning|text|tool)
+ *    message.updated       — pesan lengkap selesai (d.message.role, d.tokens)
+ *    session.*             — terminal lifecycle (execution.succeeded/failed/error)
+ *
+ *  Kontrak output sama persis dengan pi-bridge / legacy: think, text, tool,
+ *  toolend, toolresult, message, usage, model, done, error. ChatEngine /
+ *  UI TIDAK berubah. */
 function translate(rec, st) {
   const d = rec.data || {};
   switch (rec.type) {
-    case 'session.reasoning.delta':
-      if (d.delta) st.emit({ type: 'think', delta: d.delta });
-      break;
-    case 'session.text.delta': {
-      if (d.delta) st.emit({ type: 'text', delta: d.delta });
-      const acc = st.msgs.get(d.assistantMessageID) || newAcc();
-      acc.text += d.delta || '';
-      st.msgs.set(d.assistantMessageID, acc);
+    case 'message.part.updated': {
+      const part = d.part;
+      if (!part) break;
+      const msgId = (d.message && d.message.id) || d.messageID;
+      const acc = st.msgs.get(msgId) || newAcc();
+      switch (part.type) {
+        case 'reasoning':
+          if (part.content) {
+            st.emit({ type: 'think', delta: part.content });
+            acc.thinking += part.content;
+          }
+          break;
+        case 'text':
+          if (part.content) {
+            st.emit({ type: 'text', delta: part.content });
+            acc.text += part.content;
+          }
+          break;
+        case 'tool': {
+          const id = part.id;
+          const name = part.name || 'tool';
+          const args = part.args ?? {};
+          if (part.state === 'pending' || part.state === 'running') {
+            acc.toolCalls.push({ id, name, args });
+            st.emit({ type: 'tool', id, name, args });
+          } else if (part.state === 'completed' || part.state === 'failed') {
+            const ok = part.state !== 'failed' && !(part.error || part.status === 'error');
+            const output = part.output != null ? String(part.output) : '(kosong)';
+            st.emit({ type: 'toolend', id, ok, output: output.slice(0, 4000) });
+            acc.results.set(id, { content: output, ok });
+            // Dual-model: handoff deterministik setelah tool putaran pertama
+            // selesai. OpenCode mengunci model per-run prompt → interrupt +
+            // switch model + re-prompt di runAttempt (lihat handoffPending).
+            if (st.dualExecutor && !st.executorHanded && !st.handoffPending) {
+              st.executorHanded = true;
+              st.handoffPending = true;
+              log.inf('oc', `dual-model: tool ${id} (${name}) selesai — siap serahkan ke executor ${st.dualExecutor}`);
+            }
+          }
+          break;
+        }
+      }
+      st.msgs.set(msgId, acc);
       break;
     }
-    case 'session.tool.input.started':
-      if (d.id && d.name) st.toolName.set(d.id, d.name);
-      break;
-    case 'session.tool.called': {
-      const name = st.toolName.get(d.id) || 'tool';
-      const args = d.input ?? {};
-      const acc = st.msgs.get(d.assistantMessageID) || newAcc();
-      acc.toolCalls.push({ id: d.id, name, args });
-      st.msgs.set(d.assistantMessageID, acc);
-      st.emit({ type: 'tool', id: d.id, name, args });
-      break;
-    }
-    case 'session.tool.success': {
-      const content = Array.isArray(d.content)
-        ? d.content.filter((b) => b && b.type === 'text').map((b) => b.text).join('')
-        : '';
-      const ok = !d.metadata || d.metadata.status !== 'error';
-      st.emit({ type: 'toolend', id: d.id, ok, output: (content || '(kosong)').slice(0, 4000) });
-      const acc = st.msgs.get(d.assistantMessageID) || newAcc();
-      acc.results.set(d.id, { content: content || '(kosong)', ok });
-      st.msgs.set(d.assistantMessageID, acc);
-      break;
-    }
-    case 'session.tool.error': {
-      const content = d.error || d.message || '(tool error)';
-      st.emit({ type: 'toolend', id: d.id, ok: false, output: String(content).slice(0, 4000) });
-      const acc = st.msgs.get(d.assistantMessageID) || newAcc();
-      acc.results.set(d.id, { content: String(content), ok: false });
-      st.msgs.set(d.assistantMessageID, acc);
-      break;
-    }
-    case 'session.step.ended': {
-      const id = d.assistantMessageID;
-      if (!id || st.emitted.has(id)) break;
-      st.emitted.add(id);
-      const acc = st.msgs.get(id) || newAcc();
+    case 'message.updated': {
+      if (d.message?.role !== 'assistant') break;
+      const msgId = d.message.id;
+      const acc = st.msgs.get(msgId) || newAcc();
       // Event 'message' (assistant) — history app dibangun dari sini.
       const msg = {
         role: 'assistant',
-        content: acc.text,
+        content: d.message.content != null ? d.message.content : acc.text,
         ...(acc.thinking ? { thinking: acc.thinking } : {}),
         ...(acc.toolCalls.length ? { toolCalls: acc.toolCalls } : {}),
       };
       st.emit({ type: 'message', msg });
       st.added.push(msg);
-      // toolresult untuk tiap tool call pada putaran ini.
+      // toolresult untuk tiap tool call pada pesan ini.
       for (const tc of acc.toolCalls) {
         const r = acc.results.get(tc.id) || { content: '(kosong)', ok: true };
         const toolMsg = { role: 'tool', content: r.content, toolCallId: tc.id, name: tc.name };
@@ -435,18 +448,6 @@ function translate(rec, st) {
           totalTokens: (u.input ?? 0) + (u.output ?? 0),
         });
       }
-      // Dual-model: putaran tool pertama selesai → minta handoff ke executor.
-      // OpenCode MENGUNCI model untuk seluruh durasi satu run `prompt` (loop
-      // otonom); POST /model di tengah run DIABAIKAN untuk run yang sedang
-      // jalan (hanya berlaku untuk prompt berikutnya). Maka handoff harus
-      // deterministik: tandai handoffPending, lalu runAttempt meng-interrupt
-      // run orchestrator, switch model, dan re-prompt executor (lihat
-      // runAttempt). Cukup sekali (executorHanded).
-      if (st.dualExecutor && !st.executorHanded && acc.toolCalls.length) {
-        st.executorHanded = true;
-        st.handoffPending = true;
-        log.inf('oc', `dual-model: putaran tool orchestrator selesai — siap serahkan ke executor ${st.dualExecutor}`);
-      }
       break;
     }
     default:
@@ -454,6 +455,27 @@ function translate(rec, st) {
   }
 }
 function newAcc() { return { text: '', thinking: '', toolCalls: [], results: new Map() }; }
+
+/** Deteksi event terminal run dari OpenCode v2.2.0. Beberapa nama bisa
+ *  bervariasi minor antar patch — coba sekelompok kemungkinan agar run tidak
+ *  pernah menggantung karena nama event yang tidak dikenal. */
+function isTerminalEvent(rec) {
+  const t = rec && rec.type;
+  if (!t) return false;
+  if (t === 'session.execution.succeeded' || t === 'session.execution.failed' || t === 'session.error') return true;
+  if (t === 'session.ended' || t === 'session.completed' || t === 'run.completed' || t === 'run.failed') return true;
+  // session.error dengan data berisi error message
+  if (t === 'error' && rec.data && (rec.data.error || rec.data.message)) return true;
+  return false;
+}
+
+/** Ekstrak pesan error dari event terminal, bila ada. */
+function terminalError(rec) {
+  if (!rec) return null;
+  const d = rec.data || {};
+  const m = d.error || d.message || d.detail || null;
+  return m != null ? (typeof m === 'string' ? m : JSON.stringify(m)) : null;
+}
 
 /** Error retryable: transient jaringan/gateway 5xx (bukan 4xx config, bukan
  *  child mati). */
@@ -550,8 +572,8 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
     // Buka SSE SEBELUM prompt agar tidak ada event awal yang terlewat.
     const stream = openEventStream(port, password, (rec) => (rec.data && rec.data.sessionID ? rec.data.sessionID === sid : true));
     const tstate = {
-      toolName: new Map(), msgs: new Map(), emitted: new Set(),
-      dualExecutor, executorHanded: false, handoffPending: false, turns: 0, added,
+      msgs: new Map(),
+      dualExecutor, executorHanded: false, handoffPending: false, added,
       emit, port, password, sid,
     };
 
@@ -575,10 +597,9 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
         try {
           while (consumed < stream.events.length) {
             const rec = stream.events[consumed++];
-            if (rec.type === 'session.execution.succeeded' || rec.type === 'session.execution.failed' || rec.type === 'session.error') {
-              if (rec.type === 'session.error') {
-                const m = (rec.data && (rec.data.error || rec.data.message)) || 'session error';
-                terminal = { type: 'error', message: typeof m === 'string' ? m : JSON.stringify(m) };
+            if (isTerminalEvent(rec)) {
+              if (rec.type === 'session.error' || rec.type === 'error') {
+                terminal = { type: 'error', message: terminalError(rec) || 'session error' };
               } else {
                 terminal = { type: 'done' };
               }
@@ -601,6 +622,7 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
       if (pr.status !== 200 && pr.status !== 201) {
         throw new Error(`prompt ditolak: HTTP ${pr.status} ${pr.body.slice(0, 200)}`);
       }
+      log.dbg('oc', `prompt terkirim sid=${sid}, status=${pr.status}`);
     };
 
     try {
@@ -621,7 +643,7 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
         try {
           while (consumed < stream.events.length) {
             const rec = stream.events[consumed++];
-            if (rec.type === 'session.execution.succeeded' || rec.type === 'session.execution.failed' || rec.type === 'session.error') break;
+            if (isTerminalEvent(rec)) break;
             translate(rec, tstate);
           }
         } catch { /* abaikan sisa event orchestrator */ }
