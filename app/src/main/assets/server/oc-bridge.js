@@ -368,17 +368,133 @@ async function ensureServe({ apiKey, providerId, model, executor, workdir }) {
  *  state: { msgs:Map messageID→akumulator, emitted:Set, dualExecutor,
  *           executorHanded, handoffPending, added, emit }
  *
- *  OpenCode v2.2.0 emits event SSE dengan tipe:
- *    message.part.updated  — delta bertahap (part.type: reasoning|text|tool)
- *    message.updated       — pesan lengkap selesai (d.message.role, d.tokens)
- *    session.*             — terminal lifecycle (execution.succeeded/failed/error)
+ *  OpenCode v2.2.0 (diverifikasi live di guest proot) emits event SSE dengan
+ *  tipe:
+ *    session.reasoning.started/delta/ended  — rantai reasoning
+ *    session.text.started/delta/ended        — teks jawaban
+ *    session.tool.input.started              — input tool mulai {id, name}
+ *    session.tool.called                     — model meminta tool {id, input.args}
+ *    session.tool.succeeded / session.tool.failed {error} — hasil eksekusi tool
+ *    session.step.ended                      — akhir langkah {finish, tokens}
+ *    session.usage.updated                   — token usage
+ *    session.execution.succeeded / failed    — terminal run
+ *    session.error                           — terminal error
  *
  *  Kontrak output sama persis dengan pi-bridge / legacy: think, text, tool,
  *  toolend, toolresult, message, usage, model, done, error. ChatEngine /
- *  UI TIDAK berubah. */
+ *  UI TIDAK berubah. Varian OpenCode lain yang masih emits message.part.*
+ *  diangani sebagai fallback. */
 function translate(rec, st) {
   const d = rec.data || {};
   switch (rec.type) {
+    case 'session.reasoning.delta': {
+      const msgId = d.assistantMessageID;
+      const acc = st.msgs.get(msgId) || newAcc();
+      if (d.delta) {
+        st.emit({ type: 'think', delta: d.delta });
+        acc.thinking += d.delta;
+      }
+      st.msgs.set(msgId, acc);
+      break;
+    }
+    case 'session.text.delta': {
+      const msgId = d.assistantMessageID;
+      const acc = st.msgs.get(msgId) || newAcc();
+      if (d.delta) {
+        st.emit({ type: 'text', delta: d.delta });
+        acc.text += d.delta;
+      }
+      st.msgs.set(msgId, acc);
+      break;
+    }
+    case 'session.tool.input.started': {
+      const msgId = d.assistantMessageID;
+      const acc = st.msgs.get(msgId) || newAcc();
+      acc.toolIndex[d.id] = { name: d.name, args: {} };
+      st.msgs.set(msgId, acc);
+      break;
+    }
+    case 'session.tool.called': {
+      const msgId = d.assistantMessageID;
+      const acc = st.msgs.get(msgId) || newAcc();
+      const info = acc.toolIndex[d.id];
+      const name = (info && info.name) || 'tool';
+      const args = d.input ?? {};
+      if (info) info.args = args;
+      acc.toolCalls.push({ id: d.id, name, args });
+      st.emit({ type: 'tool', id: d.id, name, args });
+      st.msgs.set(msgId, acc);
+      break;
+    }
+    case 'session.tool.succeeded': {
+      const msgId = d.assistantMessageID;
+      const acc = st.msgs.get(msgId) || newAcc();
+      const output = d.output != null ? String(d.output)
+        : (d.content != null ? String(d.content) : '(kosong)');
+      st.emit({ type: 'toolend', id: d.id, ok: true, output: output.slice(0, 4000) });
+      acc.results.set(d.id, { content: output, ok: true });
+      // Dual-model: handoff deterministik setelah tool putaran pertama selesai.
+      if (st.dualExecutor && !st.executorHanded && !st.handoffPending) {
+        st.executorHanded = true;
+        st.handoffPending = true;
+        log.inf('oc', `dual-model: tool ${d.id} selesai — siap serahkan ke executor ${st.dualExecutor}`);
+      }
+      st.msgs.set(msgId, acc);
+      break;
+    }
+    case 'session.tool.failed': {
+      const msgId = d.assistantMessageID;
+      const acc = st.msgs.get(msgId) || newAcc();
+      const err = d.error || {};
+      const message = typeof err === 'string' ? err
+        : (err && err.message) ? err.message : String(err);
+      st.emit({ type: 'toolend', id: d.id, ok: false, output: message.slice(0, 4000) });
+      acc.results.set(d.id, { content: message, ok: false });
+      st.msgs.set(msgId, acc);
+      break;
+    }
+    case 'session.step.ended': {
+      const msgId = d.assistantMessageID;
+      const acc = st.msgs.get(msgId) || newAcc();
+      const msg = {
+        role: 'assistant',
+        content: d.text != null ? d.text : acc.text,
+        ...(acc.thinking ? { thinking: acc.thinking } : {}),
+        ...(acc.toolCalls.length ? { toolCalls: acc.toolCalls } : {}),
+      };
+      st.emit({ type: 'message', msg });
+      st.added.push(msg);
+      // toolresult untuk tiap tool call pada pesan ini.
+      for (const tc of acc.toolCalls) {
+        const r = acc.results.get(tc.id) || { content: '(kosong)', ok: true };
+        const toolMsg = { role: 'tool', content: r.content, toolCallId: tc.id, name: tc.name };
+        st.emit({ type: 'toolresult', msg: toolMsg });
+        st.added.push(toolMsg);
+      }
+      st.msgs.set(msgId, acc);
+      // Dual-model: handoff setelah putaran tool pertama selesai.
+      const finish = d.finish || d.rawFinish || '';
+      if (finish === 'tool-calls' && st.dualExecutor && !st.executorHanded && !st.handoffPending) {
+        st.executorHanded = true;
+        st.handoffPending = true;
+        log.inf('oc', `dual-model: langkah tool selesai — siap serahkan ke executor ${st.dualExecutor}`);
+      }
+      break;
+    }
+    case 'session.usage.updated': {
+      const u = d.tokens;
+      if (u && (u.input || u.output || u.reasoning)) {
+        st.emit({
+          type: 'usage',
+          promptTokens: u.input ?? 0,
+          completionTokens: u.output ?? 0,
+          ...(u.reasoning != null ? { reasoningTokens: u.reasoning } : {}),
+          totalTokens: (u.input ?? 0) + (u.output ?? 0),
+        });
+      }
+      break;
+    }
+    // Fallback untuk varian OpenCode lain yang masih emits message.part.*.
     case 'message.part.updated': {
       const part = d.part;
       if (!part) break;
@@ -409,14 +525,6 @@ function translate(rec, st) {
             const output = part.output != null ? String(part.output) : '(kosong)';
             st.emit({ type: 'toolend', id, ok, output: output.slice(0, 4000) });
             acc.results.set(id, { content: output, ok });
-            // Dual-model: handoff deterministik setelah tool putaran pertama
-            // selesai. OpenCode mengunci model per-run prompt → interrupt +
-            // switch model + re-prompt di runAttempt (lihat handoffPending).
-            if (st.dualExecutor && !st.executorHanded && !st.handoffPending) {
-              st.executorHanded = true;
-              st.handoffPending = true;
-              log.inf('oc', `dual-model: tool ${id} (${name}) selesai — siap serahkan ke executor ${st.dualExecutor}`);
-            }
           }
           break;
         }
@@ -428,7 +536,6 @@ function translate(rec, st) {
       if (d.message?.role !== 'assistant') break;
       const msgId = d.message.id;
       const acc = st.msgs.get(msgId) || newAcc();
-      // Event 'message' (assistant) — history app dibangun dari sini.
       const msg = {
         role: 'assistant',
         content: d.message.content != null ? d.message.content : acc.text,
@@ -437,23 +544,11 @@ function translate(rec, st) {
       };
       st.emit({ type: 'message', msg });
       st.added.push(msg);
-      // toolresult untuk tiap tool call pada pesan ini.
       for (const tc of acc.toolCalls) {
         const r = acc.results.get(tc.id) || { content: '(kosong)', ok: true };
         const toolMsg = { role: 'tool', content: r.content, toolCallId: tc.id, name: tc.name };
         st.emit({ type: 'toolresult', msg: toolMsg });
         st.added.push(toolMsg);
-      }
-      // Usage per putaran.
-      const u = d.tokens;
-      if (u && (u.input || u.output || u.reasoning)) {
-        st.emit({
-          type: 'usage',
-          promptTokens: u.input ?? 0,
-          completionTokens: u.output ?? 0,
-          ...(u.reasoning != null ? { reasoningTokens: u.reasoning } : {}),
-          totalTokens: (u.input ?? 0) + (u.output ?? 0),
-        });
       }
       break;
     }
@@ -461,7 +556,7 @@ function translate(rec, st) {
       break;
   }
 }
-function newAcc() { return { text: '', thinking: '', toolCalls: [], results: new Map() }; }
+function newAcc() { return { text: '', thinking: '', toolCalls: [], results: new Map(), toolIndex: {} }; }
 
 /** Deteksi event terminal run dari OpenCode v2.2.0. Beberapa nama bisa
  *  bervariasi minor antar patch — coba sekelompok kemungkinan agar run tidak
@@ -735,5 +830,5 @@ module.exports = {
   ocBundleAvailable,
   parseDualConfig,
   killServe,
-  _internals: { canonicalMsg, hashPrefix, promptFor, writeOpencodeConfig, isRetryableError, APPEND_SYSTEM },
+  _internals: { canonicalMsg, hashPrefix, promptFor, writeOpencodeConfig, isRetryableError, APPEND_SYSTEM, translate, newAcc, isTerminalEvent, terminalError },
 };
