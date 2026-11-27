@@ -43,6 +43,19 @@ class Prefs(ctx: Context) {
         get() = modelFor(provider)
         set(v) = setModelFor(provider, v)
 
+    /** T-ML72: orchestrator efektif engine aktif — bila prefs dual-model
+     *  kosong (belum pernah diatur), jatuh ke model chat aktif supaya top
+     *  bar selalu menampilkan model yang benar-benar memimpin putaran
+     *  pertama. */
+    val orchestratorEffective: String
+        get() = if (engineOc) ocOrchestrator.ifBlank { model }
+        else piOrchestrator.ifBlank { model }
+
+    /** T-ML72: executor efektif engine aktif — blank = single-model
+     *  (executor nonaktif, orchestrator memimpin semua putaran). */
+    val executorEffective: String
+        get() = if (engineOc) ocExecutor else piExecutor
+
     /** "id" (default) or "en" */
     var lang: String
         get() = sp.getString("lang", "id") ?: "id"

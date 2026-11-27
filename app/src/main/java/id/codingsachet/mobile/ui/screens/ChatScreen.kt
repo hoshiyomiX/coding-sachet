@@ -47,7 +47,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -80,7 +79,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.awaitCancellation
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -88,6 +86,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -158,8 +157,8 @@ fun ChatScreen(
     // recreation after process death); switching chats from the drawer goes
     // through onSessionChange with the same live object.
     var current by remember(session?.id) { mutableStateOf<Session?>(session) }
-    var model by remember(Graph.prefs.provider) { mutableStateOf(Graph.prefs.model) }
-    var showModels by remember { mutableStateOf(false) }
+    // Role yang sedang dipilih di top bar — null = tutup sheet.
+    var pickRole by remember { mutableStateOf<String?>(null) }
     var input by remember { mutableStateOf("") }
     var sessionsVersion by remember { mutableIntStateOf(0) }
     val nullLive = remember { MutableStateFlow<LiveTurn?>(null) }
@@ -267,7 +266,7 @@ fun ChatScreen(
     }
 
     fun newChat(project: String? = null): Session {
-        val ns = Graph.chats.create(model, project)
+        val ns = Graph.chats.create(Graph.prefs.orchestratorEffective, project)
         Graph.chats.reload()
         sessionsVersion++
         current = ns
@@ -292,7 +291,8 @@ fun ChatScreen(
             pendingSend = false
             if (input.isNotBlank()) {
                 val e = engines.getOrPut(ns.id) { ChatEngine(ns) }
-                if (e.send(input, model)) input = ""
+                // T-ML72: orchestrator efektif, bukan model mentah prefs.
+                if (e.send(input, Graph.prefs.orchestratorEffective)) input = ""
             }
         }
     }
@@ -445,16 +445,14 @@ fun ChatScreen(
                                 Icon(Icons.Filled.Menu, contentDescription = s.sessionsTitle)
                             }
                         },
-                        // The title block is the model selector: tapping it opens
-                        // the picker (standard chat-app top-center switcher).
-                        // Top-bar actions (File/Settings) and the runtime status
-                        // dot were removed by owner order T-ML28 #5 — the screens
-                        // live in the drawer, the status in Settings.
+                        // T-ML72: title block = dual-model selector — dua chip
+                        // peran (Orchestrator/Executor) yang masing-masing
+                        // membuka picker model untuk peran itu. Menggantikan
+                        // selector model tunggal lama (T-ML28).
                         title = {
                             Column(
                                 Modifier
                                     .fillMaxWidth()
-                                    .clickable { showModels = true }
                                     .padding(vertical = 2.dp),
                             ) {
                                 Text(
@@ -463,20 +461,21 @@ fun ChatScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        model.ifBlank { s.selectModel },
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f, fill = false),
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    RoleModelChip(
+                                        label = s.dualOrchestrator,
+                                        model = Graph.prefs.orchestratorEffective,
+                                        highlight = MaterialTheme.colorScheme.primary,
+                                        onClick = { pickRole = "orch" },
                                     )
-                                    Icon(
-                                        Icons.Filled.ArrowDropDown,
-                                        contentDescription = s.selectModel,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(16.dp),
+                                    RoleModelChip(
+                                        label = s.dualExecutor,
+                                        model = Graph.prefs.executorEffective.ifBlank { s.executorOffShort },
+                                        highlight = MaterialTheme.colorScheme.tertiary,
+                                        onClick = { pickRole = "exec" },
                                     )
                                 }
                             }
@@ -559,9 +558,11 @@ fun ChatScreen(
                                         val e = engines.getOrPut(target.id) { ChatEngine(target) }
                                         // Keep the typed text when the turn cannot
                                         // start (e.g. still busy) — it is not lost.
-                                        if (e.send(input, model)) input = ""
+                                        // T-ML72: kirim dengan orchestrator efektif
+                                        // (top bar dual-model).
+                                        if (e.send(input, Graph.prefs.orchestratorEffective)) input = ""
                                     },
-                                    enabled = input.isNotBlank() && model.isNotBlank(),
+                                    enabled = input.isNotBlank() && Graph.prefs.orchestratorEffective.isNotBlank(),
                                     modifier = Modifier.size(48.dp),
                                 ) {
                                     Icon(Icons.Filled.Send, contentDescription = s.send)
@@ -669,16 +670,32 @@ fun ChatScreen(
         }
     }
 
-    if (showModels) {
-        ModelPicker(
-            current = model,
-            onPick = {
-                model = it
-                Graph.prefs.model = it
-                current?.model = it
-                showModels = false
+    // T-ML72: sheet pemilih model per-peran (orchestrator/executor).
+    // Persist ke prefs dual-model engine aktif (oc atau pi) + provider
+    // aktif — persis semantik Settings. Orchestrator kosong = model chat
+    // aktif (Graph.prefs.model); executor kosong = single-model.
+    pickRole?.let { role ->
+        DualRoleModelPicker(
+            isExecutor = role == "exec",
+            current = if (role == "exec") Graph.prefs.executorEffective else Graph.prefs.orchestratorEffective,
+            onPick = { m ->
+                val p = Graph.prefs
+                if (role == "exec") {
+                    if (p.engineOc) p.ocExecutor = m else p.piExecutor = m
+                } else {
+                    // Orchestrator = model chat aktif juga (menimpa model
+                    // pengirim, konsisten dengan semangat T-ML69 — model
+                    // terpilih memimpin putaran pertama).
+                    if (p.engineOc) p.ocOrchestrator = m else p.piOrchestrator = m
+                    p.model = m
+                    current?.model = m
+                }
+                // Tandai konfigurasi dual milik provider aktif (batas v1:
+                // satu provider per run — lihat OcOptions/PiOptions).
+                if (p.engineOc) p.ocProvider = p.active.id else p.piProvider = p.active.id
+                pickRole = null
             },
-            onDismiss = { showModels = false },
+            onDismiss = { pickRole = null },
         )
     }
 
@@ -707,7 +724,9 @@ fun ChatScreen(
                 val sess = current ?: return@EditMessageDialog
                 val e = engines.getOrPut(sess.id) { ChatEngine(sess) }
                 // Keep the dialog text when the turn cannot start (busy).
-                if (e.resendFrom(idx, newText, model)) Unit
+                // T-ML72: model pengirim = orchestrator efektif (model chat
+                // aktif atau yang dipilih di top bar).
+                if (e.resendFrom(idx, newText, Graph.prefs.orchestratorEffective)) Unit
             },
             onDismiss = { editTarget = null },
         )
@@ -1139,15 +1158,56 @@ private fun ThinkingBlock(thinking: String?) {
     )
 }
 
+/** T-ML72: chip peran di top bar — label peran + model efektif, klik
+ *  membuka picker untuk peran itu. Layout menyerupai chip dropdown. */
+@Composable
+private fun RoleModelChip(label: String, model: String, highlight: Color, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.clickable(onClick = onClick),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Column {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = highlight,
+                )
+                Text(
+                    model,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Icon(
+                Icons.Filled.ArrowDropDown,
+                contentDescription = label,
+                tint = highlight,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
+/** T-ML72: sheet pemilih model untuk satu peran (orchestrator/executor)
+ *  dari top bar. Daftar model provider aktif + pencarian + baris
+ *  "model chat aktif" (orchestrator) / "nonaktif" (executor). Status live
+ *  (dot hijau/merah) dari sweep ModelStatus. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
+private fun DualRoleModelPicker(isExecutor: Boolean, current: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
     val s = LocalStrings.current
     val provider = Graph.prefs.active
     var models by remember { mutableStateOf<List<String>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var query by remember { mutableStateOf("") }
-    var freeOnly by remember { mutableStateOf(true) }
     var attempt by remember { mutableStateOf(0) }
 
     LaunchedEffect(attempt) {
@@ -1158,30 +1218,12 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
             .onFailure { error = it.message }
     }
 
-    // Live verification results (T-ML26, owner order: "mengecek actual
-    // bukan dari membaca hardcoded list"): the dots and free badges below
-    // read this snapshot — filled by a real sweep against the gateway,
-    // refreshed on every result while the sheet is open.
-    var status by remember(provider.id) { mutableStateOf(ModelStatus.snapshot(provider.id)) }
-    LaunchedEffect(provider.id) {
-        val listener: (String) -> Unit = { pid ->
-            if (pid == provider.id) status = ModelStatus.snapshot(provider.id)
-        }
-        ModelStatus.listen(listener)
-        try { awaitCancellation() } finally { ModelStatus.unlisten(listener) }
-    }
-    // Once the catalogue loads, start a sweep when the stored results are
-    // stale (or missing). It keeps running after the sheet closes.
-    LaunchedEffect(models) {
-        models?.let { Graph.verify.ensure(provider, Graph.prefs.apiKey, it, current) }
-    }
-
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(s.selectModel, style = MaterialTheme.typography.titleMedium)
-            // Legend for the live dots: green = answered the sweep, red =
-            // refused/hung, gray = not checked (yet).
-            Text(s.modelVerifiedNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                if (isExecutor) s.dualExecutor else s.dualOrchestrator,
+                style = MaterialTheme.typography.titleMedium,
+            )
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -1189,52 +1231,6 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // "Free" = the gateway's intrinsic free tier. T-ML48: the
-                // sweep's free flag is only trusted for providers WITHOUT a
-                // prefix (NIM) — see ModelStatus.isFree; the APInex
-                // allowFree catalogue flag is no longer a free indicator.
-                FilterChip(
-                    selected = freeOnly,
-                    onClick = { freeOnly = !freeOnly },
-                    label = { Text(s.modelFreeOnly) },
-                )
-                val loaded = models
-                if (loaded != null) {
-                    val n = loaded.count { !freeOnly || ModelStatus.passesFreeFilter(provider, it) }
-                    Text("$n / ${loaded.size} · ${provider.label}", style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            // Sweep status row: progress + cancel while running, timestamp
-            // + recheck button when idle (T-ML26).
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (Graph.verify.isRunning(provider.id)) {
-                    CircularProgressIndicator(Modifier.width(18.dp), strokeWidth = 2.dp)
-                    val p = Graph.verify.progress(provider.id)
-                    Text(
-                        if (p != null) String.format(s.modelCheckingFmt, p.first, p.second) else s.modelChecking,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    TextButton(onClick = { Graph.verify.cancel(provider.id) }) { Text(s.cancel) }
-                } else {
-                    val last = ModelStatus.lastCheckedAt(provider.id)
-                    if (last != null) {
-                        val stamp = java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.getDefault()).format(java.util.Date(last))
-                        Text(
-                            String.format(s.modelLastCheckedFmt, stamp),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    val loaded = models
-                    if (loaded != null) {
-                        TextButton(onClick = { Graph.verify.ensure(provider, Graph.prefs.apiKey, loaded, current, force = true) }) {
-                            Text(s.modelRecheck)
-                        }
-                    }
-                }
-            }
             when {
                 error != null -> Column {
                     Text("${s.modelFetchError}: $error", color = MaterialTheme.colorScheme.error)
@@ -1245,25 +1241,27 @@ private fun ModelPicker(current: String, onPick: (String) -> Unit, onDismiss: ()
                     Text(s.modelFetching)
                 }
                 else -> LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
-                    // Live-verified models on top, never-checked next,
-                    // confirmed-dead last; stable within each group.
-                    val sorted = models!!.sortedWith(
-                        compareByDescending { m ->
-                            when (status[m]?.state) {
-                                ModelStatus.State.OK -> 2
-                                ModelStatus.State.UNKNOWN, null -> 1
-                                ModelStatus.State.DEAD -> 0
-                            }
-                        }
-                    )
-                    val filtered = sorted.filter {
-                        (!freeOnly || ModelStatus.passesFreeFilter(provider, it)) &&
-                            it.contains(query, ignoreCase = true)
+                    // Tanda pilihan untuk baris khusus saat prefs masih kosong
+                    // (orchestrator = model chat aktif / executor nonaktif).
+                    val blankLabel = if (current.isBlank()) {
+                        if (isExecutor) s.dualExecutorOff else s.dualOrchestratorChatModel
+                    } else ""
+                    item {
+                        ModelRow(
+                            model = if (isExecutor) s.dualExecutorOff else s.dualOrchestratorChatModel,
+                            state = ModelStatus.State.OK,
+                            tier = null,
+                            free = false,
+                            current = current.ifBlank { blankLabel },
+                            onPick = { onPick("") },
+                        )
                     }
+                    val filtered = models!!.filter { it.contains(query, ignoreCase = true) }
+                    val snap = ModelStatus.snapshot(provider.id)
                     items(filtered) { m ->
                         ModelRow(
                             model = m,
-                            state = status[m]?.state ?: ModelStatus.State.UNKNOWN,
+                            state = snap[m]?.state ?: ModelStatus.State.UNKNOWN,
                             tier = ModelStatus.tierOf(provider.id, m),
                             free = ModelStatus.isFree(provider, m),
                             current = current,
