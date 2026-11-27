@@ -9,7 +9,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -752,20 +751,18 @@ private sealed class QuotaState {
     data class Failed(val message: String) : QuotaState()
 }
 
-/** Token meter row above the composer (T-ML29): session usage on the left
+/** Token meter row above the composer (T-ML29): session usage pinned LEFT
  *  (gateway-reported via stream_options.include_usage, any provider),
- *  APInex remaining quota on the right. Both counts are the ACTUAL number
- *  (formatTokenCount, id-ID grouping — 19300000 → "19.300.000", T-ML28 #2),
- *  never an abbreviation — the old "±20,0 jt" rounding hid ±100k.
+ *  remaining quota/balance pinned RIGHT (T-ML74 — owner order: kiri bawah =
+ *  pemakaian sesi, kanan bawah = Saldo/Token/Balance). Both counts are the
+ *  ACTUAL number (formatTokenCount, id-ID grouping — 19300000 →
+ *  "19.300.000", T-ML28 #2), never an abbreviation — the old "±20,0 jt"
+ *  rounding hid ±100k.
  *
- *  T-ML43 fix (text cropped): the chips used to carry their padding on the
- *  Surface modifier — i.e. OUTSIDE the pill background — so the text sat
- *  flush against the 16dp rounded ends and the first/last glyph was cut by
- *  the pill clip; and in a plain Row a long session chip starved the quota
- *  chip ("Pemakaian sesi" + "Sisa token" > row width on 360dp screens),
- *  cropping its text too. Now the padding lives INSIDE the pill and the
- *  row is a FlowRow: chips keep their natural width and the quota chip
- *  wraps to its own line instead of being crushed. */
+ *  T-ML43 fix retained: padding INSIDE the pill so rounded ends never crop
+ *  the first/last glyph; the middle Spacer eats leftover width so long
+ *  values ellipsize on their own side instead of crushing each other on
+ *  360dp screens. */
 @Composable
 private fun TokenMeterRow(
     sessionTokens: Long,
@@ -774,11 +771,12 @@ private fun TokenMeterRow(
     onRefreshQuota: () -> Unit,
 ) {
     val showSession = sessionTokens > 0
-    if (!showSession && !(showQuota && quotaState !is QuotaState.Idle)) return
-    FlowRow(
+    val showQuotaChip = showQuota && quotaState !is QuotaState.Idle
+    if (!showSession && !showQuotaChip) return
+    Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         if (showSession) {
             Surface(
@@ -796,7 +794,9 @@ private fun TokenMeterRow(
                 )
             }
         }
-        if (showQuota) QuotaChip(state = quotaState, onRefresh = onRefreshQuota)
+        // Spacer dorong chip kanan ke pojok kanan bawah.
+        Spacer(Modifier.weight(1f))
+        if (showQuotaChip) QuotaChip(state = quotaState, onRefresh = onRefreshQuota)
     }
 }
 
