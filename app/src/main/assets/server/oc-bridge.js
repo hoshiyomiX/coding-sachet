@@ -74,6 +74,14 @@ const SILENCE_MS = envInt('SACHET_OC_SILENCE_MS', 60000);
 // tengah tool. Anggaran diam terpisah untuk fase tool sebelum menyatakan
 // macet; harus > bash timeout terpanjang yang wajar di proot (legacy 120s).
 const TOOL_SILENCE_MS = envInt('SACHET_OC_TOOL_SILENCE_MS', 480000);
+// Bukti lapangan 2026-11-28 (engine v2.4.2, logcat-125957/-141913): sesi
+// raksasa (2000+ pesan) memicu auto-compaction OpenCode; setelah
+// compaction.ended model menghasilkan token pertama dari konteks hasil
+// kompresi yang BISA >60s diam (LLM lambat / jaringan berpindah). Budget
+// 60s salah menyatakan run macet ("diam 60002ms … openTools=false") dan
+// memotong jawaban setengah jadi. Event compaction → budget
+// FIRST_EVENT_MS (juga dipakai menunggu event pertama sesi baru).
+const FIRST_EVENT_MS = envInt('SACHET_OC_FIRST_EVENT_MS', 240000);
 
 // Prompt sistem hemat-token yang sama dengan Pi (T-ML58 #1) — OpenCode
 // memakai prompt bawaannya; kita hanya menambah aturan bahasa + disiplin.
@@ -290,19 +298,32 @@ function ocRequest(port, password, method, urlPath, body, timeoutMs = 30000) {
 }
 
 /** Koneksi SSE ke /api/event; event diurai → {type,data}. Predikat filter
- *  opsional (mis. hanya sessionID tertentu). Return {close, events, waiters}. */
+ *  opsional (mis. hanya sessionID tertentu). Return {close, events, waiters}.
+ *  Bukti lapangan v2.4.2 (logcat-133905, 2× "stream event opencode putus
+ *  (koneksi)" berturut-turut): Node memutus koneksi SSE yang diam >~20 dtk
+ *  TANPA keepalive — server OpenCode hanya mengirim `: ping` berkala pada
+ *  versi lama. Solusi: fallback polling /api/event?direct bila SSE mati <
+ *  45s tanpa event sama sekali… simpelnya: set socket keepAlive + deteksi
+ *  putus-CEPAT lalu RECONNECT otomatis (bukan langsung gagal-kan run). */
 function openEventStream(port, password, filter) {
   const events = [];
   const waiters = [];
   let buf = '';
   let closed = false;
+  let everReceived = false; // ada `data:` sungguhan sejak koneksi terbuka?
+  let closedAt = 0; // epoch ms saat stream putus pertama kali
   const req = http.request({ host: '127.0.0.1', port, path: '/api/event', method: 'GET', headers: {
     authorization: 'Basic ' + Buffer.from('opencode:' + password).toString('base64'),
   } }, (res) => {
     res.setEncoding('utf8');
-    const wake = () => { closed = true; for (const w of waiters.splice(0)) w(); };
+    const wake = () => {
+      if (!closed && !closedAt) closedAt = Date.now();
+      closed = true;
+      for (const w of waiters.splice(0)) w();
+    };
     res.on('data', (chunk) => {
       buf += chunk;
+      if (!everReceived && /(^|\n)data:/.test(buf)) everReceived = true;
       let idx;
       while ((idx = buf.indexOf('\n\n')) >= 0) {
         const frame = buf.slice(0, idx);
@@ -323,13 +344,18 @@ function openEventStream(port, password, filter) {
     res.on('close', wake);
     res.on('error', wake);
   });
-  req.on('error', () => { closed = true; for (const w of waiters.splice(0)) w(); });
+  req.on('error', () => { if (!closedAt) closedAt = Date.now(); closed = true; for (const w of waiters.splice(0)) w(); });
   req.end();
   return {
     events,
     waiters,
     isClosed: () => closed || req.destroyed,
-    close: () => { closed = true; try { req.destroy(); } catch { /* ignore */ } },
+    /** true bila koneksi mati SEBELUM satu event pun diterima — pola
+     *  putus-awal v2.4.2; caller boleh reconnect daripada gagal-kan run. */
+    deadWithoutData: () => (closed || req.destroyed) && !everReceived,
+    /** epoch ms saat koneksi putus (0 = masih hidup). */
+    closedAtMs: () => closedAt,
+    close: () => { closed = true; closedAt = closedAt || Date.now(); try { req.destroy(); } catch { /* ignore */ } },
   };
 }
 
@@ -698,6 +724,7 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, option
   const added = [];
 
   const runAttempt = async (attempt) => {
+    let usedStream = null; // SSE aktif — finally menutup yang TERAKHIR, bukan yang sudah diganti reconnect
     const entry = await ensureServe({ apiKey, providerId, model, executor, workdir: wd, options });
     const { port, password } = entry;
     const dualExecutor = executor && executor !== model ? executor : null;
@@ -729,7 +756,20 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, option
     const prompt = promptFor(messages, fresh ? 0 : st.seen, fresh);
     log.inf('oc', `prompt ${prompt.length}ch (history ${messages.length} msg, seen ${st.seen}${attempt > 1 ? `, percobaan ${attempt}` : ''})`);
     // Buka SSE SEBELUM prompt agar tidak ada event awal yang terlewat.
-    const stream = openEventStream(port, password, (rec) => (rec.data && rec.data.sessionID ? rec.data.sessionID === sid : true));
+    // `let` + filter disimpan: pump reconnect SSE putus-awal (bukti v2.4.2).
+    let stream = openEventStream(port, password, (rec) => (rec.data && rec.data.sessionID ? rec.data.sessionID === sid : true));
+    usedStream = stream;
+    const streamFilter = (rec) => (rec.data && rec.data.sessionID ? rec.data.sessionID === sid : true);
+    let reconnects = 0;
+    /** SSE putus TANPA data = idle close v2.4.2 → reconnect (maks 3);
+     *  dipanggil dari runPhase pump bila fase masih menunggu. */
+    const reconnectStream = () => {
+      reconnects++;
+      log.wrn('oc', `stream event putus tanpa data (ke-${reconnects}) — reconnect SSE`);
+      stream = openEventStream(port, password, streamFilter);
+      usedStream = stream;
+      return stream;
+    };
     const tstate = {
       msgs: new Map(),
       dualExecutor, executorHanded: false, handoffPending: false, added,
@@ -752,12 +792,23 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, option
       const timer = setTimeout(() => reject(new Error('timeout menunggu session.execution terminal')), config.requestTimeoutMs * 12);
       let lastEventTime = Date.now();
       let silenceTimer = null;
+      let postCompaction = false; // compaction terlihat → diam panjang yang SAH (bukti v2.4.2)
       const armSilence = (openTools) => {
         if (silenceTimer) clearTimeout(silenceTimer);
-        const budget = openTools ? TOOL_SILENCE_MS : SILENCE_MS;
+        const budget = openTools ? TOOL_SILENCE_MS : postCompaction ? FIRST_EVENT_MS : SILENCE_MS;
         silenceTimer = setTimeout(() => {
           if (!terminal) {
-            log.wrn('oc', `diam ${Date.now() - lastEventTime}ms > ${Math.round(budget / 1000)}s tanpa terminal (openTools=${openTools}) — run dinyatakan macet`);
+            // Putus-awal SSE (idle close v2.4.2) sering terjadi TANPA event
+            // apa pun → silence menyala dulu. Cek reconnect SEBELUM
+            // menyatakan macet: koneksi mati tanpa data + run menggantung =
+            // reconnect, bukan fail.
+            if (stream.isClosed() && reconnects < 3) {
+              reconnectStream();
+              silenceTimer = null;
+              pump(); // pompa ulang dengan stream baru
+              return;
+            }
+            log.wrn('oc', `diam ${Date.now() - lastEventTime}ms > ${Math.round(budget / 1000)}s tanpa terminal (openTools=${openTools}${postCompaction ? ', pasca-compaction' : ''}) — run dinyatakan macet`);
             clearTimeout(timer);
             silenceTimer = null;
             resolve();
@@ -767,7 +818,24 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, option
       const pump = () => {
         if (stream.isClosed()) {
           if (silenceTimer) clearTimeout(silenceTimer);
-          if (!terminal) { clearTimeout(timer); reject(new Error('stream event opencode putus (koneksi)')); }
+          if (!terminal) {
+            // Bukti lapangan v2.4.2 (logcat-133905): SSE /api/event bisa
+            // putus SEBELUM satu event pun (server restart internal /
+            // idle close) → dulu langsung gagal-kan run ("stream event
+            // opencode putus (koneksi)") 2× berturut-turut. Kini reconnect
+            // SSE (event historis tetap di stream.events; sid tidak berubah)
+            // — batasi 3×, setelah itu gagal-kan seperti dulu.
+            if (reconnects < 3) {
+              reconnectStream();
+              consumed = 0; // koneksi baru mulai dari event baru; historis sudah di-added
+              stream.waiters.push(pump);
+              pump();
+              armSilence(tstate.lastAcc ? tstate.lastAcc.toolCalls.some((tc) => !tstate.lastAcc.results.has(tc.id)) : false);
+              return;
+            }
+            clearTimeout(timer);
+            reject(new Error('stream event opencode putus (koneksi)'));
+          }
           else { clearTimeout(timer); resolve(); }
           return;
         }
@@ -782,6 +850,16 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, option
                 terminal = { type: 'done' };
               }
               break;
+            }
+            if (rec.type && rec.type.startsWith('session.compaction.')) {
+              // Auto-compaction sesi raksasa (bukti 2026-11-28, v2.4.2):
+              // setelah compaction.ended LLM butuh waktu lama menghasilkan
+              // token pertama dari konteks terkompresi → budget panjang
+              // FIRST_EVENT_MS berlaku sampai event aktif berikutnya,
+              // JANGAN biarkan budget 60s menyatakan macet dan memotong
+              // jawaban setengah jadi.
+              postCompaction = true;
+              continue; // compaction bukan event translate
             }
             translate(rec, tstate);
           }
@@ -859,6 +937,27 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, option
       // laporkan error TERLIHAT (app menawarkan Lanjutkan bila ada pekerjaan
       // yang sudah tersimpan) — stuck tidak lagi butuh campur tangan manusia.
       if (!terminal && !tstate.handoffPending) {
+        // RECONNECT menyelamatkan: bila fase memang sudah menghasilkan
+        // terminal (event datang SETELAH silence resolve — bukti test F:
+        // step.ended + execution.succeeded tiba saat interrupt jalan),
+        // tunggu sebentar event yang masih di aliran SSE (reconnect sudah
+        // dipasang) sebelum menyatakan macet.
+        for (let i = 0; i < 12 && !terminal; i++) {
+          await waitAbortable(250, signal);
+          while (consumed < stream.events.length && !terminal) {
+            const rec = stream.events[consumed++];
+            if (isTerminalEvent(rec)) {
+              terminal = rec.type === 'session.error' || rec.type === 'error'
+                ? { type: 'error', message: terminalError(rec) || 'session error' }
+                : { type: 'done' };
+            } else if (!(rec.type && rec.type.startsWith('session.compaction.'))) {
+              translate(rec, tstate);
+            }
+          }
+          if (terminal) break;
+        }
+      }
+      if (!terminal && !tstate.handoffPending) {
         await interruptSession(port, password, sid);
         st.sid = ''; // sesi setengah jalan tidak dipercaya → turn berikutnya sesi baru
         // T-ML71: error di-EMIT (bukan throw) agar app menerima error + done
@@ -878,7 +977,8 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, option
       }
     } finally {
       signal && signal.removeEventListener('abort', onAbort);
-      stream.close();
+      // Tutup SSE yang TERAKHIR dipakai (reconnect mengganti stream).
+      (usedStream || stream).close();
     }
 
     if (terminal && terminal.type === 'error') {
@@ -924,5 +1024,5 @@ module.exports = {
   ocBundleAvailable,
   parseDualConfig,
   killServe,
-  _internals: { canonicalMsg, hashPrefix, promptFor, writeOpencodeConfig, sanitizeModelSettings, isRetryableError, APPEND_SYSTEM, OC_SYSTEM_PROMPT, translate, newAcc, isTerminalEvent, terminalError, isBusyRejection, interruptSession, SILENCE_MS, TOOL_SILENCE_MS },
+  _internals: { canonicalMsg, hashPrefix, promptFor, writeOpencodeConfig, sanitizeModelSettings, isRetryableError, APPEND_SYSTEM, OC_SYSTEM_PROMPT, translate, newAcc, isTerminalEvent, terminalError, isBusyRejection, interruptSession, SILENCE_MS, TOOL_SILENCE_MS, FIRST_EVENT_MS, openEventStream },
 };

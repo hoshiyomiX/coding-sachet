@@ -73,8 +73,10 @@ async function runChat(port, { messages, executor } = {}) {
     'const args=process.argv;const i=args.indexOf("--port");const listen=args[i+1];',
     'http.createServer((req,res)=>{',
     ' const r=http.request({...target,path:req.url,method:req.method,headers:req.headers},(p)=>{',
-    '  res.writeHead(p.statusCode,p.headers);p.pipe(res);});',
-    ' req.pipe(r);r.on("error",()=>{res.writeHead(502);res.end();});',
+    '  res.writeHead(p.statusCode,p.headers);p.pipe(res);',
+    '  p.on("close",()=>res.destroy());',
+    ' });',
+    ' req.pipe(r);r.on("error",()=>{try{res.writeHead(502);}catch{}res.end();});',
     '}).listen(Number(listen),"127.0.0.1");',
   ].join('');
   const bin = path.join(dir, 'fake-oc.js');
@@ -207,5 +209,58 @@ describe('T-ML71 E2E flow', () => {
     assert.ok(events.some((e) => e.type === 'model' && e.role === 'executor'), 'event model/executor ter-emit');
     const types = events.map((e) => e.type);
     assert.deepStrictEqual(types, ['think', 'tool', 'toolend', 'message', 'toolresult', 'model', 'tool', 'toolend', 'message', 'toolresult', 'done']);
+  });
+
+  // Bukti lapangan 2026-11-28 (logcat-125957/-141913, engine v2.4.2): sesi
+  // raksasa auto-compaction → compaction.ended → diam 60s+ (LLM lambat
+  // menghasilkan token pertama) → salah "macet". Budget pasca-compaction
+  // kini FIRST_EVENT_MS (default 240s) — compaction menyelamatkan run.
+  test('E: diam pasca-compaction >SILENCE_MS TIDAK dinyatakan macet (budget FIRST_EVENT_MS)', async () => {
+    const { srv, emit, state, port } = await mockServe((_, st, res) => {
+      res.writeHead(200); res.end();
+      (async () => {
+        const sid = st.sid;
+        await sleep(40);
+        emit({ type: 'session.compaction.started', data: { sessionID: sid } });
+        emit({ type: 'session.compaction.ended', data: { sessionID: sid } });
+        // Diam ~1,2s (melewati SILENCE_MS=700ms test) lalu jawaban — dengan
+        // budget lama run salah macet; kini FIRST_EVENT_MS menyelamatkan.
+        await sleep(1200);
+        emit({ type: 'session.text.delta', data: { sessionID: sid, assistantMessageID: 'a1', delta: 'jawaban pasca-compaction' } });
+        emit({ type: 'session.step.ended', data: { sessionID: sid, assistantMessageID: 'a1', text: 'jawaban pasca-compaction', finish: 'stop' } });
+        emit({ type: 'session.execution.succeeded', data: { sessionID: sid } });
+      })();
+    });
+    const { events } = await runChat(port);
+    srv.close();
+    assert.strictEqual(state.interrupted, 0, 'run TIDAK salah di-interrupt');
+    assert.deepStrictEqual(events.map((e) => e.type), ['text', 'message', 'done'], 'jawaban utuh sampai done');
+  });
+
+  // Bukti lapangan v2.4.2 (logcat-133905): SSE putus tanpa data → dulu
+  // "stream event opencode putus (koneksi)" menggagalkan run 2× berturut-
+  // turut. Kini pump RECONNECT (maks 3) — run tetap hidup.
+  test('F: SSE putus tanpa data → reconnect otomatis, run tetap selesai', async () => {
+    const { srv, emit, state, port } = await mockServe((_, st, res) => {
+      res.writeHead(200); res.end();
+      (async () => {
+        const sid = st.sid;
+        await sleep(40);
+        // Putuskan SEMUA listener SSE (simulasi idle close v2.4.2). Event
+        // dikirim SETELAH reconnect — di bawah kita menunggu run selesai;
+        // jadwal kirim: destroy t+40ms, kirim ulang t+1000ms (reconnect
+        // biasanya terpasang saat silence timer 700ms memicu putus-deteksi).
+        const t0 = Date.now();
+        for (const r of Array.from(st.listeners)) r.destroy();
+        await sleep(960);
+        // …lalu kirim event: reconnect sudah terbuka, event tetap sampai.
+        emit({ type: 'session.text.delta', data: { sessionID: sid, assistantMessageID: 'a1', delta: 'selamat pasca-reconnect' } });
+        emit({ type: 'session.step.ended', data: { sessionID: sid, assistantMessageID: 'a1', text: 'selamat pasca-reconnect', finish: 'stop' } });
+        emit({ type: 'session.execution.succeeded', data: { sessionID: sid } });
+      })();
+    });
+    const { events } = await runChat(port);
+    srv.close();
+    assert.deepStrictEqual(events.map((e) => e.type), ['text', 'message', 'done'], 'run pulih via reconnect, tidak gagal');
   });
 });
