@@ -36,6 +36,17 @@ describe('T-ML71 translate: pelacakan tool terbuka', () => {
     assert.ok(!st.lastAcc.toolCalls.some((tc) => !st.lastAcc.results.has(tc.id)), 'semua tool tertutup');
   });
 
+  test('tool.success (nama event v2.4.2) menutup tool juga', () => {
+    const st = { msgs: new Map(), added: [], emit: () => {} };
+    translate({ type: 'session.tool.called', data: { assistantMessageID: 'm1', id: 't1', name: 'bash', input: {} } }, st);
+    translate({ type: 'session.tool.success', data: { assistantMessageID: 'm1', id: 't1', output: 'ok' } }, st);
+    assert.ok(!st.lastAcc.toolCalls.some((tc) => !st.lastAcc.results.has(tc.id)), 'semua tool tertutup');
+  });
+
+  test('execution.interrupted (v2.4.2) = event terminal', () => {
+    assert.ok(isTerminalEvent({ type: 'session.execution.interrupted', data: { sessionID: 's1' } }));
+  });
+
   test('step.ended memancarkan message + toolresult dan membuang hasil tanpa pemanggil', () => {
     const ev = [];
     const st = { msgs: new Map(), added: [], emit: (e) => ev.push(e) };

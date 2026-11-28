@@ -379,7 +379,8 @@ async function ensureServe({ apiKey, providerId, model, executor, workdir }) {
  *    session.text.started/delta/ended        — teks jawaban
  *    session.tool.input.started              — input tool mulai {id, name}
  *    session.tool.called                     — model meminta tool {id, input.args}
- *    session.tool.succeeded / session.tool.failed {error} — hasil eksekusi tool
+ *    session.tool.success / session.tool.succeeded — hasil eksekusi tool
+ *    (v2.4.2 memakai `tool.success`; `tool.succeeded` = varian lama)
  *    session.step.ended                      — akhir langkah {finish, tokens}
  *    session.usage.updated                   — token usage
  *    session.execution.succeeded / failed    — terminal run
@@ -431,7 +432,8 @@ function translate(rec, st) {
       st.emit({ type: 'tool', id: d.id, name, args });
       break;
     }
-    case 'session.tool.succeeded': {
+    case 'session.tool.succeeded':
+    case 'session.tool.success': {
       const acc = accOf(d.assistantMessageID);
       const output = d.output != null ? String(d.output)
         : (d.content != null ? String(d.content) : '(kosong)');
@@ -562,7 +564,7 @@ function newAcc() { return { text: '', thinking: '', toolCalls: [], results: new
 function isTerminalEvent(rec) {
   const t = rec && rec.type;
   if (!t) return false;
-  if (t === 'session.execution.succeeded' || t === 'session.execution.failed' || t === 'session.error') return true;
+  if (t === 'session.execution.succeeded' || t === 'session.execution.failed' || t === 'session.execution.interrupted' || t === 'session.error') return true;
   if (t === 'session.ended' || t === 'session.completed' || t === 'run.completed' || t === 'run.failed') return true;
   // session.error dengan data berisi error message
   if (t === 'error' && rec.data && (rec.data.error || rec.data.message)) return true;
