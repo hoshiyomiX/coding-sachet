@@ -26,7 +26,7 @@ import kotlinx.serialization.json.put
  */
 object OcOptions {
     const val DEFAULT_ORCHESTRATOR = "free/glm-5.3-flash"
-    const val DEFAULT_EXECUTOR = "free/glm-5.3-flash"
+    const val DEFAULT_EXECUTOR = "free/minimax-m3.1-flash"
     const val DEFAULT_PROVIDER = "apinex"
 
     /** Objek `{ "oc": { orchestrator?, executor? } }`, atau null bila
