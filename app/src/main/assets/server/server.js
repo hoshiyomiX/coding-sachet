@@ -20,8 +20,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { config, providerById, HOME } = require('./config');
-const { runAgent, verifyModels } = require('./agent');
-const { runPiChat, piBundleAvailable, parseDualConfig } = require('./pi-bridge');
+const { verifyModels } = require('./verify');
 const { runOcChat, ocBundleAvailable, parseDualConfig: parseOcDualConfig } = require('./oc-bridge');
 const { safePath, listDir, readFile, writeFile } = require('./tools');
 const { fetchWithRetry, fetchRetryTimeout, netErrorDetail } = require('./net');
@@ -355,7 +354,6 @@ async function route(req, res) {
       ok: true, service: 'sachet-agent', version: config.version,
       node: process.version, workdir: config.workdir,
       engine: config.engine,
-      piBundle: piBundleAvailable(),
       ocBundle: ocBundleAvailable(),
       providers: Object.fromEntries(
         Object.entries(config.providers).map(([id, p]) => [id, p.baseUrl])
@@ -407,43 +405,21 @@ async function route(req, res) {
       return sendJson(res, 400, { error: 'model dan messages wajib' });
     }
 
-    // T-ML68 #1: konfigurasi dual-model (Settings → Konfigurasi JSON, kunci
-    // "pi") — orchestrator menimpa model sesi, executor mengambil alih
-    // putaran setelah tool pertama. Kunci "pi" DIBUANG dari options legacy
-    // agar tidak ikut terkirim ke gateway (bukan opsi OpenAI-compatible).
-    // T-ML70 (diagnosis logcat 2026-11-24: "gagal switch" ternyata konfigurasi
-    // tak pernah tiba + gagal diam-diam): parsing dinaikkan SEBELUM baris
-    // "chat mulai" supaya executor aktif terbaca dari situ; kunci pi yang
-    // tidak valid atau engine bukan Pi kini BERSUARA (WRN) — bukan no-op senyap.
-    const dual = parseDualConfig(body.options) || null;
-    if (!dual && body.options && typeof body.options === 'object' && !Array.isArray(body.options) && 'pi' in body.options) {
-      log.wrn('srv', `kunci "pi" diabaikan: butuh {"pi":{"orchestrator":"…","executor":"…"}} non-kosong dan tidak identik (diterima: ${JSON.stringify(body.options.pi).slice(0, 160)})`);
-    }
-    // Engine ketiga (OpenCode): kunci "oc" — orchestrator/executor setara Pi.
+    // Engine SATU-SATUNYA: OpenCode (owner order — engine Pi & legacy
+    // dihapus). Konfigurasi dual-model kunci "oc" di options; kunci asing
+    // lain di options diteruskan sebagai settings model (temperature dll.).
     const ocDual = parseOcDualConfig(body.options) || null;
-    if (!ocDual && body.options && typeof body.options === 'object' && !Array.isArray(body.options) && 'oc' in body.options) {
-      log.wrn('srv', `kunci "oc" diabaikan: butuh {"oc":{"orchestrator":"…","executor":"…"}} non-kosong dan tidak identik (diterima: ${JSON.stringify(body.options.oc).slice(0, 160)})`);
-    }
-    const legacyOptions = body.options && typeof body.options === 'object' && !Array.isArray(body.options) && ('pi' in body.options || 'oc' in body.options)
-      ? Object.fromEntries(Object.entries(body.options).filter(([k]) => k !== 'pi' && k !== 'oc'))
+    const legacyOptions = body.options && typeof body.options === 'object' && !Array.isArray(body.options)
+      ? Object.fromEntries(Object.entries(body.options).filter(([k]) => k !== 'oc'))
       : body.options;
-    const usePi = config.engine === 'pi';
-    const piReady = usePi && piBundleAvailable();
-    const useOc = config.engine === 'oc';
-    const ocReady = useOc && ocBundleAvailable();
-    if (dual && !piReady) {
-      log.wrn('srv', `kunci "pi" aktif tapi engine=${config.engine}${usePi ? ' dan bundle Pi tidak ditemukan' : ' (bukan engine Pi)'} — dual-model tidak berjalan, run model tunggal`);
-    }
+    const ocReady = ocBundleAvailable();
     if (ocDual && !ocReady) {
-      log.wrn('srv', `kunci "oc" aktif tapi engine=${config.engine}${useOc ? ' dan biner opencode tidak ditemukan' : ' (bukan engine OpenCode)'} — dual-model tidak berjalan, run model tunggal`);
+      log.wrn('srv', `kunci "oc" aktif tapi biner opencode tidak ditemukan — dual-model tidak berjalan, run model tunggal`);
     }
 
-    log.inf('srv', `chat mulai ${providerId} ${body.model} engine=${config.engine}${(dual && dual.executor) || (ocDual && ocDual.executor) ? ` executor=${(ocDual && ocDual.executor) || dual.executor}` : ''} msgs=${body.messages.length}${typeof body.workdir === 'string' && body.workdir ? ` workdir=${body.workdir.slice(0, 160)}` : ''}`);
+    log.inf('srv', `chat mulai ${providerId} ${body.model} engine=${config.engine}${ocDual && ocDual.executor ? ` executor=${ocDual.executor}` : ''} msgs=${body.messages.length}${typeof body.workdir === 'string' && body.workdir ? ` workdir=${body.workdir.slice(0, 160)}` : ''}`);
     const chatT0 = Date.now();
     let chatTurns = 0;
-    if (dual && piReady) {
-      log.inf('srv', `dual-model pi: orchestrator=${dual.orchestrator || body.model} executor=${dual.executor || '(tidak ada)'}`);
-    }
     if (ocDual && ocReady) {
       log.inf('srv', `dual-model oc: orchestrator=${ocDual.orchestrator || body.model} executor=${ocDual.executor || '(tidak ada)'}`);
     }
@@ -464,60 +440,25 @@ async function route(req, res) {
     req.on('close', () => abort.abort());
 
     try {
-      // T-ML45: pemilihan engine. Pi hanya jalan bila bundle tersedia di
-      // rootfs — bila tidak (aset gagal diekstrak), jatuh ke legacy dengan
-      // log keras: chat tetap jalan, tapi PoC-nya bohong kalau didiamkan.
-      // (usePi/piReady sudah dihitung di atas sebelum baris "chat mulai".)
-      if (usePi && !piReady) {
-        log.err('srv', `engine=pi tapi bundle Pi tidak ditemukan — FALLBACK ke engine legacy (periksa ekstraksi ${process.env.SACHET_PI_BUNDLE_DIR || '/opt/sachet/pi-bundle'})`);
+      // Engine oc adalah SATU-SATUNYA jalur chat (Pi & legacy dihapus).
+      // Biner hilang (ABI tak didukung / ekstraksi gagal) = error jelas,
+      // bukan fallback senyap.
+      if (!ocReady) {
+        throw new Error(`Engine OpenCode tidak tersedia (biner ${process.env.SACHET_OC_BIN || '/opt/sachet/opencode/bin/opencode'} tidak ditemukan) — periksa ekstraksi engine di Pengaturan`);
       }
-      if (useOc && !ocReady) {
-        log.err('srv', `engine=oc tapi biner opencode tidak ditemukan — FALLBACK ke engine legacy (periksa ekstraksi ${process.env.SACHET_OC_BIN || '/opt/sachet/opencode/bin/opencode'})`);
-      }
-      let added;
-      if (ocReady) {
-        added = await runOcChat({
-          apiKey: key,
-          providerId,
-          model: (ocDual && ocDual.orchestrator) || body.model,
-          executor: (ocDual && ocDual.executor) || null,
-          messages: body.messages,
-          workdir: typeof body.workdir === 'string' ? body.workdir.slice(0, 512) : undefined,
-          signal: abort.signal,
-          emit,
-        });
-      } else if (piReady) {
-        added = await runPiChat({
-          apiKey: key,
-          providerId,
-          model: (dual && dual.orchestrator) || body.model,
-          executor: (dual && dual.executor) || null,
-          messages: body.messages,
-          workdir: typeof body.workdir === 'string' ? body.workdir.slice(0, 512) : undefined,
-          signal: abort.signal,
-          emit,
-        });
-      } else {
-        added = await runAgent({
-          apiKey: key,
-          providerId,
-          model: body.model,
-          messages: body.messages,
-          systemPrompt: body.systemPrompt,
-          // OpenAI-compatible request options (Settings → Konfigurasi JSON):
-          // sanitized inside the agent; reserved keys can never pass.
-          options: legacyOptions,
-          // Per-session project folder (T-ML28: one project per folder). The
-          // agent validates it against the sandbox and creates it when absent;
-          // invalid values silently fall back to the server's default workdir.
-          workdir: typeof body.workdir === 'string' ? body.workdir.slice(0, 512) : undefined,
-          signal: abort.signal,
-          emit,
-        });
-      }
+      const added = await runOcChat({
+        apiKey: key,
+        providerId,
+        model: (ocDual && ocDual.orchestrator) || body.model,
+        executor: (ocDual && ocDual.executor) || null,
+        messages: body.messages,
+        options: legacyOptions,
+        workdir: typeof body.workdir === 'string' ? body.workdir.slice(0, 512) : undefined,
+        signal: abort.signal,
+        emit,
+      });
       chatTurns = added.filter((m) => m.role === 'assistant').length;
-      const engineLabel = ocReady ? 'oc' : piReady ? 'pi' : 'legacy';
-      log.inf('srv', `chat selesai ${providerId} ${body.model} engine=${engineLabel} turns=${chatTurns} msgs+${added.length} ${Date.now() - chatT0}ms`);
+      log.inf('srv', `chat selesai ${providerId} ${body.model} engine=oc turns=${chatTurns} msgs+${added.length} ${Date.now() - chatT0}ms`);
     } catch (e) {
       // A user stop (stop button / screen close) aborts the run — that is a
       // normal exit, not a failure; keep the error channel for real faults.

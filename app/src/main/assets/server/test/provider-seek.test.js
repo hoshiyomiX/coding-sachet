@@ -4,7 +4,6 @@
 //   1. /api/models menyaring model non-chat (JEV judge, endpoint khusus)
 //   2. /api/quota membaca header x-quota-* (tidak ada endpoint kuota)
 //   3. sweep probe menandai free:true (freeByProbe — bersama NIM)
-//   4. runAgent end-to-end via seek: body chat tanpa max_tokens paksa
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -150,7 +149,7 @@ test('seek: sweep probe marks answering models free (freeByProbe, same as NIM)',
   t.after(() => gw.close());
   useSeekGateway({ seek: gw });
 
-  const { verifyModels } = require('../agent');
+  const { verifyModels } = require('../verify');
   const events = [];
   await verifyModels({
     apiKey: 'hms-test-4',
@@ -181,7 +180,7 @@ test('seek: NIM regression — probe still marks free:true after the freeByProbe
   t.after(() => gw.close());
   useSeekGateway({ nvidia: gw });
 
-  const { verifyModels } = require('../agent');
+  const { verifyModels } = require('../verify');
   const events = [];
   await verifyModels({
     apiKey: 'nvapi-test',
@@ -193,28 +192,4 @@ test('seek: NIM regression — probe still marks free:true after the freeByProbe
   const alive = events.find((e) => e.type === 'result');
   assert.strictEqual(alive.ok, true);
   assert.strictEqual(alive.free, true, 'NIM bebas dipakai begitu menjawab — perilaku lama dipertahankan');
-});
-
-test('seek: agent loop round trip via the seek provider (no forced max_tokens)', async (t) => {
-  const gw = await startMockGateway([{ kind: 'text', text: 'Selesai! Jawaban singkat.' }], {
-    key: 'hms-test-5',
-    models: ['deepseek-v4.1-flash-free'],
-  });
-  t.after(() => gw.close());
-  useSeekGateway({ seek: gw });
-
-  const { runAgent } = require('../agent');
-  const events = [];
-  const added = await runAgent({
-    apiKey: 'hms-test-5',
-    providerId: 'seek',
-    model: 'deepseek-v4.1-flash-free',
-    messages: [{ role: 'user', content: 'tes singkat' }],
-    emit: (ev) => events.push(ev),
-  });
-  assert.ok(added.some((m) => m.role === 'assistant' && m.content.includes('Selesai')));
-  // maxTokens null → the gateway's own default output limit applies; the
-  // app must not force one (unlike NIM's 4096).
-  assert.strictEqual(gw.requests.length > 0, true);
-  assert.strictEqual(gw.requests[0].max_tokens, undefined);
 });

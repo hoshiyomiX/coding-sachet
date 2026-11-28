@@ -82,7 +82,7 @@ const APPEND_SYSTEM =
   'Finish coding tasks end-to-end with the tools available.\n' +
   'Work economically — every additional round is slow on this device and re-sends the whole conversation as input tokens:\n' +
   '- Batch independent commands into ONE bash call (&& or ;) or several tool calls in a single reply.\n' +
-  '- Never re-read a file you already read this session; read only the line ranges you need (view_range).\n' +
+  '- Never re-read a file you already read this session; read only the line ranges you need (read with offset/limit).\n' +
   '- Prefer targeted searches (grep, glob) over dumping whole files or directories.\n' +
   '- Do not narrate or announce steps before doing them — act first, then summarize at the end.\n' +
   '- Keep conversational answers short. Write code carefully but concisely; do not restate file contents in the reply.\n' +
@@ -93,7 +93,7 @@ const APPEND_SYSTEM =
 const OC_CONTINUE_PROMPT =
   'You are now the EXECUTOR. The orchestrator has analyzed the task and left ' +
   'a numbered plan in the session history. Execute that plan step by step: ' +
-  'use tools (bash, read_file, write_file, list_dir) for every step, batch ' +
+  'use tools (bash, read, write, edit, glob, grep, list) for every step, batch ' +
   'independent commands into one call, verify by running code, and finish ' +
   'with a short summary of what was done.';
 
@@ -108,11 +108,17 @@ const OC_ORCH_ROLE =
 /** System prompt ringkas yang *mengganti* prompt bawaan OpenCode (~4,8K tok
  *  baseline) agar biaya per-task turun (Path B, AUDIT-OPENCODE.md §10).
  *  Dipakai sebagai `systemPrompt` di opencode.json. Bahasa Inggris (OpenCode
- *  lebih stabil dengan instruksi Inggris), inti protokol coding saja. */
+ *  lebih stabil dengan instruksi Inggris), inti protokol coding saja.
+ *  PENTING (audit #1, 2026-11-27): daftar tool HARUS nama tool OpenCode
+ *  yang sebenarnya (bash/read/write/edit/glob/grep/list/webfetch/todo) —
+ *  prompt lama menyebut read_file/read_lines/write_file/list_dir (nama tool
+ *  engine legacy) dan model menurutinya → "No tool named … is currently
+ *  available" (bukti event live oc-audit-dir, 2/2 run mock memanggil tool
+ *  yang tidak ada). */
 const OC_SYSTEM_PROMPT =
   'You are a coding agent in Ubuntu 24.04 proot on the user\'s phone. ' +
   'Work folder: session project folder, or /sdcard/coding-sachet. ' +
-  'Tools: bash, read_file, read_lines, write_file, list_dir, todo. ' +
+  'Tools: bash, read, write, edit, glob, grep, list, webfetch, todo. ' +
   'Always answer in the user\'s language. Finish coding tasks end-to-end. ' +
   'Work economically: batch independent commands into ONE bash call; never re-read files; ' +
   'targeted grep/glob over dumping; no narration, no restating files; short answers. ' +
@@ -185,10 +191,18 @@ function writeState(dir, st) {
 
 /** Tulis opencode.json untuk satu kunci: guardrails removed (permission allow)
  *  + provider gateway app (OpenAI-compatible) dengan model primer + executor
- *  terdaftar. XDG_CONFIG_HOME=<dir>, file di <dir>/opencode/opencode.json. */
-function writeOpencodeConfig(dir, { provider, model, apiKey, executor }) {
+ *  terdaftar. XDG_CONFIG_HOME=<dir>, file di <dir>/opencode/opencode.json.
+ *  [options] = field OpenAI-compatible terstruktur dari Settings (Konfigurasi
+ *  JSON) — audit #1: dulu TIDAK PERNAH diterapkan engine oc (temperature dll.
+ *  hanya jalan di engine legacy yang sudah dihapus). Kini diteruskan ke spec
+ *  model OpenCode (model settings AI SDK): temperature/top_p/max_tokens. */
+function writeOpencodeConfig(dir, { provider, model, apiKey, executor, options }) {
   const models = { [model]: { name: model } };
   if (executor && executor !== model) models[executor] = { name: executor };
+  const settings = sanitizeModelSettings(options);
+  if (Object.keys(settings).length) {
+    for (const id of Object.keys(models)) models[id] = { ...models[id], options: settings };
+  }
   const spec = {
     $schema: 'https://opencode.ai/config.json',
     // Path B: system prompt ringkas mengganti built-in OpenCode (~4,8K tok
@@ -215,6 +229,23 @@ function writeOpencodeConfig(dir, { provider, model, apiKey, executor }) {
   fs.writeFileSync(path.join(cfgDir, 'opencode.json'), JSON.stringify(spec, null, 2));
 }
 function providerId(p) { return p && p.id ? p.id : 'app'; }
+
+/** Field request OpenAI-compatible yang aman diteruskan ke settings model
+ *  OpenCode (audit #1). Angka divalidasi; kunci lain diabaikan. */
+function sanitizeModelSettings(options) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) return {};
+  const out = {};
+  const num = (k, min, max, int = false) => {
+    const v = options[k];
+    if (v === undefined || v === null) return;
+    const n = int ? Number.parseInt(v, 10) : Number(v);
+    if (Number.isFinite(n) && n >= min && n <= max) out[k] = n;
+  };
+  num('temperature', 0, 2);
+  num('top_p', 0, 1);
+  num('max_tokens', 1, Number.MAX_SAFE_INTEGER, true);
+  return out;
+}
 
 // ---------------------------------------------------------------- serve child
 
@@ -321,7 +352,7 @@ async function killServe() {
 }
 
 /** Pastikan serve untuk kunci ini hidup & sehat. Melempar bila biner hilang. */
-async function ensureServe({ apiKey, providerId, model, executor, workdir }) {
+async function ensureServe({ apiKey, providerId, model, executor, workdir, options }) {
   const key = sessionKey(providerId, model, executor, workdir, sha(apiKey).slice(0, 12));
   const keyhash = sha(key).slice(0, 16);
   const dir = path.join(STATE_DIR, keyhash);
@@ -334,7 +365,7 @@ async function ensureServe({ apiKey, providerId, model, executor, workdir }) {
   if (!provider) throw new Error(`Provider tidak dikenal: ${providerId}`);
 
   await killServe();
-  writeOpencodeConfig(dir, { provider, model, apiKey, executor });
+  writeOpencodeConfig(dir, { provider, model, apiKey, executor, options });
 
   const port = await freePort();
   const password = crypto.randomBytes(24).toString('base64url');
@@ -649,7 +680,7 @@ function promptFor(messages, seen, fresh) {
 // ---------------------------------------------------------------- API utama
 
 /** Satu run chat lewat engine OpenCode — kontrak sama dengan runPiChat. */
-async function runOcChat({ apiKey, providerId, model, executor, messages, signal, emit, workdir }) {
+async function runOcChat({ apiKey, providerId, model, executor, messages, options, signal, emit, workdir }) {
   if (!Array.isArray(messages)) throw new Error('messages wajib array');
   const wd = resolveWorkdir(workdir);
 
@@ -667,7 +698,7 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
   const added = [];
 
   const runAttempt = async (attempt) => {
-    const entry = await ensureServe({ apiKey, providerId, model, executor, workdir: wd });
+    const entry = await ensureServe({ apiKey, providerId, model, executor, workdir: wd, options });
     const { port, password } = entry;
     const dualExecutor = executor && executor !== model ? executor : null;
 
@@ -893,5 +924,5 @@ module.exports = {
   ocBundleAvailable,
   parseDualConfig,
   killServe,
-  _internals: { canonicalMsg, hashPrefix, promptFor, writeOpencodeConfig, isRetryableError, APPEND_SYSTEM, translate, newAcc, isTerminalEvent, terminalError, isBusyRejection, interruptSession, SILENCE_MS, TOOL_SILENCE_MS },
+  _internals: { canonicalMsg, hashPrefix, promptFor, writeOpencodeConfig, sanitizeModelSettings, isRetryableError, APPEND_SYSTEM, OC_SYSTEM_PROMPT, translate, newAcc, isTerminalEvent, terminalError, isBusyRejection, interruptSession, SILENCE_MS, TOOL_SILENCE_MS },
 };

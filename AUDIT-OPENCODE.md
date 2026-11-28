@@ -156,3 +156,54 @@ Artefak: `app/src/main/assets/opencode/opencode-config.json` (di-emit `scripts/v
 | legacy (`agent.js`) | Aktif | Fallback | Paling hemat baseline, no dual-model |
 | pi (`pi-bridge.js`) | Aktif | Opsional | Dual-model via RPC `set_model` |
 | oc (`oc-bridge.js`) | Aktif | **Utama** | Dual-model via POST `/api/session/{id}/model`, `systemPrompt` trim |
+
+## 12. AUDIT KONFIG + PEMBERSIHAN ENGINE (owner order 2026-11-27)
+
+### #1 Audit config.json terhadap logcat
+
+**Config runtime efektif engine oc BUKAN aset statis
+`assets/opencode/opencode-config.json`** (itu artefak vendor + catatan
+guardrails) — `opencode serve` di-spawn oleh oc-bridge.js dengan
+`XDG_CONFIG_HOME` menunjuk config yang DITULIS dinamis oleh
+`writeOpencodeConfig()` (permission allow + provider gateway + systemPrompt
+trim). Logcat (2026-11-26-144758/-151104) membuktikan config ini BEKERJA:
+spawn serve → listening → session 200 → turn selesai (20 turn / 697 s).
+
+**Temuan + perbaikan:**
+1. **Nama tool salah di prompt (FATAL kualitas)** — `OC_SYSTEM_PROMPT` &
+   `OC_CONTINUE_PROMPT` menyebut `read_file/read_lines/write_file/list_dir`
+   (nama tool engine legacy) yang TIDAK ADA di OpenCode. Bukti event live:
+   model memanggil tool tak-kenal → `No tool named … is currently available`
+   → step failed. Diperbaiki ke tool OpenCode asli:
+   `bash, read, write, edit, glob, grep, list, webfetch, todo`.
+2. **Options terstruktur tak pernah sampai engine oc** — temperature/top_p/
+   max_tokens dari Settings hanya dipakai engine legacy. Kini
+   `runOcChat` menerima `options`, `sanitizeModelSettings()` menyaring
+   field OpenAI-compatible aman, dan nilainya masuk `models[*].options`
+   di opencode.json (settings AI SDK per model).
+3. **Noise kunci "pi"** — app lama masih mengirim seksi `"pi"` di options
+   → WRN `kunci "pi" aktif tapi engine=oc` tiap chat. Akar: builder pi
+   masih hidup di sisi app. Dihapus total (lihat #3).
+
+### #2 Pratinjau JSON Settings = persis wire
+
+`buildMerged()` dulu hanya menggabung seksi `"pi"` — seksi `"oc"` (yang
+benar-benar dikirim ChatEngine) TIDAK pernah tampil di preview. Kini
+preview memakai `OcOptions.build(...)` (builder yang sama dengan
+ChatEngine.requestOptions) → yang terlihat = yang terkirim, engine
+satu-satunya.
+
+### #3 Engine Pi & legacy DIHAPUS — oc satu-satunya engine
+
+- Server: `agent.js` + `pi-bridge.js` + `verify.js` (ekstraksi sweep) —
+  chat route oc-only; biner hilang → error JELAS `Engine OpenCode tidak
+  tersedia …` (tanpa fallback senyap). `config.engine` konstan `'oc'`.
+- Aset `assets/pi/*` + `scripts/vendor-pi-bundle.sh` dihapus;
+  RuntimeController tidak lagi mengekstrak/meng-heal bundle Pi;
+  SERVER_FILES kini: config/tools/server/net/ratelimit/log/verify/oc-bridge.
+- Kotlin: PiOptions.kt, prefs `enginePi/piOrchestrator/piExecutor/piProvider/
+  piDefaultsForced`, toggle engine di Settings, selector dual pi, switch
+  SACHET_ENGINE (kini konstan `"oc"`), default migrasi → oc (ocDefaultsForced).
+- Test: 73 hijau (server 18 — termasuk test baru "oc-only, tanpa biner →
+  error jelas, tanpa fallback"; verify/oc-stuck/ratelimit/log/tools 51;
+  provider 11 — test runAgent dihapus mengikuti engine).

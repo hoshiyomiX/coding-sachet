@@ -1,7 +1,7 @@
 'use strict';
-// Integration tests: the full agent loop against the mock gateway,
-// plus the HTTP surface of server.js — for BOTH providers (APInex
-// and NVIDIA NIM), which the mock impersonates on separate ports.
+// Integration tests: the HTTP surface of server.js (engine oc-only —
+// Pi & legacy DIHAPUS; chat butuh biner OpenCode yang tidak ada di
+// lingkungan test, jadi rute chat diuji jalur error jelasnya).
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -20,6 +20,11 @@ process.env.SACHET_PORT = '0'; // will be replaced once we know a free port
 process.env.SACHET_RESOLV_CONF = path.join(ROOT, 'resolv.conf');
 // Keep the fire-and-forget gateway warm-up out of the test process.
 process.env.SACHET_NO_WARMUP = '1';
+// Chat route is oc-ONLY (Pi & legacy deleted). Dev machines may have the real
+// binary at /opt/sachet/opencode/bin/opencode — force the no-binary path so
+// the suite never spawns a live `opencode serve` (hermetic + fast). Must be
+// set BEFORE the first require of oc-bridge (OC_BIN is read at module load).
+process.env.SACHET_OC_BIN = '/nonexistent/opencode';
 
 /** Point both providers at the given mock gateways and reset the roots. */
 function useGateways({ apinex, nvidia }) {
@@ -44,237 +49,14 @@ async function waitUntil(cond, ms = 3000) {
   assert.ok(cond(), 'condition never became true');
 }
 
-test('agent loop: tool round trip then final text (apinex)', async (t) => {
-  const gw = await startMockGateway([
-    {
-      kind: 'tools',
-      text: 'Aku cek dulu ya.',
-      calls: [{ id: 'call_1', name: 'bash', args: { command: 'echo satu-dua-tiga' } }],
-    },
-    { kind: 'text', text: 'Selesai! Perintahnya mencetak satu-dua-tiga.' },
-  ]);
+
+test('HTTP chat route: engine oc-only — tanpa biner → error JELAS, tanpa fallback senyap', async (t) => {
+  // Pi & legacy dihapus: satu-satunya jalur chat adalah OpenCode. Di
+  // lingkungan test biner tidak ada (SACHET_OC_BIN default /opt/sachet/…)
+  // → route harus menjawab error+done via SSE dan TIDAK memanggil gateway
+  // (fallback legacy lama sudah tidak ada).
+  const gw = await startMockGateway([{ kind: 'text', text: 'pong' }]);
   t.after(() => gw.close());
-
-  const config = useGateways({ apinex: gw });
-  const { runAgent } = require('../agent');
-  const events = [];
-  const added = await runAgent({
-    apiKey: 'sk-test-123',
-    providerId: 'apinex',
-    model: 'test-pro',
-    messages: [{ role: 'user', content: 'jalankan echo satu-dua-tiga' }],
-    signal: null,
-    emit: (e) => events.push(e),
-  });
-
-  const types = events.map((e) => e.type);
-  assert.ok(types.includes('turn'));
-  assert.ok(types.includes('think'));
-  assert.ok(types.includes('text'));
-  assert.ok(types.includes('tool'));
-  assert.ok(types.includes('toolend'));
-  assert.ok(types.includes('message'));
-  assert.strictEqual(types.at(-1), 'done');
-
-  const toolEvs = events.filter((e) => e.type === 'tool');
-  assert.strictEqual(toolEvs[0].name, 'bash');
-  assert.deepStrictEqual(toolEvs[0].args, { command: 'echo satu-dua-tiga' });
-
-  const toolend = events.find((e) => e.type === 'toolend');
-  assert.strictEqual(toolend.ok, true);
-  assert.ok(toolend.output.includes('satu-dua-tiga'));
-
-  // History: assistant(with toolCalls) + tool result + assistant(final)
-  assert.strictEqual(added.filter((m) => m.role === 'assistant').length, 2);
-  const first = added[0];
-  assert.strictEqual(first.toolCalls[0].name, 'bash');
-  assert.strictEqual(added[1].role, 'tool');
-  assert.strictEqual(added[1].toolCallId, 'call_1');
-
-  // The mock must have received the tool result as an OpenAI tool message.
-  const second = gw.requests[1];
-  const toolMsg = second.messages.find((m) => m.role === 'tool');
-  assert.ok(toolMsg);
-  assert.ok(toolMsg.content.includes('satu-dua-tiga'));
-  assert.strictEqual(second.messages.at(-1).role, 'tool');
-});
-
-test('agent loop: gateway error surfaces as an error event', async (t) => {
-  const gw = await startMockGateway([{ kind: 'error', status: 401, message: 'Invalid token' }]);
-  t.after(() => gw.close());
-
-  useGateways({ apinex: gw });
-  const { runAgent } = require('../agent');
-
-  // Direct call: the gateway error propagates out of runAgent.
-  await assert.rejects(
-    runAgent({
-      apiKey: 'sk-salah', providerId: 'apinex', model: 'test-pro',
-      messages: [{ role: 'user', content: 'hai' }],
-      emit: () => {},
-    }),
-    (e) => e.message.includes('401') && e.message.includes('Invalid token')
-  );
-});
-
-test('agent loop: APInex rate-limit (429) error carries a clear hint', async (t) => {
-  const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Too many requests', headers: { 'retry-after': '0' } }]);
-  t.after(() => gw.close());
-
-  useGateways({ apinex: gw });
-  const { runAgent } = require('../agent');
-
-  await assert.rejects(
-    runAgent({
-      apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',
-      messages: [{ role: 'user', content: 'hai' }],
-      emit: () => {},
-    }),
-    (e) => e.message.includes('429') && e.message.includes('Too many requests') &&
-      e.message.includes('Batas laju APInex tercapai')
-  );
-  // The bounded 429 retries happened before giving up (1 initial + 2 retries).
-  assert.strictEqual(gw.requests.length, 3);
-});
-
-test('agent loop: 429 is retried after retry-after, then succeeds', async (t) => {
-  const gw = await startMockGateway([
-    { kind: 'error', status: 429, message: 'Rate limit exceeded. Max 15 requests per minute', headers: { 'retry-after': '0' } },
-    { kind: 'text', text: 'Oke, lanjut lagi.' },
-  ]);
-  t.after(() => gw.close());
-
-  useGateways({ apinex: gw });
-  const { runAgent } = require('../agent');
-  const events = [];
-  const added = await runAgent({
-    apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',
-    messages: [{ role: 'user', content: 'hai' }],
-    emit: (e) => events.push(e),
-  });
-
-  assert.strictEqual(added.length, 1);
-  assert.ok(added[0].content.includes('lanjut lagi'));
-  assert.strictEqual(gw.requests.length, 2);
-  // A ratelimit wait hint was surfaced while backing off.
-  const waits = events.filter((e) => e.type === 'ratelimit');
-  assert.ok(waits.length >= 1);
-  assert.ok(waits[0].waitMs >= 500);
-});
-
-test('agent loop: NVIDIA NIM rate-limit (429) hint differs from APInex', async (t) => {
-  const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Too many requests', headers: { 'retry-after': '0' } }]);
-  t.after(() => gw.close());
-
-  useGateways({ nvidia: gw });
-  const { runAgent } = require('../agent');
-
-  await assert.rejects(
-    runAgent({
-      apiKey: 'nvapi-test-123', providerId: 'nvidia', model: 'nvidia/nemotron-3.5-bolt-e4b',
-      messages: [{ role: 'user', content: 'hai' }],
-      emit: () => {},
-    }),
-    (e) => e.message.includes('429') &&
-      e.message.includes('Batas laju NVIDIA NIM tercapai') &&
-      !e.message.includes('Batas laju APInex')
-  );
-});
-
-test('agent loop: NVIDIA requests carry max_tokens, APInex requests do not', async (t) => {
-  const nv = await startMockGateway([{ kind: 'text', text: 'ok' }], { key: 'nvapi-test-123' });
-  const ap = await startMockGateway([{ kind: 'text', text: 'ok' }]);
-  t.after(() => nv.close());
-  t.after(() => ap.close());
-
-  useGateways({ apinex: ap, nvidia: nv });
-  const { runAgent } = require('../agent');
-
-  await runAgent({
-    apiKey: 'nvapi-test-123', providerId: 'nvidia', model: 'nv-x',
-    messages: [{ role: 'user', content: 'hai' }],
-    emit: () => {},
-  });
-  assert.strictEqual(nv.requests[0].max_tokens, 4096);
-  assert.strictEqual(nv.chatAuths[0], 'Bearer nvapi-test-123');
-
-  await runAgent({
-    apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',
-    messages: [{ role: 'user', content: 'hai' }],
-    emit: () => {},
-  });
-  assert.strictEqual('max_tokens' in ap.requests[0], false);
-});
-
-test('JSON options: sanitized fields reach the gateway body, reserved keys never do', async (t) => {
-  const ap = await startMockGateway([{ kind: 'text', text: 'ok' }]);
-  const nv = await startMockGateway([{ kind: 'text', text: 'ok' }], { key: 'nvapi-test-123' });
-  t.after(() => ap.close());
-  t.after(() => nv.close());
-
-  useGateways({ apinex: ap, nvidia: nv });
-  const { runAgent } = require('../agent');
-
-  await runAgent({
-    apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',
-    messages: [{ role: 'user', content: 'hai' }],
-    options: {
-      temperature: 0.4,
-      top_p: 0.9,
-      max_tokens: 512,
-      presence_penalty: -0.5,
-      frequency_penalty: 1.5,
-      seed: 42,
-      stop: ['\n\n', 'SELESAI'],
-      reasoning_effort: 'medium',
-      // reserved — must be stripped
-      model: 'gateway-hax', stream: false, n: 5, tool_choice: 'required',
-      // invalid values — must be dropped
-      temperature2: 'x', bogus: { deep: [1, 2] },
-    },
-    emit: () => {},
-  });
-  const b = ap.requests[0];
-  assert.strictEqual(b.temperature, 0.4);
-  assert.strictEqual(b.top_p, 0.9);
-  assert.strictEqual(b.max_tokens, 512);
-  assert.strictEqual(b.presence_penalty, -0.5);
-  assert.strictEqual(b.frequency_penalty, 1.5);
-  assert.strictEqual(b.seed, 42);
-  assert.deepStrictEqual(b.stop, ['\n\n', 'SELESAI']);
-  assert.strictEqual(b.reasoning_effort, 'medium');
-  assert.strictEqual(b.model, 'test-pro');
-  assert.strictEqual(b.stream, true);
-  assert.strictEqual('n' in b, false);
-  assert.strictEqual(b.tool_choice, 'auto'); // the agent's own value
-
-  // Out-of-range numbers are dropped, not fatal.
-  await runAgent({
-    apiKey: 'sk-test-123', providerId: 'apinex', model: 'test-pro',
-    messages: [{ role: 'user', content: 'hai' }],
-    options: { temperature: 9.9, top_p: 'nope', max_tokens: -5, reasoning_effort: 'ultra' },
-    emit: () => {},
-  });
-  const b2 = ap.requests[1];
-  assert.strictEqual('temperature' in b2, false);
-  assert.strictEqual('top_p' in b2, false);
-  assert.strictEqual('max_tokens' in b2, false);
-  assert.strictEqual('reasoning_effort' in b2, false);
-
-  // A user max_tokens overrides the NIM provider default (4096).
-  await runAgent({
-    apiKey: 'nvapi-test-123', providerId: 'nvidia', model: 'nv-x',
-    messages: [{ role: 'user', content: 'hai' }],
-    options: { max_tokens: 2048 },
-    emit: () => {},
-  });
-  assert.strictEqual(nv.requests[0].max_tokens, 2048);
-});
-
-test('HTTP chat route: gateway errors become error + done SSE events', async (t) => {
-  const gw = await startMockGateway([{ kind: 'error', status: 429, message: 'Quota habis', headers: { 'retry-after': '0' } }]);
-  t.after(() => gw.close());
-
   useGateways({ apinex: gw });
 
   const { start } = require('../server');
@@ -286,76 +68,13 @@ test('HTTP chat route: gateway errors become error + done SSE events', async (t)
   const events = await collectSse(
     port, '/api/chat',
     { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
-    { model: 'test-pro', messages: [{ role: 'user', content: 'hai' }] }
+    { model: 'test-pro', messages: [{ role: 'user', content: 'hai' }], options: { oc: { orchestrator: 'a', executor: 'b' }, temperature: 0.5 } }
   );
   const err = events.find((e) => e.type === 'error');
-  assert.ok(err && err.message.includes('Quota habis'));
+  assert.ok(err && /OpenCode/.test(err.message), 'error menyebut engine OpenCode: ' + (err && err.message));
   assert.strictEqual(events.at(-1).type, 'done');
+  assert.strictEqual(gw.requests.length, 0, 'tidak ada panggilan gateway chat (fallback sudah dihapus)');
 });
-
-test('HTTP chat route: invalid "pi" key is ignored + stripped, run stays single-model (T-ML70)', async (t) => {
-  // Diagnosis logcat 2026-11-24: konfigurasi dual gagal diam-diam. Kunci pi
-  // yang TIDAK valid (identik / kosong) kini bersuara (WRN server) dan tidak
-  // pernah bocor ke gateway; opsi lain di sekitarnya tetap sampai.
-  const gw = await startMockGateway([{ text: 'pong' }]);
-  t.after(() => gw.close());
-
-  useGateways({ apinex: gw });
-
-  const { start } = require('../server');
-  const srv = start();
-  t.after(() => new Promise((r) => srv.close(r)));
-  await new Promise((r) => srv.on('listening', r));
-  const port = srv.address().port;
-
-  const events = await collectSse(
-    port, '/api/chat',
-    { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
-    {
-      model: 'test-pro',
-      messages: [{ role: 'user', content: 'hai' }],
-      options: { pi: { orchestrator: 'sama', executor: 'sama' }, temperature: 0.5 },
-    }
-  );
-  assert.strictEqual(events.at(-1).type, 'done');
-  const last = gw.requests.at(-1);
-  assert.ok(last, 'gateway menerima setidaknya satu request');
-  assert.strictEqual(last.model, 'test-pro');
-  assert.ok(!('pi' in last), 'kunci pi tidak boleh bocor ke gateway');
-  assert.strictEqual(last.temperature, 0.5, 'opsi lain tetap diteruskan');
-});
-
-test('HTTP chat route: valid "pi" without Pi engine → stripped, single model + WRN (T-ML70)', async (t) => {
-  // engine default lingkungan test = legacy (SACHET_ENGINE tidak diset) —
-  // kunci pi valid pun tidak menjalankan dual-model dan tidak bocor; run
-  // selesai normal dengan model tunggal.
-  const gw = await startMockGateway([{ text: 'pong' }]);
-  t.after(() => gw.close());
-
-  useGateways({ apinex: gw });
-
-  const { start } = require('../server');
-  const srv = start();
-  t.after(() => new Promise((r) => srv.close(r)));
-  await new Promise((r) => srv.on('listening', r));
-  const port = srv.address().port;
-
-  const events = await collectSse(
-    port, '/api/chat',
-    { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
-    {
-      model: 'test-pro',
-      messages: [{ role: 'user', content: 'hai' }],
-      options: { pi: { orchestrator: 'orch-mini', executor: 'exec-mini' } },
-    }
-  );
-  assert.strictEqual(events.at(-1).type, 'done');
-  const last = gw.requests.at(-1);
-  assert.ok(last, 'gateway menerima setidaknya satu request');
-  assert.strictEqual(last.model, 'test-pro');
-  assert.ok(!('pi' in last), 'kunci pi tidak boleh bocor ke gateway');
-});
-
 
 test('HTTP server: unknown provider is rejected with 400', async (t) => {
   const gw = await startMockGateway([]);
@@ -415,7 +134,7 @@ test('HTTP server: X-Sachet-Provider routes models to the right gateway', async 
 
 test('HTTP server: health, models proxy, chat SSE, file explorer', async (t) => {
   const gw = await startMockGateway([
-    { kind: 'tools', calls: [{ id: 'c1', name: 'write_file', args: { path: path.join(ROOT, 'root/work/notes.txt'), content: 'dari agent' } }] },
+    { kind: 'tools', calls: [] },
     { kind: 'text', text: 'File ditulis.' },
   ]);
   t.after(() => gw.close());
@@ -442,19 +161,18 @@ test('HTTP server: health, models proxy, chat SSE, file explorer', async (t) => 
   const bad = await getJson(port, '/api/models', { 'x-sachet-key': 'sk-salah' });
   assert.strictEqual(bad.status, 502);
 
-  // chat: agent writes a real file through the tool, then answers
+  // chat: oc-only tanpa biner → error JELAS, bukan fallback senyap
   const events = await collectSse(
     port, '/api/chat',
     { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
     { model: 'test-pro', messages: [{ role: 'user', content: 'tulis file notes.txt' }] }
   );
-  assert.ok(events.some((e) => e.type === 'tool' && e.name === 'write_file'));
-  assert.ok(events.some((e) => e.type === 'toolend' && e.ok));
+  assert.ok(events.some((e) => e.type === 'error' && /OpenCode/.test(e.message || '')), 'error menyebut engine OpenCode');
   assert.ok(events.at(-1).type === 'done');
-  // The file must really exist on disk.
-  assert.strictEqual(fs.readFileSync(path.join(ROOT, 'root/work/notes.txt'), 'utf8'), 'dari agent');
 
-  // file explorer API
+  // file explorer API — buat file langsung (chat tidak lagi membuat file:
+  // engine oc butuh biner yang tidak ada di lingkungan test).
+  fs.writeFileSync(path.join(ROOT, 'root/work/notes.txt'), 'dari agent');
   const ls = await getJson(port, `/api/fs?path=${encodeURIComponent(config.workdir)}`);
   assert.strictEqual(ls.status, 200);
   assert.ok(ls.body.entries.some((e) => e.name === 'notes.txt'));
@@ -648,77 +366,6 @@ test('HTTP server: /api/quota keeps a JSON null null — no fake "Sisa token: 0"
   assert.strictEqual(r2.status, 200);
   assert.strictEqual(r2.body.tokensRemaining, 19300000);
 });
-
-test('agent loop: history from a mid-session model switch is healed on the wire', async (t) => {
-  const gw = await startMockGateway([{ kind: 'text', text: 'siap' }]);
-  t.after(() => gw.close());
-  useGateways({ apinex: gw });
-  const { runAgent } = require('../agent');
-
-  // A completed round whose gateway streamed tool calls WITHOUT ids
-  // (some models do), persisted by an older turn.
-  await runAgent({
-    apiKey: 'sk-test-123', providerId: 'apinex', model: 'model-b',
-    messages: [
-      { role: 'user', content: 'tolong cek' },
-      { role: 'assistant', content: '', toolCalls: [{ id: '', name: 'bash', args: { command: 'pwd' } }] },
-      { role: 'tool', content: 'exit=0\n/root/work', toolCallId: '', name: 'bash' },
-      { role: 'user', content: 'lanjut' },
-    ],
-    emit: () => {},
-  });
-
-  const sent = gw.requests[0].messages;
-  const withCalls = sent.find((m) => m.role === 'assistant' && m.tool_calls);
-  assert.ok(withCalls, 'the completed round keeps its tool_calls');
-  assert.ok(withCalls.tool_calls[0].id.length > 4, 'empty ids are synthesized');
-  const toolMsg = sent.find((m) => m.role === 'tool');
-  assert.strictEqual(toolMsg.tool_call_id, withCalls.tool_calls[0].id);
-});
-
-test('agent loop: interrupted tool rounds and orphan results never reach the gateway', async (t) => {
-  const gw = await startMockGateway([{ kind: 'text', text: 'oke' }]);
-  t.after(() => gw.close());
-  useGateways({ apinex: gw });
-  const { runAgent } = require('../agent');
-
-  await runAgent({
-    apiKey: 'sk-test-123', providerId: 'apinex', model: 'model-b',
-    messages: [
-      { role: 'user', content: 'cek config' },
-      // orphan result: the assistant message that asked for it is gone
-      { role: 'tool', content: 'exit=0\nhantu', toolCallId: 'ghost', name: 'bash' },
-      // interrupted round: stop was pressed before the tool answered
-      // (its result never landed, the next message is a user turn)
-      { role: 'assistant', content: 'Aku cek dulu—', toolCalls: [{ id: '', name: 'bash', args: { command: 'cat app.conf' } }] },
-      { role: 'user', content: 'sudah cukup, lanjut' },
-    ],
-    emit: () => {},
-  });
-
-  const sent = gw.requests[0].messages;
-  assert.ok(!sent.some((m) => m.role === 'assistant' && m.tool_calls), 'dangling tool_calls are folded away');
-  assert.ok(!sent.some((m) => m.role === 'tool'), 'orphan tool results are dropped');
-  const plain = sent.find((m) => m.role === 'assistant');
-  assert.strictEqual(plain.content, 'Aku cek dulu—');
-});
-
-test('agent loop: a connect failure (VPN bring-up race) is retried, not failed', async (t) => {
-  const gw = await startMockGateway([{ kind: 'text', text: 'ok' }], { flakyChat: 1 });
-  t.after(() => gw.close());
-  useGateways({ apinex: gw });
-  const { runAgent } = require('../agent');
-
-  const added = await runAgent({
-    apiKey: 'sk-test-123', providerId: 'apinex', model: 'x',
-    messages: [{ role: 'user', content: 'hai' }],
-    emit: () => {},
-  });
-  assert.strictEqual(added[0].content, 'ok');
-  assert.strictEqual(gw.chatAttempts, 2); // first destroyed, retry delivered
-  assert.strictEqual(gw.requests.length, 1);
-});
-
 test('HTTP server: /api/models survives a dropped first connection', async (t) => {
   const gw = await startMockGateway([], { flakyModels: 1, key: 'sk-flaky-1' });
   t.after(() => gw.close());
@@ -882,208 +529,6 @@ test('warm-up: a dropped first connection is retried, then logged OK', async (t)
   await waitUntil(() => flaky.modelAttempts >= 2); // destroyed + retry
   assert.strictEqual(clean.modelAttempts, 1);
   config.warmupMinIntervalMs = orig;
-});
-
-// ---------- chat connect-phase resilience (NIM "no response" field fix) ----------
-
-test('chat: black-holed gateway connect → netretry hints, then a fast connect-timeout error', async (t) => {
-  // The gateway never answers — not even headers (a black-holed connect
-  // through a cold VPN tunnel). The chat path must retry with a fresh
-  // budget (surfacing 'netretry' events) and fail with a connect-timeout
-  // error in seconds, NOT hang silently up to the 5-minute request timer.
-  // The T-ML37 connect LADDER is disabled here (gatewayConnectRetries=0)
-  // so this test keeps pinning the quick in-fetch phase fast; the ladder
-  // itself is pinned by test/resilience.test.js.
-  const gw = await startMockGateway([{ kind: 'text', text: 'ok' }], { key: 'nvapi-test-123', hangChat: 99 });
-  t.after(() => gw.close());
-  const config = useGateways({ nvidia: gw });
-  const orig = config.connectTimeoutMs;
-  config.connectTimeoutMs = 200;
-  t.after(() => { config.connectTimeoutMs = orig; });
-  const origLadder = config.gatewayConnectRetries;
-  config.gatewayConnectRetries = 0;
-  t.after(() => { config.gatewayConnectRetries = origLadder; });
-
-  const { runAgent } = require('../agent');
-  const events = [];
-  const t0 = Date.now();
-  await assert.rejects(
-    runAgent({
-      apiKey: 'nvapi-test-123', providerId: 'nvidia', model: 'nv-x',
-      messages: [{ role: 'user', content: 'hai' }],
-      emit: (e) => events.push(e),
-    }),
-    (e) => e.message.includes('koneksi') && e.message.includes('percobaan')
-      && e.message.includes('NVIDIA NIM'), 'error names the failing gateway'
-  );
-  const retries = events.filter((e) => e.type === 'netretry');
-  assert.strictEqual(retries.length, 2, 'two fresh-budget retries before giving up');
-  assert.strictEqual(retries[0].attempt, 1);
-  assert.strictEqual(retries[0].provider, 'NVIDIA NIM', 'netretry carries the provider label');
-  assert.ok(Date.now() - t0 < 8000, 'fails fast instead of the 300s global timeout');
-});
-
-test('chat: hung first connect heals on retry (cold VPN path) and streams normally', async (t) => {
-  const gw = await startMockGateway([{ kind: 'text', text: 'pulih' }], { key: 'nvapi-test-123', hangChat: 1 });
-  t.after(() => gw.close());
-  const config = useGateways({ nvidia: gw });
-  const orig = config.connectTimeoutMs;
-  config.connectTimeoutMs = 200;
-  t.after(() => { config.connectTimeoutMs = orig; });
-
-  const { runAgent } = require('../agent');
-  const events = [];
-  const added = await runAgent({
-    apiKey: 'nvapi-test-123', providerId: 'nvidia', model: 'nv-x',
-    messages: [{ role: 'user', content: 'hai' }],
-    emit: (e) => events.push(e),
-  });
-  assert.strictEqual(added.at(-1).content, 'pulih');
-  const retries = events.filter((e) => e.type === 'netretry');
-  assert.strictEqual(retries.length, 1, 'exactly one reconnect hint');
-  assert.strictEqual(gw.chatAttempts, 2, 'first attempt hung, second answered');
-});
-
-// ---------- per-session project workdir (T-ML28: one project per folder) ----------
-
-test('chat: body.workdir pins the bash cwd to the project folder (auto-created)', async (t) => {
-  const gw = await startMockGateway([
-    { kind: 'tools', calls: [{ id: 'c1', name: 'bash', args: { command: 'pwd' } }] },
-    { kind: 'text', text: 'Sudah.' },
-  ]);
-  t.after(() => gw.close());
-
-  const config = useGateways({ apinex: gw });
-
-  const { start } = require('../server');
-  const srv = start();
-  t.after(() => new Promise((r) => srv.close(r)));
-  await new Promise((r) => srv.on('listening', r));
-  const port = srv.address().port;
-
-  const project = path.join(ROOT, 'root/work/proyek-alpha');
-  assert.ok(!fs.existsSync(project), 'precondition: folder proyek belum ada');
-
-  const events = await collectSse(
-    port, '/api/chat',
-    { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
-    { model: 'test-pro', messages: [{ role: 'user', content: 'pwd dong' }], workdir: project }
-  );
-  const toolend = events.find((e) => e.type === 'toolend');
-  assert.ok(toolend && toolend.ok);
-  // bash ran INSIDE the project folder (auto-created), not the default workdir
-  assert.ok(toolend.output.includes(project));
-  assert.ok(fs.existsSync(project), 'folder proyek dibuat otomatis');
-
-  // the model is told the session workdir in the bash tool description
-  const sent = gw.requests[0];
-  const bashTool = (sent.tools || []).find((tl) => tl.function && tl.function.name === 'bash');
-  assert.ok(bashTool, 'tool bash dikirim ke gateway');
-  assert.ok(bashTool.function.description.includes(project));
-});
-
-test('chat: workdir di luar sandbox → fallback diam ke workdir default', async (t) => {
-  const gw = await startMockGateway([
-    { kind: 'tools', calls: [{ id: 'c1', name: 'bash', args: { command: 'pwd' } }] },
-    { kind: 'text', text: 'OK.' },
-  ]);
-  t.after(() => gw.close());
-
-  const config = useGateways({ apinex: gw });
-
-  const { start } = require('../server');
-  const srv = start();
-  t.after(() => new Promise((r) => srv.close(r)));
-  await new Promise((r) => srv.on('listening', r));
-  const port = srv.address().port;
-
-  const events = await collectSse(
-    port, '/api/chat',
-    { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
-    { model: 'test-pro', messages: [{ role: 'user', content: 'pwd' }], workdir: '/etc' }
-  );
-  const toolend = events.find((e) => e.type === 'toolend');
-  assert.ok(toolend && toolend.ok);
-  assert.ok(toolend.output.includes(config.workdir));
-  assert.ok(!toolend.output.includes('/etc'));
-});
-
-// ---------- T-ML33: mid-stream socket cuts (the 2026-11-11 field crash) ----------
-// A VPN path hiccup cut an ESTABLISHED SSE stream ("terminated"), the body
-// cleanup floated a rejected cancel() promise, and the unhandledRejection
-// handler answered exit(1) — server dead, turn dead. These pin the fix.
-
-test('T-ML33 agent: stream cut before any data → transparent retry, nothing floats', async (t) => {
-  const gw = await startMockGateway([{ kind: 'text', text: 'pulih' }], { cutStream: 1 });
-  t.after(() => gw.close());
-  useGateways({ apinex: gw });
-  const { runAgent } = require('../agent');
-
-  // The exact regression guard: a cancel() on the errored body used to
-  // float as an unhandled rejection and kill the process.
-  const unhandled = [];
-  const sniff = (e) => unhandled.push(e);
-  process.on('unhandledRejection', sniff);
-  t.after(() => process.off('unhandledRejection', sniff));
-
-  const added = await runAgent({
-    apiKey: 'sk-test-123', providerId: 'apinex', model: 'x',
-    messages: [{ role: 'user', content: 'hai' }],
-    emit: () => {},
-  });
-  assert.strictEqual(added[added.length - 1].content, 'pulih');
-  assert.strictEqual(gw.chatAttempts, 2); // first cut mid-stream, retry delivered
-  // Give any floating rejection time to surface before judging the guard.
-  await new Promise((r) => setImmediate(r));
-  await new Promise((r) => setTimeout(r, 50));
-  assert.strictEqual(unhandled.length, 0);
-});
-
-test('T-ML33 agent: stream cut after partial text → friendly error, NO retry', async (t) => {
-  const gw = await startMockGateway([{ kind: 'text', text: 'tidak pernah sampai' }], {
-    cutStream: 1,
-    cutStreamText: 'sebagian…',
-  });
-  t.after(() => gw.close());
-  useGateways({ apinex: gw });
-  const { runAgent } = require('../agent');
-
-  await assert.rejects(
-    runAgent({
-      apiKey: 'sk-test-123', providerId: 'apinex', model: 'x',
-      messages: [{ role: 'user', content: 'hai' }],
-      emit: () => {},
-    }),
-    (e) => {
-      assert.match(e.message, /terputus di tengah balasan/);
-      return true;
-    }
-  );
-  // Partial content was already streamed to the user — a retry would
-  // duplicate visible text, so exactly ONE attempt may happen.
-  assert.strictEqual(gw.chatAttempts, 1);
-});
-
-test('T-ML33 server: mid-stream cut before data → retry heals the turn over HTTP', async (t) => {
-  const gw = await startMockGateway([{ kind: 'text', text: 'pulih juga' }], { cutStream: 1 });
-  t.after(() => gw.close());
-  useGateways({ apinex: gw });
-
-  const { start } = require('../server');
-  const srv = start();
-  t.after(() => new Promise((r) => srv.close(r)));
-  await new Promise((r) => srv.on('listening', r));
-  const port = srv.address().port;
-
-  const events = await collectSse(
-    port, '/api/chat',
-    { 'x-sachet-key': 'sk-test-123', 'content-type': 'application/json' },
-    { model: 'test-pro', messages: [{ role: 'user', content: 'hai' }] }
-  );
-  assert.ok(!events.some((e) => e.type === 'error'), 'no error event may surface');
-  assert.ok(events.find((e) => e.type === 'done'), 'turn completes cleanly');
-  assert.ok(events.find((e) => e.type === 'netretry'), 'reconnect hint surfaced');
-  assert.strictEqual(gw.chatAttempts, 2);
 });
 
 test('T-ML33 server: unhandledRejection burst policy — isolated survives, burst is fatal', () => {

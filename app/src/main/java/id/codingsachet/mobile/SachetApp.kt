@@ -41,16 +41,13 @@ object Graph {
         // Restore each provider's last live-verification results; the dots
         // render instantly and re-sweep only once they go stale (12 h).
         Providers.ALL.forEach { p -> ModelStatus.fromJson(p.id, prefs.statusJson(p.id)) }
-        // T-ML70 (owner order: default dual-model AKTIF, migrasi "timpa
-        // semua"): sekali seumur instalasi, paksa konfigurasi pi ke default
-        // (orchestrator glm-5.3-flash → executor minimax setelah tool).
-        // Setelah ini pilihan selector Settings dihormati — flag mencegah
-        // paksaan ulang di boot berikutnya.
-        if (!prefs.piDefaultsForced) {
-            prefs.piOrchestrator = id.codingsachet.mobile.ui.PiOptions.DEFAULT_ORCHESTRATOR
-            prefs.piExecutor = id.codingsachet.mobile.ui.PiOptions.DEFAULT_EXECUTOR
-            prefs.piProvider = id.codingsachet.mobile.ui.PiOptions.DEFAULT_PROVIDER
-            prefs.piDefaultsForced = true
+        // Owner order 2026-11-27 (engine Pi dihapus): default dual-model
+        // sekali seumur instalasi kini mengarah ke engine oc (OpenCode).
+        if (!prefs.ocDefaultsForced) {
+            prefs.ocOrchestrator = id.codingsachet.mobile.ui.OcOptions.DEFAULT_ORCHESTRATOR
+            prefs.ocExecutor = id.codingsachet.mobile.ui.OcOptions.DEFAULT_EXECUTOR
+            prefs.ocProvider = id.codingsachet.mobile.ui.OcOptions.DEFAULT_PROVIDER
+            prefs.ocDefaultsForced = true
         }
     }
 }

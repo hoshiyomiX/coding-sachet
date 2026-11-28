@@ -15,7 +15,7 @@
 // crash the server (uncaughtException exits the process) — emit() guards
 // every write.
 //
-// Modules in use: cfg config.js · srv server.js · agt agent.js ·
+// Modules in use: cfg config.js · srv server.js · vrf verify.js ·
 // net net.js · rlm ratelimit.js · tool tools.js
 
 const QUIET = process.env.SACHET_QUIET === '1';

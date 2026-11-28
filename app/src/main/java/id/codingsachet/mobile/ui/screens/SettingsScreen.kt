@@ -64,7 +64,6 @@ import id.codingsachet.mobile.runtime.LogcatDump
 import id.codingsachet.mobile.runtime.RuntimeState
 import id.codingsachet.mobile.ui.LocalStrings
 import id.codingsachet.mobile.ui.OcOptions
-import id.codingsachet.mobile.ui.PiOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -90,12 +89,6 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
     var checking by remember { mutableStateOf(false) }
     var keepAwake by remember { mutableStateOf(Graph.prefs.keepAwake) }
     var noSeccomp by remember { mutableStateOf(Graph.prefs.noSeccomp) }
-    var enginePi by remember { mutableStateOf(Graph.prefs.enginePi) }
-    var engineOc by remember { mutableStateOf(Graph.prefs.engineOc) }
-    // oc & pi saling eksklusif sebagai primary — dinormalisasi di
-    // Prefs.init() (instalasi lama dengan enginePi=true + default
-    // engineOc=true setelah upgrade), jadi state tersimpan di sini sudah
-    // konsisten: tidak ada keduanya true sejak composition pertama.
     var rootAccess by remember { mutableStateOf(Graph.prefs.rootAccess) }
     var showReset by remember { mutableStateOf(false) }
     var installingTools by remember { mutableStateOf(false) }
@@ -236,32 +229,8 @@ fun SettingsScreen(onBack: () -> Unit, onLangChange: (String) -> Unit) {
             // T-ML45: pilihan engine agent. Urutan prioritas: oc → pi →
             // legacy. Nilai dibaca server saat BOOT lewat env
             // SACHET_ENGINE — restart server setelah ganti.
-            SwitchRow(
-                label = s.engineOc,
-                hint = s.engineOcHint,
-                checked = engineOc,
-                onChange = {
-                    engineOc = it
-                    Graph.prefs.engineOc = it
-                    // enginePi dan engineOc saling eksklusif sebagai primary;
-                    // bila oc nyala, pi dimatikan (dan sebaliknya).
-                    if (it) enginePi = false
-                    Graph.prefs.enginePi = enginePi
-                },
-            )
-            SwitchRow(
-                label = s.enginePi,
-                hint = s.enginePiHint,
-                checked = enginePi,
-                onChange = {
-                    enginePi = it
-                    Graph.prefs.enginePi = it
-                    if (it) {
-                        engineOc = false
-                        Graph.prefs.engineOc = false
-                    }
-                },
-            )
+            Text(s.engineOc, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+            Text(s.engineOcHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             // Only offered when a su binary is present — toggling it on a
             // non-rooted phone would be a dead switch.
             if (Graph.runtime.hasSu()) {
@@ -446,19 +415,15 @@ private fun JsonConfigSection() {
     var optSeed by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "seed")) }
     var optStop by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "stop")) }
     var optReasoning by remember { mutableStateOf(storedField(Graph.prefs.requestOptions, "reasoning_effort")) }
-    // Engine aktif dibaca langsung dari prefs — sudah dinormalisasi di
-    // Prefs.init() (oc & pi saling eksklusif), jadi cukup satu yang true.
-    // Seksi dual-model hanya tampil untuk engine yang benar-benar berjalan.
-    val enginePiActive = Graph.prefs.enginePi
-    val engineOcActive = Graph.prefs.engineOc
+    // Engine aktif: oc satu-satunya (Pi & legacy dihapus). Seksi dual-model
+    // selalu tampil.
+    val engineOcActive = true
 
-    // T-ML70: selector dual-model engine Pi — menggantikan kolom "JSON
-    // tambahan". Persist langsung saat dipilih (tanpa tombol Simpan);
-    // preview di bawah dibangun dari builder yang SAMA dengan yang
-    // dikirim ChatEngine, jadi yang terlihat = yang terkirim.
-    var piOrch by remember { mutableStateOf(Graph.prefs.piOrchestrator) }
-    var piExec by remember { mutableStateOf(Graph.prefs.piExecutor) }
-    var piSheet by remember { mutableStateOf<String?>(null) } // "orch" | "exec" saat sheet terbuka
+    // Selector dual-model engine oc — persist langsung saat dipilih (tanpa
+    // tombol Simpan); preview di bawah dibangun dari builder yang SAMA
+    // dengan yang dikirim ChatEngine, jadi yang terlihat = yang terkirim.
+    var ocOrch by remember { mutableStateOf(Graph.prefs.ocOrchestrator) }
+    var ocExec by remember { mutableStateOf(Graph.prefs.ocExecutor) }
     var ocSheet by remember { mutableStateOf<String?>(null) } // "orch" | "exec" saat sheet terbuka (engine oc)
     var savedNote by remember { mutableStateOf<String?>(null) }
 
@@ -496,15 +461,17 @@ private fun JsonConfigSection() {
         }
     }
 
-    /** The structured object + the "pi" dual-model section — one builder
-     *  with ChatEngine (T-ML70: preview = wire). */
+    /** The structured object + the "oc" dual-model section — one builder
+     *  with ChatEngine (preview = wire). Engine oc satu-satunya, jadi seksi
+     *  oc SELALU ikut (audit #2: preview lama hanya menggabung seksi "pi"
+     *  yang sudah tidak pernah dikirim). */
     fun buildMerged(): Pair<JsonObject?, String?> {
         validateStructured()?.let { return null to it }
         val structured = buildStructured()
-        val pi = PiOptions.build(Graph.prefs.active.id, Graph.prefs.piProvider, piOrch, piExec)
+        val oc = OcOptions.build(Graph.prefs.active.id, Graph.prefs.ocProvider, ocOrch, ocExec)
         return buildJsonObject {
             structured.forEach { (k, v) -> put(k, v) }
-            pi?.forEach { (k, v) -> put(k, v) }
+            oc?.forEach { (k, v) -> put(k, v) }
         } to null
     }
 
@@ -591,56 +558,10 @@ private fun JsonConfigSection() {
     }
 
     // T-ML70 (owner order: "kolom opsi model selectable orchestrator &
-    // executor di settings"): selector dual-model — pilihan dipersist
-    // langsung; baris preview di bawah membuktikan kunci "pi" benar-benar
-    // akan terkirim (akar insiden: konfigurasi tak pernah tiba + tak
-    // terlihat). Opsi pertama tiap selector = mode non-aktif.
-    // Seksi ini hanya relevan bila engine Pi adalah primary — disembunyikan
-    // saat engine oc aktif agar konfigurasi yang tampil selalu milik engine
-    // yang benar-benar berjalan.
-    if (enginePiActive) {
-    Text(s.dualModelSection, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
-    Text(s.dualModelHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    if (Graph.prefs.piProvider.isNotBlank() && Graph.prefs.piProvider != Graph.prefs.active.id) {
-        Text(s.dualProviderNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-    }
-    DualModelRow(
-        label = s.dualOrchestrator,
-        value = piOrch.ifBlank { s.dualOrchestratorChatModel },
-        selected = piOrch.isNotBlank(),
-        onClick = { piSheet = "orch" },
-    )
-    DualModelRow(
-        label = s.dualExecutor,
-        value = piExec.ifBlank { s.dualExecutorOff },
-        selected = piExec.isNotBlank(),
-        onClick = { piSheet = "exec" },
-    )
-    piSheet?.let { which ->
-        PiModelSheet(
-            isExecutor = which == "exec",
-            current = if (which == "exec") piExec else piOrch,
-            onPick = { m ->
-                if (which == "exec") {
-                    Graph.prefs.piExecutor = m
-                    piExec = m
-                } else {
-                    Graph.prefs.piOrchestrator = m
-                    piOrch = m
-                }
-                Graph.prefs.piProvider = Graph.prefs.active.id
-                piSheet = null
-            },
-            onDismiss = { piSheet = null },
-        )
-    }
-    } // if (enginePiActive) — seksi dual-model Pi
-
-    // ---- dual-model engine OpenCode (oc) ----
-    // Selector orchestrator/executor untuk engine oc (oc-bridge.js). Mirip
-    // engine Pi tapi kunci "oc" danPrefs-nya terpisah (ocOrchestrator,
-    // ocExecutor, ocProvider). Hanya tampil bila engine oc adalah primary.
-    if (engineOcActive) {
+    // executor di settings"): selector dual-model engine oc — pilihan
+    // dipersist langsung; baris preview di bawah membuktikan kunci "oc"
+    // benar-benar akan terkirim. Opsi pertama tiap selector = mode non-aktif.
+    // Engine oc satu-satunya → seksi selalu tampil.
     SectionTitle(s.ocDualModelSection)
     Text(s.ocDualModelHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     if (Graph.prefs.ocProvider.isNotBlank() && Graph.prefs.ocProvider != Graph.prefs.active.id) {
@@ -659,7 +580,7 @@ private fun JsonConfigSection() {
         onClick = { ocSheet = "exec" },
     )
     ocSheet?.let { which ->
-        PiModelSheet(
+        OcModelSheet(
             isExecutor = which == "exec",
             current = if (which == "exec") Graph.prefs.ocExecutor else Graph.prefs.ocOrchestrator,
             onPick = { m ->
@@ -674,7 +595,7 @@ private fun JsonConfigSection() {
             onDismiss = { ocSheet = null },
         )
     }
-    } // if (engineOcActive) — seksi dual-model oc
+    // ---- akhir seksi dual-model engine oc ----
 
     // Live preview of the exact object that will be merged into the request.
     Text(s.jsonPreview, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -705,13 +626,12 @@ private fun JsonConfigSection() {
             optTemp = ""; optTopP = ""; optMaxTok = ""; optPresence = ""; optFrequency = ""
             optSeed = ""; optStop = ""; optReasoning = ""
             Graph.prefs.requestOptions = ""
-            // T-ML70: Reset mengembalikan dual-model ke default AKTIF
-            // (glm-5.3-flash → minimax), bukan kosong.
-            Graph.prefs.piOrchestrator = PiOptions.DEFAULT_ORCHESTRATOR
-            Graph.prefs.piExecutor = PiOptions.DEFAULT_EXECUTOR
-            Graph.prefs.piProvider = PiOptions.DEFAULT_PROVIDER
-            piOrch = PiOptions.DEFAULT_ORCHESTRATOR
-            piExec = PiOptions.DEFAULT_EXECUTOR
+            // Reset mengembalikan dual-model oc ke default aktif.
+            Graph.prefs.ocOrchestrator = OcOptions.DEFAULT_ORCHESTRATOR
+            Graph.prefs.ocExecutor = OcOptions.DEFAULT_EXECUTOR
+            Graph.prefs.ocProvider = OcOptions.DEFAULT_PROVIDER
+            ocOrch = OcOptions.DEFAULT_ORCHESTRATOR
+            ocExec = OcOptions.DEFAULT_EXECUTOR
             // Reset also returns the scheme to the default coding agent.
             schemeId = id.codingsachet.mobile.ui.Schemes.DEFAULT_ID
             Graph.prefs.schemeId = id.codingsachet.mobile.ui.Schemes.DEFAULT_ID
@@ -746,7 +666,7 @@ private fun DualModelRow(label: String, value: String, selected: Boolean, onClic
  *  baris non-aktif di paling atas. Pilihan dipersist oleh caller. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PiModelSheet(isExecutor: Boolean, current: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
+private fun OcModelSheet(isExecutor: Boolean, current: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
     val s = LocalStrings.current
     val provider = Graph.prefs.active
     var models by remember { mutableStateOf<List<String>?>(null) }

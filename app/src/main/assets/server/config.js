@@ -155,13 +155,11 @@ const config = {
   providers,
   defaultProvider: 'apinex',
 
-  // T-ML45 Fase 0 (PoC Pi Coding Agent): engine agent yang melayani
-  // /api/chat. "legacy" = loop agent.js yang lama (default); "pi" =
-  // pi-bridge.js (bundle RPC Pi sebagai child process); "oc" = oc-bridge.js
-  // (OpenCode `opencode serve` sebagai child process, engine ketiga).
-  // Ditetapkan app lewat env saat boot server — Settings → toggle engine.
-  // Rute lain (models/quota/verify/fs) TIDAK berubah: gateway-direct.
-  engine: process.env.SACHET_ENGINE === 'pi' ? 'pi' : process.env.SACHET_ENGINE === 'oc' ? 'oc' : 'legacy',
+  // Engine SATU-SATUNYA /api/chat: "oc" (oc-bridge.js — OpenCode
+  // `opencode serve` sebagai child process). Engine Pi & legacy DIHAPUS
+  // (owner order 2026-11-27). Env SACHET_ENGINE tidak berpengaruh lagi;
+  // rute lain (models/quota/verify/fs) tetap gateway-direct.
+  engine: 'oc',
 
   port: Number(process.env.SACHET_PORT || 8765),
   host: '127.0.0.1',

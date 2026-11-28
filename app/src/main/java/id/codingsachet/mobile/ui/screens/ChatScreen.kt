@@ -687,7 +687,7 @@ fun ChatScreen(
     }
 
     // T-ML72: sheet pemilih model per-peran (orchestrator/executor).
-    // Persist ke prefs dual-model engine aktif (oc atau pi) + provider
+    // Persist ke prefs dual-model engine oc (satu-satunya engine) + provider
     // aktif — persis semantik Settings. Orchestrator kosong = model chat
     // aktif (Graph.prefs.model); executor kosong = single-model.
     pickRole?.let { role ->
@@ -697,18 +697,18 @@ fun ChatScreen(
             onPick = { m ->
                 val p = Graph.prefs
                 if (role == "exec") {
-                    if (p.engineOc) p.ocExecutor = m else p.piExecutor = m
+                    p.ocExecutor = m
                 } else {
                     // Orchestrator = model chat aktif juga (menimpa model
                     // pengirim, konsisten dengan semangat T-ML69 — model
                     // terpilih memimpin putaran pertama).
-                    if (p.engineOc) p.ocOrchestrator = m else p.piOrchestrator = m
+                    p.ocOrchestrator = m
                     p.model = m
                     current?.model = m
                 }
                 // Tandai konfigurasi dual milik provider aktif (batas v1:
-                // satu provider per run — lihat OcOptions/PiOptions).
-                if (p.engineOc) p.ocProvider = p.active.id else p.piProvider = p.active.id
+                // satu provider per run — lihat OcOptions).
+                p.ocProvider = p.active.id
                 pickRole = null
             },
             onDismiss = { pickRole = null },

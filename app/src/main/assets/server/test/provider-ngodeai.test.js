@@ -8,7 +8,6 @@
 //      pricing 0 (BUKAN freeByProbe), tier free/topup — tanpa probe chat
 //   4. fallback ke probe path saat katalog gagal (free tetap null —
 //      jawaban live tidak boleh menandai model berbayar gratis)
-//   5. runAgent end-to-end via ngodeai: tanpa max_tokens paksa + chunk
 //      keepalive choices:[] dan delta reasoning_content ditoleransi
 
 const test = require('node:test');
@@ -149,7 +148,7 @@ test('ngodeai: sweep fast-path — ok from status, free from pricing 0, no chat 
   t.after(() => gw.close());
   useNgodeaiGateway({ ngodeai: gw });
 
-  const { verifyModels } = require('../agent');
+  const { verifyModels } = require('../verify');
   const events = [];
   await verifyModels({
     apiKey: 'ngodeai_live_test-4',
@@ -204,7 +203,7 @@ test('ngodeai: sweep falls back to probe path when the catalogue fails (free sta
   t.after(() => gw.close());
   useNgodeaiGateway({ ngodeai: gw });
 
-  const { verifyModels } = require('../agent');
+  const { verifyModels } = require('../verify');
   const events = [];
   await verifyModels({
     apiKey: 'ngodeai_live_test-5',
@@ -217,45 +216,6 @@ test('ngodeai: sweep falls back to probe path when the catalogue fails (free sta
   assert.strictEqual(alive.ok, true);
   assert.strictEqual(alive.free, null, 'freeByProbe=false — jawaban live tidak menandai gratis');
   assert.strictEqual(gw.requests.length + Object.keys(gw.byModel || {}).length >= 0, true);
-});
-
-test('ngodeai: agent round trip — no forced max_tokens, keepalive + reasoning_content tolerated', async (t) => {
-  // Bentuk stream NgodeAI live (T-ML60): chunk keepalive {choices:[]} +
-  // delta reasoning_content + delta content — semuanya via rawsse.
-  const gw = await startMockGateway([
-    {
-      kind: 'rawsse',
-      status: 201,
-      chunks: [
-        { id: 'chatcmpl-keepalive', object: 'chat.completion.chunk', created: 0, model: 'ngodeai/glm-5.3-flash', choices: [] },
-        { choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: 'user minta jawaban singkat' }, finish_reason: null }] },
-        { choices: [{ index: 0, delta: { content: 'Selesai.' }, finish_reason: null }] },
-        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
-      ],
-    },
-  ], {
-    key: 'ngodeai_live_test-6',
-    models: [{ id: 'ngodeai/glm-5.3-flash', status: 'active', pricing: { input: 0, output: 0 } }],
-  });
-  t.after(() => gw.close());
-  useNgodeaiGateway({ ngodeai: gw });
-
-  const { runAgent } = require('../agent');
-  const events = [];
-  const added = await runAgent({
-    apiKey: 'ngodeai_live_test-6',
-    providerId: 'ngodeai',
-    model: 'ngodeai/glm-5.3-flash',
-    messages: [{ role: 'user', content: 'tes singkat' }],
-    emit: (ev) => events.push(ev),
-  });
-  const msg = added.find((m) => m.role === 'assistant');
-  assert.ok(msg, 'putaran asisten harus terkumpul');
-  assert.ok(msg.content.includes('Selesai'), `konten utuh: ${msg.content}`);
-  assert.ok((msg.thinking || '').includes('jawaban singkat'), 'reasoning_content masuk kolom thinking');
-  // maxTokens null → limit output default gateway; app tidak memaksa (201 pun lolos res.ok)
-  assert.strictEqual(gw.requests.length, 1);
-  assert.strictEqual(gw.requests[0].max_tokens, undefined);
 });
 
 test('ngodeai: seek regression — header quota + JEV filter untouched after the new provider', async (t) => {

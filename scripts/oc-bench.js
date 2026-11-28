@@ -6,7 +6,7 @@
 //
 // Pemakaian:
 //   node scripts/oc-bench.js --engines oc --repeat 2
-//   node scripts/oc-bench.js --engines oc,pi,legacy --repeat 3
+//   node scripts/oc-bench.js --engines oc --repeat 3
 //
 // Env (untuk gateway yang dipakai engine):
 //   SACHET_BENCH_BASE_URL   base URL gateway OpenAI-compatible
@@ -130,12 +130,12 @@ function summarize(runs) {
   };
 }
 
-async function benchEngine(engine) {
+async function benchEngine(engine) { // hanya "oc" — engine lain dihapus
   const port = await freePort();
   const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-bench-'));
   const env = {
     ...process.env,
-    SACHET_ENGINE: engine,
+    SACHET_ENGINE: "oc",
     SACHET_PORT: String(port),
     SACHET_APINEX_BASE_URL: BASE_URL,
     SACHET_WORKDIR: workdir,
@@ -147,7 +147,7 @@ async function benchEngine(engine) {
   let health;
   try { health = await waitHealth(port, 40000); }
   catch (e) { child.kill('SIGKILL'); throw new Error(`engine ${engine}: ${e.message}\n${serverLog.slice(-400)}`); }
-  const bundleOk = engine === 'oc' ? health.ocBundle : engine === 'pi' ? health.piBundle : true;
+  const bundleOk = health.ocBundle === true;
   const runs = [];
   for (let i = 0; i < REPEAT; i++) {
     for (const task of TASKS) runs.push(await runChat(port, task));

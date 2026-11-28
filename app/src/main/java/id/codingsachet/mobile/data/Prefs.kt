@@ -48,13 +48,12 @@ class Prefs(ctx: Context) {
      *  bar selalu menampilkan model yang benar-benar memimpin putaran
      *  pertama. */
     val orchestratorEffective: String
-        get() = if (engineOc) ocOrchestrator.ifBlank { model }
-        else piOrchestrator.ifBlank { model }
+        get() = ocOrchestrator.ifBlank { model }
 
     /** T-ML72: executor efektif engine aktif — blank = single-model
      *  (executor nonaktif, orchestrator memimpin semua putaran). */
     val executorEffective: String
-        get() = if (engineOc) ocExecutor else piExecutor
+        get() = ocExecutor
 
     /** "id" (default) or "en" */
     var lang: String
@@ -74,39 +73,16 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("noSeccomp", false)
         set(v) = sp.edit().putBoolean("noSeccomp", v).apply()
 
-    /** T-ML45 PoC: jalankan /api/chat lewat engine Pi Coding Agent
-     *  (pi-bridge.js + bundle RPC) alih-alih loop agent lama. Dibaca server
-     *  saat boot lewat env SACHET_ENGINE — ganti nilai lalu restart server. */
-    var enginePi: Boolean
-        get() = sp.getBoolean("enginePi", false)
-        set(v) = sp.edit().putBoolean("enginePi", v).apply()
-
-    /** Engine utama /api/chat: "legacy" | "pi" | "oc". Dibaca server saat
-     *  boot lewat env SACHET_ENGINE. Default "oc" bila biner tersedia,
-     *  else "pi", else "legacy". Ganti nilai lalu restart server. */
+    /** Engine utama /api/chat: OpenCode (oc-bridge.js) — SATU-SATUNYA
+     *  engine (Pi & legacy dihapus, owner order 2026-11-27). Pref ini
+     *  tinggal compatibility shim; server membaca env SACHET_ENGINE=oc
+     *  yang kini konstan. */
     var engineOc: Boolean
         get() = sp.getBoolean("engineOc", true)
         set(v) = sp.edit().putBoolean("engineOc", v).apply()
 
-    /** Engine oc & pi saling eksklusif sebagai primary (oc → pi → legacy).
-     *  Normalisasi state tersimpan: bila keduanya true (mis. instalasi lama
-     *  dengan enginePi=true yang bertemu default engineOc=true setelah
-     *  upgrade), oc menang dan pi dimatikan — konsisten dengan pemilihan
-     *  SACHET_ENGINE di RuntimeController yang selalu mengutamakan oc. */
-    fun normalizeEngine() {
-        if (engineOc && enginePi) enginePi = false
-    }
-
-    /** Normalisasi di startup: instalasi lama dengan enginePi=true bertemu
-     *  default engineOc=true setelah upgrade → keduanya true dan kedua
-     *  switch di Settings menyala bersamaan. Ini memperbaiki state
-     *  tersimpan sebelum dibaca RuntimeController maupun UI. */
-    init {
-        normalizeEngine()
-    }
-
     // T-ML70 (oc): konfigurasi dual-model engine OpenCode — kunci "oc" di
-    // options /api/chat, mirip Pi tapi untuk engine oc-bridge.js.
+    // options /api/chat, dibangun OcOptions.build bersama preview Settings.
     /** Model orchestrator (perencana + putaran tool) untuk engine oc.
      *  Blank = model chat aktif. */
     var ocOrchestrator: String
@@ -124,6 +100,12 @@ class Prefs(ctx: Context) {
     var ocProvider: String
         get() = sp.getString("ocProvider", "") ?: ""
         set(v) = sp.edit().putString("ocProvider", v).apply()
+
+    /** Migrasi paksa default oc (owner: "timpa semua") sudah berjalan — sekali
+     *  seumur instalasi, setelah itu pilihan user dihormati. */
+    var ocDefaultsForced: Boolean
+        get() = sp.getBoolean("ocDefaultsForced", false)
+        set(v) = sp.edit().putBoolean("ocDefaultsForced", v).apply()
 
     /** Rooted phones: run the server via su and expose /device in the
      *  file explorer. Only honored when a su binary is actually present. */
@@ -155,30 +137,9 @@ class Prefs(ctx: Context) {
         set(v) = sp.edit().putString("requestOptions", v).apply()
 
     // T-ML70 (owner order: default dual-model aktif + selector di Settings,
-    // kolom "JSON tambahan" dipensiunkan). Konfigurasi dual-model engine Pi
-    // kini field first-class — ChatEngine membangun kunci "pi" dari sini;
-    // validasi provider sama terjadi di PiOptions.build.
-    /** Model orchestrator (perencana + putaran tool). Blank = model chat aktif. */
-    var piOrchestrator: String
-        get() = sp.getString("piOrchestrator", "") ?: ""
-        set(v) = sp.edit().putString("piOrchestrator", v).apply()
-
-    /** Model executor (mengambil alih setelah putaran tool pertama). Blank = single model. */
-    var piExecutor: String
-        get() = sp.getString("piExecutor", "") ?: ""
-        set(v) = sp.edit().putString("piExecutor", v).apply()
-
-    /** Provider tempat kedua model di atas dipilih — pi hanya aktif bila sama
-     *  dengan provider aktif (batas v1: satu provider per run). */
-    var piProvider: String
-        get() = sp.getString("piProvider", "") ?: ""
-        set(v) = sp.edit().putString("piProvider", v).apply()
-
-    /** Migrasi paksa default (owner: "timpa semua") sudah berjalan — sekali
-     *  seumur instalasi, setelah itu pilihan user dihormati. */
-    var piDefaultsForced: Boolean
-        get() = sp.getBoolean("piDefaultsForced", false)
-        set(v) = sp.edit().putBoolean("piDefaultsForced", v).apply()
+    // kolom "JSON tambahan" dipensiunkan). Konfigurasi dual-model engine oc
+    // kini field first-class — ChatEngine membangun kunci "oc" dari sini;
+    // validasi provider sama terjadi di OcOptions.build.
 
     /** Id of the active ready-made scheme (T-ML28: Schemes.ALL — "coding"
      *  is the default and means the plain coding agent, no overrides). */

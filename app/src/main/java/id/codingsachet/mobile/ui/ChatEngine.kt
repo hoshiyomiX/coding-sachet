@@ -280,28 +280,21 @@ class ChatEngine(val session: Session) {
             "satu proyek per folder; kerjakan semua file proyek ini di dalam folder itu."
     }
 
-    /** Konfigurasi JSON (Settings): structured options + seksi "pi" dual-model
-     *  (engine Pi) + seksi "oc" dual-model (engine OpenCode). Satu sumber
-     *  kebenaran bersama preview Settings. Blank/invalid values never block
-     *  sending — the agent server re-sanitizes everything anyway. */
+    /** Konfigurasi JSON (Settings): structured options + seksi "oc" dual-model
+     *  (engine OpenCode). Satu sumber kebenaran bersama preview Settings.
+     *  Blank/invalid values never block sending — the agent server
+     *  re-sanitizes everything anyway. */
     private fun requestOptions(): JsonObject? {
         val structured = parsePref(Graph.prefs.requestOptions)
-        val pi = PiOptions.build(
-            Graph.prefs.active.id,
-            Graph.prefs.piProvider,
-            Graph.prefs.piOrchestrator,
-            Graph.prefs.piExecutor,
-        )
         val oc = OcOptions.build(
             Graph.prefs.active.id,
             Graph.prefs.ocProvider,
             Graph.prefs.ocOrchestrator,
             Graph.prefs.ocExecutor,
         )
-        if (structured == null && pi == null && oc == null) return null
+        if (structured == null && oc == null) return null
         return buildJsonObject {
             structured?.forEach { (k, v) -> put(k, v) }
-            pi?.forEach { (k, v) -> put(k, v) }
             oc?.forEach { (k, v) -> put(k, v) }
         }
     }
