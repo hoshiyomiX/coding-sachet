@@ -237,9 +237,11 @@ fun ChatScreen(
     // Statusnya dibaca di picker model (ModelRow) — top bar tidak
     // menampilkannya (owner order T-ML73b).
     LaunchedEffect(Unit) {
-        GatewayStatus.monitor(scope) {
-            Pair(Graph.prefs.provider, Graph.prefs.apiKey)
-        } { key, pid -> Graph.api.pingGateway(key, pid) }
+        GatewayStatus.monitor(
+            scope,
+            current = { Pair(Graph.prefs.provider, Graph.prefs.apiKey) },
+            probe = { key, pid -> Graph.api.pingGateway(key, pid) },
+        )
     }
 
     val live by (engine?.live ?: nullLive).collectAsState()
