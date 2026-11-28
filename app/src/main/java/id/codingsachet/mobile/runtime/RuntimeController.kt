@@ -65,7 +65,7 @@ class RuntimeController(
         // diekstrak ke sini + chmod +x. oc-bridge.js (server) yang men-spawn
         // `opencode serve` per runtime — Fase 1 hanya menyiapkan biner+config.
         // v7a tidak didukung opencode resmi → engine oc dilewati (fallback Pi).
-        const val OC_VERSION = "2.2.0"
+        const val OC_VERSION = "2.4.2"
         const val OC_GUEST_DIR = "/opt/sachet/opencode"
         const val OC_GUEST_BIN = "/opt/sachet/opencode/bin/opencode"
         const val OC_CONFIG_GUEST_DIR = "/opt/sachet/opencode/config"
