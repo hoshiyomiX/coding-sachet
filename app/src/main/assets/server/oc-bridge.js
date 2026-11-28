@@ -37,10 +37,13 @@
 // penyimpangan history app (pesan diedit/dihapus) terdeteksi via hash prefix
 // kanonik → sesi OpenCode baru (gen++), konteks lama dibuang (jelas di log).
 //
-// Dual-model (padanan T-ML68): orchestrator = model sesi; setelah putaran
-// tool pertama selesai (step.ended finish='tool-calls'), bridge POST /model →
-// executor mengambil alih putaran berikutnya. Batas v1: executor satu provider
-// dengan orchestrator (satu API key per run) — sama seperti Pi.
+// Dual-model (pembagian kerja per-misi): orchestrator = thinking + planning;
+// executor = read/write/tool/terminal (menjalankan seluruh rencana). Run
+// orchestrator selesai NATURAL (tidak di-interrupt); bila fase perencanaan
+// memakai tool (indikasi tugas eksekusi), bridge POST /model → executor lalu
+// re-prompt. Tanpa tool = tanpa handoff → model murah tidak dipanggil untuk
+// tanya-jawab murni (hemat). Batas v1: executor satu provider dengan
+// orchestrator (satu API key per run) — sama seperti Pi.
 
 const { spawn } = require('child_process');
 const http = require('http');
@@ -85,14 +88,22 @@ const APPEND_SYSTEM =
   '- Keep conversational answers short. Write code carefully but concisely; do not restate file contents in the reply.\n' +
   '- If two consecutive rounds make no progress, stop exploring and report the blocker.';
 
-// Prompt lanjutan untuk fase executor setelah handoff deterministik. OpenCode
-// sudah menyimpan riwayat sesi (rencana + hasil tool putaran pertama
-// orchestrator) di sisi server, jadi cukup instruksi singkat agar executor
-// melanjutkan dari titik terakhir tanpa mengulang.
+// Prompt fase EXECUTOR setelah handoff. Riwayat sesi (rencana orchestrator)
+// tersimpan server-side, jadi cukup instruksi peran eksekusi.
 const OC_CONTINUE_PROMPT =
-  'Lanjutkan pekerjaan dari titik terakhir. Rencana dan hasil tool putaran ' +
-  'pertama sudah ada di riwayat sesi — jangan ulangi langkah yang sudah selesai. ' +
-  'Selesaikan tugas sampai tuntas dan verifikasi dengan menjalankan kode.';
+  'You are now the EXECUTOR. The orchestrator has analyzed the task and left ' +
+  'a numbered plan in the session history. Execute that plan step by step: ' +
+  'use tools (bash, read_file, write_file, list_dir) for every step, batch ' +
+  'independent commands into one call, verify by running code, and finish ' +
+  'with a short summary of what was done.';
+
+// Tambahan system prompt HANYA saat dual-model aktif: orchestrator = thinking
+// + planning, tidak menuntaskan tugas sendiri (executor yang mengeksekusi).
+const OC_ORCH_ROLE =
+  ' DUAL-MODEL ROLE: you are the ORCHESTRATOR — think deeply, analyze the ' +
+  'context, and produce a concise numbered execution plan. Do not implement ' +
+  'the task yourself; an executor model will run all tools after you. Use ' +
+  'read-only tools only when needed to make the plan accurate.';
 
 /** System prompt ringkas yang *mengganti* prompt bawaan OpenCode (~4,8K tok
  *  baseline) agar biaya per-task turun (Path B, AUDIT-OPENCODE.md §10).
@@ -183,7 +194,8 @@ function writeOpencodeConfig(dir, { provider, model, apiKey, executor }) {
     // Path B: system prompt ringkas mengganti built-in OpenCode (~4,8K tok
     // baseline) → biaya per-task turun drastis. APPEND_SYSTEM masih dikirim
     // per-turn di prompt (non-fresh sesi) sebagai pelengkap bahasa+disiplin.
-    systemPrompt: OC_SYSTEM_PROMPT,
+    systemPrompt: OC_SYSTEM_PROMPT
+      + (executor && executor !== model ? OC_ORCH_ROLE : ''),
     permission: {
       bash: 'allow', edit: 'allow', write: 'allow', read: 'allow',
       list: 'allow', glob: 'allow', grep: 'allow', task: 'allow',
@@ -439,12 +451,6 @@ function translate(rec, st) {
         : (d.content != null ? String(d.content) : '(kosong)');
       st.emit({ type: 'toolend', id: d.id, ok: true, output: output.slice(0, 4000) });
       acc.results.set(d.id, { content: output, ok: true });
-      // Dual-model: handoff deterministik setelah tool putaran pertama selesai.
-      if (st.dualExecutor && !st.executorHanded && !st.handoffPending) {
-        st.executorHanded = true;
-        st.handoffPending = true;
-        log.inf('oc', `dual-model: tool ${d.id} selesai — siap serahkan ke executor ${st.dualExecutor}`);
-      }
       break;
     }
     case 'session.tool.failed': {
@@ -473,12 +479,14 @@ function translate(rec, st) {
         st.emit({ type: 'toolresult', msg: toolMsg });
         st.added.push(toolMsg);
       }
-      // Dual-model: handoff setelah putaran tool pertama selesai.
+      // Dual-model: fase perencanaan yang memakai tool = indikasi tugas
+      // eksekusi → tandai handoff; transisi sendiri dilakukan SETELAH run
+      // orchestrator selesai NATURAL (di runOcChat, bukan di sini).
       const finish = d.finish || d.rawFinish || '';
       if (finish === 'tool-calls' && st.dualExecutor && !st.executorHanded && !st.handoffPending) {
         st.executorHanded = true;
         st.handoffPending = true;
-        log.inf('oc', `dual-model: langkah tool selesai — siap serahkan ke executor ${st.dualExecutor}`);
+        log.inf('oc', `dual-model: rencana orchestrator memakai tool — serahkan eksekusi ke ${st.dualExecutor} setelah run selesai`);
       }
       break;
     }
@@ -705,7 +713,7 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
     let consumed = 0;
     let terminal = null;
 
-    // Satu fase = satu prompt + pompa event sampai terminal ATAU handoffPending.
+    // Satu fase = satu prompt + pompa event sampai terminal run (natural).
     // T-ML71: `openTools` = tool call yang belum punya hasil — selama itu
     // berjalan, diam adalah NORMAL (bash/apt panjang tidak mengirim event),
     // jadi silence timer memakai TOOL_SILENCE_MS yang jauh lebih longgar.
@@ -717,7 +725,7 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
         if (silenceTimer) clearTimeout(silenceTimer);
         const budget = openTools ? TOOL_SILENCE_MS : SILENCE_MS;
         silenceTimer = setTimeout(() => {
-          if (!terminal && !tstate.handoffPending) {
+          if (!terminal) {
             log.wrn('oc', `diam ${Date.now() - lastEventTime}ms > ${Math.round(budget / 1000)}s tanpa terminal (openTools=${openTools}) — run dinyatakan macet`);
             clearTimeout(timer);
             silenceTimer = null;
@@ -747,7 +755,7 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
             translate(rec, tstate);
           }
         } catch (err) { if (silenceTimer) clearTimeout(silenceTimer); clearTimeout(timer); reject(err); return; }
-        if (terminal || tstate.handoffPending) {
+        if (terminal) {
           if (silenceTimer) clearTimeout(silenceTimer);
           clearTimeout(timer);
           resolve();
@@ -790,35 +798,24 @@ async function runOcChat({ apiKey, providerId, model, executor, messages, signal
       await sendPrompt(prompt);
       await runPhase(prompt);
 
-      // Handoff deterministik: OpenCode mengunci model per-run, jadi tak bisa
-      // switch di tengah. Interrupt run orchestrator, buang terminal-nya, switch
-      // model ke executor, lalu re-prompt agar executor melanjutkan.
-      if (tstate.handoffPending && dualExecutor && !terminal) {
-        log.inf('oc', `dual-model: interrupt run orchestrator untuk serahkan ke executor ${dualExecutor}`);
-        await ocRequest(port, password, 'POST', `/api/session/${sid}/interrupt`, null, 8000).catch(() => {});
-        // Beri jeda singkat & drain event yang sudah tiba (terminal run
-        // orchestrator yang di-interrupt). Time-bounded — jangan gantung bila
-        // OpenCode tak mengirim terminal setelah interrupt.
-        tstate.handoffPending = false;
-        await new Promise((r) => setTimeout(r, 1500));
-        try {
-          while (consumed < stream.events.length) {
-            const rec = stream.events[consumed++];
-            if (isTerminalEvent(rec)) break;
-            translate(rec, tstate);
-          }
-        } catch { /* abaikan sisa event orchestrator */ }
-        terminal = null; // terminal orchestrator bukan terminal run kita
-
+      // Handoff pembagian kerja: run orchestrator (thinking + planning) selesai
+      // NATURAL — tidak perlu interrupt. Bila fase perencanaan memakai tool
+      // (indikasi tugas eksekusi), switch model ke executor lalu re-prompt agar
+      // executor menjalankan SELURUH rencana (read/write/tool/terminal).
+      if (tstate.handoffPending && dualExecutor && terminal && terminal.type !== 'error') {
         const mr = await ocRequest(port, password, 'POST', `/api/session/${sid}/model`,
           { model: { providerID: OC_PROVIDER_ID, id: dualExecutor } }, 15000);
         if (mr.status !== 204 && mr.status !== 200)
           log.wrn('oc', `switch model executor gagal: HTTP ${mr.status} ${mr.body.slice(0, 120)}`);
         else {
-          log.inf('oc', `dual-model: model sesi → executor ${dualExecutor}`);
+          log.inf('oc', `dual-model: model sesi → executor ${dualExecutor} (eksekusi rencana)`);
           emit({ type: 'model', model: dualExecutor, role: 'executor' });
         }
-        // Fase executor: lanjutkan dari titik terakhir (riwayat tersimpan server).
+        // Fase executor: jalankan rencana sampai tuntas (riwayat tersimpan
+        // server-side). handoffPending dibuang agar watchdog stuck fase ini
+        // bekerja normal.
+        tstate.handoffPending = false;
+        terminal = null; // terminal orchestrator bukan terminal run kita
         await sendPrompt(OC_CONTINUE_PROMPT);
         await runPhase(OC_CONTINUE_PROMPT);
       }

@@ -48,7 +48,7 @@ function mockServe(handlers) {
       const m = url.match(/^\/api\/session\/[^/]+\/(prompt|interrupt|model)$/);
       if (m) {
         if (m[1] === 'interrupt') { state.interrupted++; res.writeHead(200); res.end(); return; }
-        if (m[1] === 'model') { res.writeHead(204); res.end(); return; }
+        if (m[1] === 'model') { state.models = (state.models || 0) + 1; res.writeHead(204); res.end(); return; }
         handlers(JSON.parse(body || '{}'), state, res);
         return;
       }
@@ -63,7 +63,7 @@ function mockServe(handlers) {
   return new Promise((resolve) => srv.listen(0, '127.0.0.1', () => resolve({ srv, emit, state, port: srv.address().port })));
 }
 
-async function runChat(port, { messages } = {}) {
+async function runChat(port, { messages, executor } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-e2e-'));
   // "biner opencode" palsu: proxy HTTP yang meneruskan semua request ke mock
   // serve di `port` (bridge spawn proses ini dan memakai port dari --port).
@@ -93,6 +93,7 @@ async function runChat(port, { messages } = {}) {
   const emit = (e) => events.push(e);
   const added = await runOcChat({
     apiKey: 'k', providerId: 'ngodeai', model: 'm',
+    executor,
     messages: messages || [{ role: 'user', content: 'kerjakan' }],
     emit,
     workdir: fs.mkdtempSync(path.join(os.tmpdir(), 'oc-wd-')),
@@ -154,6 +155,7 @@ describe('T-ML71 E2E flow', () => {
     assert.deepStrictEqual(events.map((e) => e.type), ['text', 'message', 'done']);
   });
 
+
   test('C: run macet (tool tanpa akhir, tanpa terminal) → interrupt + error terlihat', async () => {
     const { srv, emit, state, port } = await mockServe((_, st, res) => {
       res.writeHead(200); res.end();
@@ -164,12 +166,46 @@ describe('T-ML71 E2E flow', () => {
         // TIDAK ADA toolend/step.ended/terminal — run menggantung selamanya
       })();
     });
-    const { events } = await runChat(port, { timeoutMs: 5000 });
+    const { events } = await runChat(port);
     srv.close();
     assert.strictEqual(state.interrupted, 1, 'run zombie di-interrupt (bukan dibiarkan hidup)');
     const err = events.find((e) => e.type === 'error');
     assert.ok(err, 'error TERLIHAT ke app (bukan done palsu)');
     assert.match(err.message, /macet|berhenti di tengah/);
     assert.ok(events[events.length - 1].type === 'done', 'stream tetap ditutup rapi');
+  });
+
+  test('D: dual-model — rencana orchestrator pakai tool → run natural → switch executor → eksekusi tanpa interrupt', async () => {
+    let phase = 0; // 0 = fase orchestrator, 1 = fase executor
+    const { srv, emit, state, port } = await mockServe((body, st, res) => {
+      const isExec = phase === 1;
+      res.writeHead(200); res.end();
+      (async () => {
+        const sid = st.sid;
+        await sleep(40);
+        if (!isExec) {
+          phase = 1;
+          // Orchestrator: berpikir + rencana memakai tool (baca konteks).
+          emit({ type: 'session.reasoning.delta', data: { sessionID: sid, assistantMessageID: 'a1', delta: 'analisis…' } });
+          emit({ type: 'session.tool.called', data: { sessionID: sid, assistantMessageID: 'a1', id: 't1', name: 'read_file', input: { path: 'a.js' } } });
+          emit({ type: 'session.tool.succeeded', data: { sessionID: sid, assistantMessageID: 'a1', id: 't1', output: 'isi' } });
+          emit({ type: 'session.step.ended', data: { sessionID: sid, assistantMessageID: 'a1', text: 'rencana siap', finish: 'tool-calls' } });
+          emit({ type: 'session.execution.succeeded', data: { sessionID: sid } }); // run natural
+        } else {
+          // Executor: menjalankan seluruh rencana (tool + selesai).
+          emit({ type: 'session.tool.called', data: { sessionID: sid, assistantMessageID: 'a2', id: 't2', name: 'bash', input: { command: 'make' } } });
+          emit({ type: 'session.tool.succeeded', data: { sessionID: sid, assistantMessageID: 'a2', id: 't2', output: 'ok' } });
+          emit({ type: 'session.step.ended', data: { sessionID: sid, assistantMessageID: 'a2', text: 'rencana tuntas', finish: 'stop' } });
+          emit({ type: 'session.execution.succeeded', data: { sessionID: sid } });
+        }
+      })();
+    });
+    const { events } = await runChat(port, { executor: 'm-exec' });
+    srv.close();
+    assert.strictEqual(state.interrupted, 0, 'run orchestrator TIDAK di-interrupt (selesai natural)');
+    assert.strictEqual(state.models, 1, 'switch model ke executor tepat 1x setelah run selesai');
+    assert.ok(events.some((e) => e.type === 'model' && e.role === 'executor'), 'event model/executor ter-emit');
+    const types = events.map((e) => e.type);
+    assert.deepStrictEqual(types, ['think', 'tool', 'toolend', 'message', 'toolresult', 'model', 'tool', 'toolend', 'message', 'toolresult', 'done']);
   });
 });
